@@ -1,0 +1,12 @@
+node_modules/
+out/
+release/
+artifacts/
+test-results/
+playwright-report/
+.yarn/*
+!.yarn/releases/
+*.log
+*.tgz
+.env
+.env.local

@@ -1,0 +1,179 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { terminalChannel, type ChannelPort, type TerminalAdapter } from '../../src/workers/terminal-channel'
+
+function createHarness(options?: {
+  coalesceMs?: number
+  stallTimeoutMs?: number
+  watchdogIntervalMs?: number
+}) {
+  const listeners = new Map<string, ((event: { data: unknown }) => void)[]>()
+  const closeListeners: (() => void)[] = []
+  const posted: unknown[] = []
+  let portClosed = false
+
+  const port: ChannelPort = {
+    postMessage(message) {
+      posted.push(message)
+    },
+    on(event, listener) {
+      if (event === 'close') closeListeners.push(listener as () => void)
+      else {
+        const list = listeners.get(event) ?? []
+        list.push(listener as (event: { data: unknown }) => void)
+        listeners.set(event, list)
+      }
+      return port
+    },
+    close() {
+      portClosed = true
+    },
+    start() {}
+  }
+
+  const written: string[] = []
+  let paused = 0
+  let resumed = 0
+  let adapterClosed = 0
+  let channelClosed = 0
+
+  const adapter: TerminalAdapter = {
+    write(data) {
+      written.push(data)
+    },
+    resize() {},
+    pause() {
+      paused += 1
+    },
+    resume() {
+      resumed += 1
+    },
+    close() {
+      adapterClosed += 1
+    }
+  }
+
+  const channel = terminalChannel(
+    port,
+    adapter,
+    () => {
+      channelClosed += 1
+    },
+    options
+  )
+
+  return {
+    channel,
+    posted,
+    written,
+    emit(data: unknown) {
+      for (const fn of listeners.get('message') ?? []) fn({ data })
+    },
+    get stats() {
+      return { paused, resumed, adapterClosed, channelClosed, portClosed }
+    }
+  }
+}
+
+afterEach(() => {
+  vi.useRealTimers()
+})
+
+describe('terminalChannel coalescing, flow control, and rate limits', () => {
+  it('coalesces small outputs within 8ms and flushes immediately at 32 KiB or on finish', () => {
+    vi.useFakeTimers()
+    const h = createHarness()
+
+    h.channel.output('hello ')
+    h.channel.output('world')
+    expect(h.posted).toHaveLength(0)
+
+    vi.advanceTimersByTime(8)
+    expect(h.posted).toHaveLength(1)
+    expect(h.posted[0]).toMatchObject({ type: 'data', sequence: 1 })
+    expect(Buffer.from((h.posted[0] as { data: Uint8Array }).data).toString()).toBe('hello world')
+
+    // Large chunk >= 32768 bytes flushes synchronously without waiting 8ms
+    h.channel.output('x'.repeat(32768))
+    expect(h.posted).toHaveLength(2)
+
+    // Buffered small chunk flushes before finish state event
+    h.channel.output('tail')
+    expect(h.posted).toHaveLength(2)
+    h.channel.finish({ type: 'state', state: 'exited', exitCode: 0, message: 'done' })
+    expect(h.posted).toHaveLength(4)
+    expect(h.posted[2]).toMatchObject({ type: 'data', sequence: 3 })
+    expect(h.posted[3]).toMatchObject({ type: 'state', state: 'exited' })
+
+    // Not closed yet until all unacked sequences (1..3) are acknowledged in order
+    expect(h.stats.channelClosed).toBe(0)
+    h.emit({ type: 'ack', sequence: 1 })
+    h.emit({ type: 'ack', sequence: 2 })
+    h.emit({ type: 'ack', sequence: 3 })
+    expect(h.stats.channelClosed).toBe(1)
+  })
+
+  it('resets stall timer on ACK progress while paused and closes on real stall', () => {
+    vi.useFakeTimers()
+    const h = createHarness({ coalesceMs: 0, stallTimeoutMs: 1000, watchdogIntervalMs: 250 })
+
+    // 1 MiB threshold triggers pause across 32 KiB chunks (33 chunks > 1 MiB)
+    for (let i = 0; i < 33; i += 1) {
+      h.channel.output(Buffer.alloc(32768, 65))
+    }
+    expect(h.stats.paused).toBe(1)
+
+    // Advance 750ms, then send one progressive ACK -> resets stalledAt
+    vi.advanceTimersByTime(750)
+    h.emit({ type: 'ack', sequence: 1 })
+    vi.advanceTimersByTime(500)
+    expect(h.stats.channelClosed).toBe(0)
+
+    // Out-of-order future ACK grants no credit; sequential ACKs drain below low-water (256 KiB) -> resumes
+    h.emit({ type: 'ack', sequence: 28 })
+    expect(h.stats.resumed).toBe(0)
+    for (let seq = 2; seq <= 25; seq += 1) {
+      h.emit({ type: 'ack', sequence: seq })
+    }
+    expect(h.stats.resumed).toBe(1)
+
+    // Pause again and stall with no ACKs past timeout -> closes with error
+    for (let i = 0; i < 33; i += 1) {
+      h.channel.output(Buffer.alloc(32768, 66))
+    }
+    expect(h.stats.paused).toBe(2)
+    vi.advanceTimersByTime(1250)
+    expect(h.stats.channelClosed).toBe(1)
+    expect(h.posted.at(-1)).toMatchObject({ type: 'state', state: 'error' })
+  })
+
+  it('closes stalled ending sessions after drain timeout', () => {
+    vi.useFakeTimers()
+    const h = createHarness({ coalesceMs: 0, stallTimeoutMs: 1000, watchdogIntervalMs: 250 })
+
+    h.channel.output('pending-output')
+    h.channel.finish({ type: 'state', state: 'exited', exitCode: 0, message: 'exit 0' })
+    expect(h.stats.channelClosed).toBe(0)
+
+    vi.advanceTimersByTime(1250)
+    expect(h.stats.channelClosed).toBe(1)
+  })
+
+  it('enforces UTF-8 byte rate limit on input rather than UTF-16 code units', () => {
+    vi.useFakeTimers()
+    const h = createHarness()
+
+    // '中' is 1 UTF-16 code unit but 3 UTF-8 bytes.
+    // 17477 chars = 52431 bytes (< 65536 char schema cap), 20 messages = 1,048,620 bytes > 1 MiB/sec
+    const chunk = '中'.repeat(17477)
+    for (let i = 0; i < 20; i += 1) {
+      h.emit({ type: 'input', data: chunk })
+    }
+    expect(h.written).toHaveLength(19)
+    expect(h.stats.channelClosed).toBe(1)
+    expect(h.posted.at(-1)).toMatchObject({
+      type: 'state',
+      state: 'error',
+      message: '输入超过速率限制，会话已停止。'
+    })
+  })
+})

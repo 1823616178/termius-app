@@ -1,0 +1,177 @@
+import { describe, expect, it } from 'vitest'
+import {
+  hostInputSchema,
+  openSessionSchema,
+  terminalInputSchema,
+  trayPreferencesPatchSchema,
+  trayPreferencesSchema
+} from '../../src/shared/contracts'
+import {
+  syncLoginInputSchema,
+  syncRegisterInputSchema,
+  syncVaultRecoverInputSchema,
+  validateSyncServerUrl
+} from '../../src/shared/sync'
+const host = { name: '开发服务器', address: 'example.test', port: 22, username: 'ubuntu' }
+describe('host and IPC boundary validation', () => {
+  it('supports DNS, IPv6, Unicode labels and normalizes metadata', () => {
+    expect(hostInputSchema.parse({ ...host, name: ' 中文主机 ', address: '::1' }).name).toBe('中文主机')
+  })
+  it.each([0, -1, 65536, 22.5])('rejects invalid port %s', (port) => {
+    expect(hostInputSchema.safeParse({ ...host, port }).success).toBe(false)
+  })
+  it.each(['host/path', 'host name', 'host\nname', 'host\\path', 'user@example.test'])(
+    'rejects a non-host address %s',
+    (address) => {
+      expect(hostInputSchema.safeParse({ ...host, address }).success).toBe(false)
+    }
+  )
+  it('returns localized errors for invalid port and conflicting password flags', () => {
+    const portResult = hostInputSchema.safeParse({ ...host, port: 0 })
+    expect(portResult.success).toBe(false)
+    if (!portResult.success) {
+      expect(portResult.error.issues[0]?.message).toBe('端口不能小于 1')
+    }
+    const conflict = hostInputSchema.safeParse({
+      ...host,
+      password: 'secret',
+      clearPassword: true
+    })
+    expect(conflict.success).toBe(false)
+    if (!conflict.success) {
+      expect(conflict.error.issues[0]?.message).toBe('输入新密码时不能同时勾选移除已保存密码')
+    }
+  })
+  it('enforces discriminated openSessionSchema branches and rejects unknown IPC fields', () => {
+    expect(
+      openSessionSchema.safeParse({
+        requestId: crypto.randomUUID(),
+        kind: 'local',
+        cols: 80,
+        rows: 24,
+        profileId: 'pwsh'
+      }).success
+    ).toBe(true)
+    expect(
+      openSessionSchema.safeParse({
+        requestId: crypto.randomUUID(),
+        kind: 'local',
+        cols: 80,
+        rows: 24
+      }).success
+    ).toBe(false)
+    expect(
+      openSessionSchema.safeParse({
+        requestId: crypto.randomUUID(),
+        kind: 'local',
+        cols: 80,
+        rows: 24,
+        profileId: 'pwsh',
+        hostId: crypto.randomUUID()
+      }).success
+    ).toBe(false)
+    expect(
+      openSessionSchema.safeParse({
+        requestId: crypto.randomUUID(),
+        kind: 'ssh',
+        cols: 80,
+        rows: 24
+      }).success
+    ).toBe(false)
+    expect(
+      openSessionSchema.safeParse({
+        requestId: crypto.randomUUID(),
+        kind: 'ssh',
+        cols: 80,
+        rows: 24,
+        hostId: crypto.randomUUID(),
+        profileId: 'pwsh'
+      }).success
+    ).toBe(false)
+    expect(
+      openSessionSchema.safeParse({
+        requestId: crypto.randomUUID(),
+        kind: 'local',
+        cols: 80,
+        rows: 24,
+        profileId: 'pwsh',
+        executable: 'arbitrary.exe'
+      }).success
+    ).toBe(false)
+    expect(hostInputSchema.safeParse({ ...host, secret: 'not-a-valid-field' }).success).toBe(false)
+  })
+  it('rejects oversized input and invisible PTY sizes', () => {
+    expect(terminalInputSchema.safeParse({ type: 'input', data: 'a'.repeat(65537) }).success).toBe(false)
+    expect(terminalInputSchema.safeParse({ type: 'resize', cols: 0, rows: 0 }).success).toBe(false)
+  })
+  it('accepts HTTP and HTTPS sync server URLs while rejecting unsupported protocols and credentials', () => {
+    expect(validateSyncServerUrl('http://192.168.1.50:8787///')).toBe('http://192.168.1.50:8787')
+    expect(validateSyncServerUrl('https://sync.example.com/')).toBe('https://sync.example.com')
+    expect(
+      syncLoginInputSchema.parse({
+        serverUrl: 'http://sync.internal:8080/',
+        email: 'User@Example.com',
+        password: 'Password123'
+      }).serverUrl
+    ).toBe('http://sync.internal:8080')
+    expect(() => validateSyncServerUrl('ftp://sync.example.com')).toThrow(
+      '同步服务器地址仅支持 HTTP 或 HTTPS 协议'
+    )
+    expect(() => validateSyncServerUrl('http://user:pass@sync.internal:8080')).toThrow(
+      '同步服务器地址不能包含用户名或密码'
+    )
+  })
+
+  it('validates register inviteCode/password length and requires account password when resetting vault master password', () => {
+    expect(
+      syncRegisterInputSchema.safeParse({
+        serverUrl: 'http://127.0.0.1:46926',
+        email: 'user@example.com',
+        password: 'shortpw'
+      }).success
+    ).toBe(false)
+
+    expect(
+      syncRegisterInputSchema.parse({
+        serverUrl: 'http://127.0.0.1:46926',
+        email: 'user@example.com',
+        password: 'LongEnoughPassword1',
+        inviteCode: ''
+      }).inviteCode
+    ).toBeUndefined()
+
+    expect(
+      syncVaultRecoverInputSchema.safeParse({
+        recoveryKey: 'SPM1-ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8-EF4ED88BE4A3',
+        newMasterPassword: 'NewMasterPassword!'
+      }).success
+    ).toBe(false)
+
+    expect(
+      syncVaultRecoverInputSchema.safeParse({
+        recoveryKey: 'SPM1-ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8-EF4ED88BE4A3',
+        newMasterPassword: 'NewMasterPassword!',
+        currentAccountPassword: 'LongEnoughPassword1'
+      }).success
+    ).toBe(true)
+  })
+
+  it('validates background tray preferences and rejects unknown fields', () => {
+    expect(trayPreferencesSchema.parse({})).toEqual({
+      minimizeToTray: true,
+      closeToTray: false,
+      trayVisibility: 'when-minimized'
+    })
+    expect(
+      trayPreferencesPatchSchema.parse({
+        closeToTray: true,
+        trayVisibility: 'always'
+      })
+    ).toEqual({
+      closeToTray: true,
+      trayVisibility: 'always'
+    })
+    expect(trayPreferencesSchema.safeParse({ trayVisibility: 'never' }).success).toBe(false)
+    expect(trayPreferencesPatchSchema.safeParse({ extraFlag: true }).success).toBe(false)
+  })
+})

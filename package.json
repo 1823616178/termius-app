@@ -1,0 +1,77 @@
+{
+  "name": "graphite-orbit",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Windows SSH 工作台 · Graphite Orbit",
+  "author": "Graphite Orbit contributors",
+  "license": "UNLICENSED",
+  "main": "out/main/index.js",
+  "packageManager": "yarn@4.18.1",
+  "engines": {
+    "node": ">=24.15.0 <25"
+  },
+  "scripts": {
+    "dev": "electron-vite dev",
+    "preview": "electron-vite preview",
+    "build": "yarn check:classes && electron-vite build",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && vue-tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run",
+    "test:e2e": "yarn build && playwright test workbench.spec.ts --output=test-results/desktop",
+    "test:packaged": "yarn pack:dir && playwright test packaged.spec.ts --output=test-results/packaged",
+    "format": "prettier --write src scripts tests *.ts *.mts",
+    "format:check": "prettier --check src scripts tests *.ts *.mts",
+    "report:dependencies": "node scripts/dependency-report.mjs",
+    "check:classes": "node scripts/check-classes.mjs",
+    "native:rebuild": "node scripts/rebuild-native.mjs",
+    "postinstall": "install-electron && yarn run native:rebuild",
+    "pack:dir": "yarn build && electron-builder --win --x64 --dir",
+    "pack:win": "yarn build && electron-builder --win nsis --x64"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/addon-search": "0.16.0",
+    "@xterm/addon-web-links": "0.12.0",
+    "@xterm/xterm": "6.0.0",
+    "better-sqlite3": "13.1.1",
+    "lucide-vue-next": "1.0.0",
+    "node-pty": "1.1.0",
+    "ssh2": "1.17.0",
+    "vue": "3.5.45",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "4.2.1",
+    "@playwright/test": "1.65.0",
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "24.10.1",
+    "@types/ssh2": "1.15.6",
+    "@vitejs/plugin-vue": "6.0.11",
+    "@vue/compiler-sfc": "3.5.45",
+    "electron": "45.3.1",
+    "electron-builder": "26.18.0",
+    "electron-vite": "6.0.0",
+    "prettier": "3.6.2",
+    "sass": "1.108.2",
+    "typescript": "5.9.3",
+    "vite": "8.3.8",
+    "vitest": "5.1.0",
+    "vue-tsc": "3.3.14"
+  },
+  "dependenciesMeta": {
+    "better-sqlite3": {
+      "built": true
+    },
+    "cpu-features": {
+      "built": true
+    },
+    "electron": {
+      "built": true
+    },
+    "node-pty": {
+      "built": true
+    },
+    "ssh2": {
+      "built": true
+    }
+  }
+}

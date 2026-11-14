@@ -1,0 +1,45 @@
+appId: dev.graphite.orbit
+productName: Graphite Orbit
+npmRebuild: false
+directories:
+  output: release
+files:
+  - out/**
+  - package.json
+  - '!node_modules/vue/**'
+  - '!node_modules/@vue/**'
+  - '!node_modules/@xterm/**'
+  - '!node_modules/lucide-vue-next/**'
+  - '!node_modules/better-sqlite3/deps/**'
+  - '!node_modules/better-sqlite3/src/**'
+  - '!node_modules/better-sqlite3/build/Release/obj/**'
+  - '!node_modules/better-sqlite3/prebuilds/darwin-*'
+  - '!node_modules/better-sqlite3/prebuilds/linux*'
+  - '!node_modules/better-sqlite3/prebuilds/win32-arm64.node'
+  - '!node_modules/node-pty/src/**'
+  - '!node_modules/node-pty/deps/**'
+  - '!node_modules/node-pty/prebuilds/win32-arm64/**'
+  - '!node_modules/node-pty/third_party/conpty/*/win10-arm64/**'
+  - '!node_modules/**/*.{c,cc,cpp,h,hpp,pdb,ipdb,iobj,lib,exp,vcxproj,filters,tlog,recipe}'
+asarUnpack:
+  - node_modules/node-pty/**
+  - node_modules/better-sqlite3/**
+  - node_modules/cpu-features/**
+  - node_modules/ssh2/**/*.node
+extraResources:
+  - from: resources/icon.png
+    to: icon.png
+  - from: resources/icon.ico
+    to: icon.ico
+win:
+  icon: resources/icon.ico
+  target:
+    - target: nsis
+      arch: [x64]
+  signExecutable: false
+nsis:
+  installerIcon: resources/icon.ico
+  uninstallerIcon: resources/icon.ico
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false

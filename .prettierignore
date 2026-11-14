@@ -1,0 +1,9 @@
+node_modules
+out
+release
+artifacts
+test-results
+playwright-report
+.yarn
+yarn.lock
+doc

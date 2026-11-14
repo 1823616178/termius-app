@@ -1,0 +1,224 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512" fill="none">
+  <defs>
+    <clipPath id="squircleClip">
+      <rect x="38" y="34" width="436" height="436" rx="108" />
+    </clipPath>
+
+    <radialGradient id="ambientGlow" cx="50%" cy="44%" r="52%">
+      <stop offset="0%" stop-color="#A78BFA" stop-opacity="0.38" />
+      <stop offset="52%" stop-color="#5BDCF4" stop-opacity="0.12" />
+      <stop offset="100%" stop-color="#0B0D12" stop-opacity="0" />
+    </radialGradient>
+
+    <linearGradient id="squircleFill" x1="60" y1="48" x2="452" y2="464" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#24293E" />
+      <stop offset="48%" stop-color="#131724" />
+      <stop offset="100%" stop-color="#090B11" />
+    </linearGradient>
+
+    <linearGradient id="squircleStroke" x1="56" y1="56" x2="456" y2="456" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#DDD6FE" stop-opacity="0.78" />
+      <stop offset="35%" stop-color="#8B5CF6" stop-opacity="0.48" />
+      <stop offset="72%" stop-color="#2A3248" stop-opacity="0.75" />
+      <stop offset="100%" stop-color="#5BDCF4" stop-opacity="0.68" />
+    </linearGradient>
+
+    <radialGradient id="innerWell" cx="46%" cy="38%" r="58%">
+      <stop offset="0%" stop-color="#221E42" />
+      <stop offset="65%" stop-color="#0E111B" />
+      <stop offset="100%" stop-color="#080A10" />
+    </radialGradient>
+
+    <linearGradient id="coreBase" x1="168" y1="154" x2="344" y2="356" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#3A2F66" />
+      <stop offset="52%" stop-color="#1B1934" />
+      <stop offset="100%" stop-color="#0F0E1D" />
+    </linearGradient>
+
+    <linearGradient id="coreTopRim" x1="172" y1="158" x2="338" y2="352" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#EDE9FE" stop-opacity="0.95" />
+      <stop offset="38%" stop-color="#A78BFA" stop-opacity="0.82" />
+      <stop offset="100%" stop-color="#5BDCF4" stop-opacity="0.70" />
+    </linearGradient>
+
+    <linearGradient id="topFacet" x1="184" y1="152" x2="310" y2="236" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#C4B5FD" stop-opacity="0.30" />
+      <stop offset="100%" stop-color="#A78BFA" stop-opacity="0.02" />
+    </linearGradient>
+
+    <!-- Seamless back & front orbit strokes fading cleanly at tangent shoulders -->
+    <linearGradient id="orbitVioletFull" x1="56" y1="252" x2="456" y2="252" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#7C3AED" stop-opacity="0.28" />
+      <stop offset="50%" stop-color="#A78BFA" stop-opacity="0.46" />
+      <stop offset="100%" stop-color="#5BDCF4" stop-opacity="0.32" />
+    </linearGradient>
+
+    <linearGradient id="orbitVioletFront" x1="58" y1="252" x2="454" y2="252" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#8B5CF6" stop-opacity="0" />
+      <stop offset="10%" stop-color="#A78BFA" stop-opacity="0.35" />
+      <stop offset="28%" stop-color="#C4B5FD" stop-opacity="0.95" />
+      <stop offset="55%" stop-color="#A78BFA" stop-opacity="0.95" />
+      <stop offset="84%" stop-color="#5BDCF4" stop-opacity="0.98" />
+      <stop offset="96%" stop-color="#5BDCF4" stop-opacity="0.30" />
+      <stop offset="100%" stop-color="#5BDCF4" stop-opacity="0" />
+    </linearGradient>
+
+    <linearGradient id="orbitCyanFull" x1="68" y1="252" x2="444" y2="252" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity="0.22" />
+      <stop offset="50%" stop-color="#67E8F9" stop-opacity="0.38" />
+      <stop offset="100%" stop-color="#A78BFA" stop-opacity="0.24" />
+    </linearGradient>
+
+    <linearGradient id="orbitCyanFront" x1="70" y1="252" x2="442" y2="252" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity="0" />
+      <stop offset="22%" stop-color="#67E8F9" stop-opacity="0.9" />
+      <stop offset="78%" stop-color="#A78BFA" stop-opacity="0.88" />
+      <stop offset="100%" stop-color="#A78BFA" stop-opacity="0" />
+    </linearGradient>
+
+    <linearGradient id="promptChevron" x1="196" y1="210" x2="262" y2="288" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="58%" stop-color="#E2D9FF" />
+      <stop offset="100%" stop-color="#A78BFA" />
+    </linearGradient>
+
+    <linearGradient id="promptCursor" x1="260" y1="274" x2="318" y2="274" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#5BDCF4" />
+      <stop offset="100%" stop-color="#A5F3FC" />
+    </linearGradient>
+
+    <filter id="appDropShadow" x="-12%" y="-10%" width="124%" height="128%">
+      <feDropShadow dx="0" dy="14" stdDeviation="12" flood-color="#03050B" flood-opacity="0.65" />
+    </filter>
+    <filter id="coreShadow" x="-25%" y="-25%" width="150%" height="160%">
+      <feDropShadow dx="0" dy="14" stdDeviation="14" flood-color="#04050E" flood-opacity="0.88" />
+      <feDropShadow dx="0" dy="0" stdDeviation="14" flood-color="#8B5CF6" flood-opacity="0.35" />
+    </filter>
+    <filter id="cyanBloom" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="5.5" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Outer 3D extruded squircle chassis -->
+  <g filter="url(#appDropShadow)">
+    <rect x="38" y="45" width="436" height="436" rx="108" fill="#05070D" />
+    <rect
+      x="38"
+      y="34"
+      width="436"
+      height="436"
+      rx="108"
+      fill="url(#squircleFill)"
+      stroke="url(#squircleStroke)"
+      stroke-width="3.5"
+    />
+  </g>
+
+  <!-- Everything internal stays strictly clipped inside the squircle chassis -->
+  <g clip-path="url(#squircleClip)">
+    <circle cx="256" cy="248" r="218" fill="url(#ambientGlow)" />
+    <path
+      d="M 146 37.5 H 366 C 423 37.5 470.5 85 470.5 142"
+      stroke="#FFFFFF"
+      stroke-opacity="0.18"
+      stroke-width="2"
+      stroke-linecap="round"
+    />
+    <circle cx="256" cy="252" r="174" fill="url(#innerWell)" stroke="#262E45" stroke-width="1.5" />
+    <circle cx="256" cy="252" r="142" stroke="#A78BFA" stroke-opacity="0.13" stroke-width="1" stroke-dasharray="4 8" />
+
+    <!-- Full back ellipse rings behind the 3D core -->
+    <g transform="rotate(-28 256 252)">
+      <ellipse cx="256" cy="252" rx="198" ry="82" stroke="url(#orbitVioletFull)" stroke-width="7" />
+    </g>
+    <g transform="rotate(34 256 252)">
+      <ellipse cx="256" cy="252" rx="186" ry="74" stroke="url(#orbitCyanFull)" stroke-width="5.5" />
+    </g>
+
+    <!-- Central 3D faceted crystal terminal block -->
+    <g filter="url(#coreShadow)">
+      <rect x="166" y="168" width="180" height="180" rx="44" fill="#0B0A16" />
+      <rect
+        x="166"
+        y="156"
+        width="180"
+        height="180"
+        rx="44"
+        fill="url(#coreBase)"
+        stroke="url(#coreTopRim)"
+        stroke-width="3"
+      />
+      <path
+        d="M 181 198 C 181 177 198 160 219 160 H 293 C 312 160 328 173 331 191 L 256 226 L 181 198 Z"
+        fill="url(#topFacet)"
+      />
+      <rect
+        x="176"
+        y="166"
+        width="160"
+        height="160"
+        rx="36"
+        stroke="#FFFFFF"
+        stroke-opacity="0.09"
+        stroke-width="1.5"
+      />
+
+      <!-- Recessed >_ terminal glyph shadow + highlight -->
+      <path
+        d="M 206 218 L 245 247 L 206 276"
+        stroke="#05040B"
+        stroke-opacity="0.85"
+        stroke-width="17"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <rect x="260" y="270" width="48" height="15" rx="7.5" fill="#05040B" fill-opacity="0.85" />
+
+      <path
+        d="M 206 213 L 245 242 L 206 271"
+        stroke="url(#promptChevron)"
+        stroke-width="16"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+      />
+      <rect x="260" y="265" width="48" height="14" rx="7" fill="url(#promptCursor)" filter="url(#cyanBloom)" />
+    </g>
+
+    <!-- Front belly arcs smoothly layered OVER the lower-outer core edges with faded shoulders -->
+    <g transform="rotate(34 256 252)">
+      <path
+        d="M 70 252 A 186 74 0 0 0 442 252"
+        stroke="url(#orbitCyanFront)"
+        stroke-width="6"
+        stroke-linecap="round"
+      />
+      <circle cx="96" cy="291" r="9.5" fill="#A78BFA" />
+      <circle cx="94" cy="289" r="3.8" fill="#F5F3FF" />
+    </g>
+
+    <g transform="rotate(-28 256 252)">
+      <path
+        d="M 58 252 A 198 82 0 0 0 454 252"
+        stroke="url(#orbitVioletFront)"
+        stroke-opacity="0.22"
+        stroke-width="15"
+        stroke-linecap="round"
+      />
+      <path
+        d="M 58 252 A 198 82 0 0 0 454 252"
+        stroke="url(#orbitVioletFront)"
+        stroke-width="7.5"
+        stroke-linecap="round"
+      />
+      <g filter="url(#cyanBloom)">
+        <circle cx="398" cy="308" r="14.5" fill="#5BDCF4" />
+      </g>
+      <circle cx="398" cy="308" r="13.5" fill="#5BDCF4" stroke="#E0F7FF" stroke-width="2" />
+      <circle cx="394" cy="303" r="4.8" fill="#FFFFFF" />
+    </g>
+  </g>
+</svg>

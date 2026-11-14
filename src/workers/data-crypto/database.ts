@@ -1,0 +1,1288 @@
+import Database from 'better-sqlite3'
+import { copyFileSync, existsSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import type { Host, HostInput, KnownHostEntry } from '../../shared/contracts'
+import { hostInputSchema } from '../../shared/contracts'
+import {
+  syncGroupInputSchema,
+  syncTunnelInputSchema,
+  type HostSyncExtras,
+  type SyncConflict,
+  type SyncDocumentEnvelope,
+  type SyncDocumentV1,
+  type SyncGroup,
+  type SyncGroupInput,
+  type SyncTunnel,
+  type SyncTunnelInput,
+  type VaultMetadataWire
+} from '../../shared/sync'
+import {
+  createVaultMaterial,
+  decryptSyncDocument,
+  encryptSyncDocument,
+  recoverVaultWithKey,
+  rotateVaultKeyMaterials,
+  unlockVaultWithPassword
+} from './sync-crypto'
+import {
+  normalizeRemoteDocument,
+  threeWayMerge,
+  type LocalMergedHost,
+  type LocalSyncSource
+} from './sync-merge'
+
+const CURRENT_SCHEMA_VERSION = 3
+
+const SYNC_TABLES_SQL = `
+  CREATE TABLE IF NOT EXISTS sync_accounts (
+    id TEXT PRIMARY KEY,
+    server_url TEXT NOT NULL,
+    email TEXT NOT NULL,
+    remember_email INTEGER NOT NULL DEFAULT 1,
+    keep_signed_in INTEGER NOT NULL DEFAULT 0,
+    auto_sync INTEGER NOT NULL DEFAULT 1,
+    write_mode TEXT NOT NULL DEFAULT 'realtime',
+    encrypted_refresh_token BLOB,
+    encrypted_vault_key BLOB,
+    device_id TEXT NOT NULL,
+    device_name TEXT NOT NULL,
+    vault_id TEXT,
+    key_version INTEGER NOT NULL DEFAULT 1,
+    sync_passwords INTEGER NOT NULL DEFAULT 0,
+    sync_private_keys INTEGER NOT NULL DEFAULT 0,
+    last_revision TEXT,
+    last_etag TEXT,
+    last_sync_at TEXT,
+    base_doc_cipher BLOB,
+    pending_changes INTEGER NOT NULL DEFAULT 0,
+    read_only_remote_schema INTEGER NOT NULL DEFAULT 0,
+    remote_schema_version INTEGER,
+    doc_extra TEXT,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS groups (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    color TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    unknown_extra TEXT,
+    account_scope TEXT NOT NULL DEFAULT 'local'
+  );
+  CREATE TABLE IF NOT EXISTS tunnels (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    server_id TEXT NOT NULL,
+    group_id TEXT,
+    type TEXT NOT NULL,
+    listen_host TEXT NOT NULL,
+    listen_port INTEGER NOT NULL,
+    dest_host TEXT NOT NULL,
+    dest_port INTEGER NOT NULL,
+    dest_server_id TEXT,
+    auto_reconnect INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    unknown_extra TEXT,
+    account_scope TEXT NOT NULL DEFAULT 'local'
+  );
+`
+
+export interface SyncAccountRecord {
+  id: string
+  serverUrl: string
+  email: string
+  rememberEmail: boolean
+  keepSignedIn: boolean
+  autoSync: boolean
+  writeMode: 'realtime' | 'local-only'
+  encryptedRefreshToken?: Uint8Array
+  encryptedVaultKey?: Uint8Array
+  deviceId: string
+  deviceName: string
+  vaultId: string | null
+  keyVersion: number
+  syncPasswords: boolean
+  syncPrivateKeys: boolean
+  lastRevision: string | null
+  lastEtag: string | null
+  lastSyncAt: string | null
+  baseDocCipher?: Uint8Array
+  pendingChanges: boolean
+  readOnlyRemoteSchema: boolean
+  remoteSchemaVersion?: number
+  docExtra?: Record<string, unknown>
+  updatedAt: string
+}
+
+export interface SyncEvaluateOutput {
+  readOnlySchema: boolean
+  remoteSchemaVersion?: number
+  conflicts: SyncConflict[]
+  needsUpload: boolean
+  uploadEnvelope?: SyncDocumentEnvelope
+  mergedBaseJson?: string
+  hostSecretsToEncrypt: Array<{ hostId: string; password: string | null }>
+  localHostUpdates: LocalMergedHost[]
+  deletedHostIds: string[]
+  localGroups: Array<SyncGroup & { unknownExtra?: Record<string, unknown> }>
+  localTunnels: Array<SyncTunnel & { unknownExtra?: Record<string, unknown> }>
+  nextPreferences: { syncPasswords: boolean; syncPrivateKeys: boolean }
+  remoteHostFingerprints: Array<{ address: string; port: number; fingerprint: string }>
+  docExtra?: Record<string, unknown>
+}
+
+export class Repository {
+  private db: Database.Database
+  private closed = false
+  private vaultKeys = new Map<string, Buffer>()
+  private pendingRotatedKeys = new Map<string, { keyVersion: number; key: Buffer }>()
+
+  constructor(path: string) {
+    this.db = new Database(path)
+    this.db.pragma('foreign_keys = ON')
+    this.db.pragma('journal_mode = WAL')
+    let version = this.db.pragma('user_version', { simple: true }) as number
+    if (version > CURRENT_SCHEMA_VERSION) {
+      this.db.close()
+      this.closed = true
+      throw new Error('数据库版本高于当前应用，请使用较新版本。')
+    }
+    let backedUp = false
+    if (version === 0) {
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE hosts (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+            document TEXT NOT NULL,
+            secret BLOB,
+            sync_extras TEXT,
+            account_scope TEXT NOT NULL DEFAULT 'local'
+          );
+          CREATE TABLE known_hosts (
+            address TEXT NOT NULL,
+            port INTEGER NOT NULL,
+            fingerprint TEXT NOT NULL,
+            algorithm TEXT NOT NULL,
+            public_key BLOB,
+            trusted_at TEXT,
+            source TEXT NOT NULL DEFAULT 'local',
+            PRIMARY KEY(address, port)
+          );
+          ${SYNC_TABLES_SQL}
+          PRAGMA user_version = 3;
+        `)
+      })()
+      return
+    }
+    if (version === 1) {
+      if (path !== ':memory:' && existsSync(path)) {
+        this.db.pragma('wal_checkpoint(TRUNCATE)')
+        copyFileSync(path, `${path}.bak-v1-${Date.now()}`)
+        backedUp = true
+      }
+      this.db.transaction(() => {
+        this.db.exec(`
+          ALTER TABLE known_hosts ADD COLUMN public_key BLOB;
+          ALTER TABLE known_hosts ADD COLUMN trusted_at TEXT;
+          ALTER TABLE known_hosts ADD COLUMN source TEXT NOT NULL DEFAULT 'local';
+          PRAGMA user_version = 2;
+        `)
+      })()
+      version = 2
+    }
+    if (version === 2) {
+      if (!backedUp && path !== ':memory:' && existsSync(path)) {
+        this.db.pragma('wal_checkpoint(TRUNCATE)')
+        copyFileSync(path, `${path}.bak-v2-${Date.now()}`)
+      }
+      this.db.transaction(() => {
+        this.db.exec(`
+          ALTER TABLE hosts ADD COLUMN sync_extras TEXT;
+          ALTER TABLE hosts ADD COLUMN account_scope TEXT NOT NULL DEFAULT 'local';
+          ${SYNC_TABLES_SQL}
+          PRAGMA user_version = 3;
+        `)
+      })()
+    }
+    this.ensureSyncColumns()
+  }
+
+  private ensureSyncColumns(): void {
+    const cols = this.db.prepare('PRAGMA table_info(sync_accounts)').all() as Array<{ name: string }>
+    if (!cols.some((c) => c.name === 'encrypted_vault_key')) {
+      this.db.exec('ALTER TABLE sync_accounts ADD COLUMN encrypted_vault_key BLOB')
+    }
+    if (!cols.some((c) => c.name === 'write_mode')) {
+      this.db.exec("ALTER TABLE sync_accounts ADD COLUMN write_mode TEXT NOT NULL DEFAULT 'realtime'")
+    }
+  }
+
+  list(): Host[] {
+    return (
+      this.db
+        .prepare('SELECT document, secret IS NOT NULL AS saved FROM hosts ORDER BY name COLLATE NOCASE')
+        .all() as { document: string; saved: number }[]
+    ).map((row) => {
+      const parsed = JSON.parse(row.document) as Host
+      return { ...parsed, keepalive: parsed.keepalive ?? 30, hasPassword: Boolean(row.saved) }
+    })
+  }
+
+  get(id: string): { host: Host; secret?: Uint8Array } {
+    const row = this.db.prepare('SELECT document, secret FROM hosts WHERE id = ?').get(id) as
+      | { document: string; secret?: Buffer }
+      | undefined
+    if (!row) throw new Error('主机已删除，请刷新列表。')
+    const parsed = JSON.parse(row.document) as Host
+    return {
+      host: { ...parsed, keepalive: parsed.keepalive ?? 30, hasPassword: Boolean(row.secret) },
+      secret: row.secret
+    }
+  }
+
+  private markSyncPending(): void {
+    this.db.prepare("UPDATE sync_accounts SET pending_changes = 1 WHERE id = 'primary'").run()
+  }
+
+  save(raw: HostInput, encrypted?: Uint8Array): Host[] {
+    const input = hostInputSchema.parse(raw)
+    const { password: _password, savePassword: _savePassword, clearPassword, ...metadata } = input
+    const id = input.id ?? randomUUID()
+    const runSave = this.db.transaction(() => {
+      const previous = input.id ? this.get(input.id) : undefined
+      const secret =
+        input.auth !== 'password' || clearPassword
+          ? null
+          : encrypted
+            ? Buffer.from(encrypted)
+            : (previous?.secret ?? null)
+      const host: Host = {
+        ...metadata,
+        id,
+        hasPassword: Boolean(secret),
+        updatedAt: new Date().toISOString()
+      }
+      try {
+        this.db
+          .prepare(
+            'INSERT INTO hosts (id, name, document, secret) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, document=excluded.document, secret=excluded.secret'
+          )
+          .run(id, input.name, JSON.stringify(host), secret)
+      } catch (error) {
+        if ((error as { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE')
+          throw new Error('主机名称已存在，请使用其他名称。')
+        throw error
+      }
+      this.markSyncPending()
+      return this.list()
+    })
+    return runSave()
+  }
+
+  remove(id: string): Host[] {
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM hosts WHERE id = ?').run(id)
+      this.markSyncPending()
+    })()
+    return this.list()
+  }
+
+  updateSecret(id: string, encrypted: Uint8Array): void {
+    const result = this.db.prepare('UPDATE hosts SET secret = ? WHERE id = ?').run(Buffer.from(encrypted), id)
+    if (result.changes === 0) throw new Error('主机已删除，无法更新凭据。')
+  }
+
+  known(
+    address: string,
+    port: number
+  ): { fingerprint: string; algorithm: string; trustedAt?: string; source: string } | undefined {
+    return this.db
+      .prepare(
+        'SELECT fingerprint, algorithm, trusted_at AS trustedAt, source FROM known_hosts WHERE address = ? AND port = ?'
+      )
+      .get(address, port) as
+      | { fingerprint: string; algorithm: string; trustedAt?: string; source: string }
+      | undefined
+  }
+
+  trust(
+    address: string,
+    port: number,
+    fingerprint: string,
+    algorithm: string,
+    publicKey?: Uint8Array,
+    source = 'local'
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO known_hosts (address, port, fingerprint, algorithm, public_key, trusted_at, source)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(address, port) DO UPDATE SET
+           fingerprint = excluded.fingerprint,
+           algorithm = excluded.algorithm,
+           public_key = excluded.public_key,
+           trusted_at = excluded.trusted_at,
+           source = excluded.source`
+      )
+      .run(
+        address,
+        port,
+        fingerprint,
+        algorithm,
+        publicKey ? Buffer.from(publicKey) : null,
+        new Date().toISOString(),
+        source
+      )
+  }
+
+  knownHostsList(): KnownHostEntry[] {
+    const rows = this.db
+      .prepare(
+        'SELECT address, port, fingerprint, trusted_at AS trustedAt FROM known_hosts ORDER BY trusted_at DESC'
+      )
+      .all() as Array<{ address: string; port: number; fingerprint: string; trustedAt?: string }>
+    return rows.map((row) => ({
+      hostKey: `${row.address}:${row.port}`,
+      fingerprint: row.fingerprint,
+      updatedAt: row.trustedAt ? Date.parse(row.trustedAt) || Date.now() : Date.now()
+    }))
+  }
+
+  knownHostsRemove(hostKey: string): KnownHostEntry[] {
+    const lastColon = hostKey.lastIndexOf(':')
+    if (lastColon > 0) {
+      const address = hostKey.slice(0, lastColon)
+      const port = Number(hostKey.slice(lastColon + 1))
+      if (Number.isInteger(port)) {
+        this.db.prepare('DELETE FROM known_hosts WHERE address = ? AND port = ?').run(address, port)
+      }
+    }
+    return this.knownHostsList()
+  }
+
+  groupsList(): SyncGroup[] {
+    return this.db
+      .prepare('SELECT id, name, color, updated_at AS updatedAt FROM groups ORDER BY name COLLATE NOCASE')
+      .all() as SyncGroup[]
+  }
+
+  groupSave(raw: SyncGroupInput): SyncGroup[] {
+    const input = syncGroupInputSchema.parse(raw)
+    const id = input.id ?? randomUUID()
+    const updatedAt = new Date().toISOString()
+    this.db.transaction(() => {
+      this.db
+        .prepare(
+          `INSERT INTO groups (id, name, color, updated_at, account_scope)
+           VALUES (?, ?, ?, ?, 'sync')
+           ON CONFLICT(id) DO UPDATE SET
+             name = excluded.name,
+             color = excluded.color,
+             updated_at = excluded.updated_at`
+        )
+        .run(id, input.name, input.color, updatedAt)
+      this.markSyncPending()
+    })()
+    return this.groupsList()
+  }
+
+  groupRemove(id: string): SyncGroup[] {
+    this.db.transaction(() => {
+      this.db.prepare('UPDATE tunnels SET group_id = NULL WHERE group_id = ?').run(id)
+      this.db.prepare('DELETE FROM groups WHERE id = ?').run(id)
+      this.markSyncPending()
+    })()
+    return this.groupsList()
+  }
+
+  tunnelsList(): SyncTunnel[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, name, server_id, group_id, type, listen_host, listen_port, dest_host, dest_port,
+                dest_server_id, auto_reconnect, enabled, updated_at
+         FROM tunnels ORDER BY name COLLATE NOCASE`
+      )
+      .all() as Array<{
+      id: string
+      name: string
+      server_id: string
+      group_id: string | null
+      type: string
+      listen_host: string
+      listen_port: number
+      dest_host: string
+      dest_port: number
+      dest_server_id: string | null
+      auto_reconnect: number
+      enabled: number
+      updated_at: string
+    }>
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      serverId: row.server_id,
+      groupId: row.group_id,
+      type: row.type,
+      listenHost: row.listen_host,
+      listenPort: row.listen_port,
+      destHost: row.dest_host,
+      destPort: row.dest_port,
+      destServerId: row.dest_server_id,
+      autoReconnect: Boolean(row.auto_reconnect),
+      enabled: Boolean(row.enabled),
+      readOnly: row.type !== 'L' && row.type !== 'R' && row.type !== 'D',
+      updatedAt: row.updated_at
+    }))
+  }
+
+  tunnelSave(raw: SyncTunnelInput): SyncTunnel[] {
+    const input = syncTunnelInputSchema.parse(raw)
+    const id = input.id ?? randomUUID()
+    const updatedAt = new Date().toISOString()
+    this.db.transaction(() => {
+      if (input.id) {
+        const existing = this.db.prepare('SELECT type FROM tunnels WHERE id = ?').get(input.id) as
+          | { type: string }
+          | undefined
+        if (existing && existing.type !== 'L' && existing.type !== 'R' && existing.type !== 'D') {
+          throw new Error('该隧道为其他客户端写入的未知只读类型，当前版本仅保留不修改。')
+        }
+      }
+      const serverExists = this.db.prepare('SELECT 1 FROM hosts WHERE id = ?').get(input.serverId)
+      if (!serverExists) throw new Error('关联的 SSH 主机不存在，请先创建或选择有效主机。')
+      if (input.groupId) {
+        const groupExists = this.db.prepare('SELECT 1 FROM groups WHERE id = ?').get(input.groupId)
+        if (!groupExists) throw new Error('关联的分组不存在。')
+      }
+      this.db
+        .prepare(
+          `INSERT INTO tunnels (
+             id, name, server_id, group_id, type, listen_host, listen_port, dest_host, dest_port,
+             dest_server_id, auto_reconnect, enabled, updated_at, account_scope
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sync')
+           ON CONFLICT(id) DO UPDATE SET
+             name = excluded.name,
+             server_id = excluded.server_id,
+             group_id = excluded.group_id,
+             type = excluded.type,
+             listen_host = excluded.listen_host,
+             listen_port = excluded.listen_port,
+             dest_host = excluded.dest_host,
+             dest_port = excluded.dest_port,
+             dest_server_id = excluded.dest_server_id,
+             auto_reconnect = excluded.auto_reconnect,
+             enabled = excluded.enabled,
+             updated_at = excluded.updated_at`
+        )
+        .run(
+          id,
+          input.name,
+          input.serverId,
+          input.groupId ?? null,
+          input.type,
+          input.listenHost,
+          input.listenPort,
+          input.destHost,
+          input.destPort,
+          input.destServerId ?? null,
+          input.autoReconnect ? 1 : 0,
+          input.enabled ? 1 : 0,
+          updatedAt
+        )
+      this.markSyncPending()
+    })()
+    return this.tunnelsList()
+  }
+
+  tunnelRemove(id: string): SyncTunnel[] {
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM tunnels WHERE id = ?').run(id)
+      this.markSyncPending()
+    })()
+    return this.tunnelsList()
+  }
+
+  syncAccountGet(id = 'primary'): SyncAccountRecord | undefined {
+    const row = this.db.prepare('SELECT * FROM sync_accounts WHERE id = ?').get(id) as
+      | {
+          id: string
+          server_url: string
+          email: string
+          remember_email: number
+          keep_signed_in: number
+          auto_sync: number
+          write_mode?: string | null
+          encrypted_refresh_token: Buffer | null
+          encrypted_vault_key?: Buffer | null
+          device_id: string
+          device_name: string
+          vault_id: string | null
+          key_version: number
+          sync_passwords: number
+          sync_private_keys: number
+          last_revision: string | null
+          last_etag: string | null
+          last_sync_at: string | null
+          base_doc_cipher: Buffer | null
+          pending_changes: number
+          read_only_remote_schema: number
+          remote_schema_version: number | null
+          doc_extra: string | null
+          updated_at: string
+        }
+      | undefined
+    if (!row) return undefined
+    return {
+      id: row.id,
+      serverUrl: row.server_url,
+      email: row.email,
+      rememberEmail: Boolean(row.remember_email),
+      keepSignedIn: Boolean(row.keep_signed_in),
+      autoSync: Boolean(row.auto_sync),
+      writeMode: row.write_mode === 'local-only' ? 'local-only' : 'realtime',
+      encryptedRefreshToken: row.encrypted_refresh_token ?? undefined,
+      encryptedVaultKey: row.encrypted_vault_key ?? undefined,
+      deviceId: row.device_id,
+      deviceName: row.device_name,
+      vaultId: row.vault_id,
+      keyVersion: row.key_version,
+      syncPasswords: Boolean(row.sync_passwords),
+      syncPrivateKeys: Boolean(row.sync_private_keys),
+      lastRevision: row.last_revision,
+      lastEtag: row.last_etag,
+      lastSyncAt: row.last_sync_at,
+      baseDocCipher: row.base_doc_cipher ?? undefined,
+      pendingChanges: Boolean(row.pending_changes),
+      readOnlyRemoteSchema: Boolean(row.read_only_remote_schema),
+      remoteSchemaVersion: row.remote_schema_version ?? undefined,
+      docExtra: row.doc_extra ? (JSON.parse(row.doc_extra) as Record<string, unknown>) : undefined,
+      updatedAt: row.updated_at
+    }
+  }
+
+  syncAccountUpsert(patch: {
+    id?: string
+    serverUrl: string
+    email: string
+    rememberEmail: boolean
+    keepSignedIn: boolean
+    autoSync: boolean
+    writeMode?: 'realtime' | 'local-only'
+    encryptedRefreshToken?: Uint8Array | null
+    encryptedVaultKey?: Uint8Array | null
+    deviceId: string
+    deviceName: string
+    vaultId?: string | null
+    keyVersion?: number
+    syncPasswords?: boolean
+    syncPrivateKeys?: boolean
+    lastRevision?: string | null
+    lastEtag?: string | null
+    lastSyncAt?: string | null
+    baseDocCipher?: Uint8Array | null
+    pendingChanges?: boolean
+    readOnlyRemoteSchema?: boolean
+    remoteSchemaVersion?: number | null
+    docExtra?: Record<string, unknown> | null
+    resetSyncCursor?: boolean
+  }): SyncAccountRecord {
+    const id = patch.id ?? 'primary'
+    const existing = this.syncAccountGet(id)
+    const resetCursor = Boolean(patch.resetSyncCursor)
+    const nextToken =
+      patch.encryptedRefreshToken !== undefined
+        ? patch.encryptedRefreshToken
+          ? Buffer.from(patch.encryptedRefreshToken)
+          : null
+        : existing?.encryptedRefreshToken
+          ? Buffer.from(existing.encryptedRefreshToken)
+          : null
+    const nextVaultKey =
+      patch.encryptedVaultKey !== undefined
+        ? patch.encryptedVaultKey
+          ? Buffer.from(patch.encryptedVaultKey)
+          : null
+        : existing?.encryptedVaultKey
+          ? Buffer.from(existing.encryptedVaultKey)
+          : null
+    const nextWriteMode: 'realtime' | 'local-only' = patch.writeMode ?? existing?.writeMode ?? 'realtime'
+    const nextBase = resetCursor
+      ? null
+      : patch.baseDocCipher !== undefined
+        ? patch.baseDocCipher
+          ? Buffer.from(patch.baseDocCipher)
+          : null
+        : existing?.baseDocCipher
+          ? Buffer.from(existing.baseDocCipher)
+          : null
+    const updatedAt = new Date().toISOString()
+
+    this.db
+      .prepare(
+        `INSERT INTO sync_accounts (
+           id, server_url, email, remember_email, keep_signed_in, auto_sync, write_mode,
+           encrypted_refresh_token, encrypted_vault_key, device_id, device_name, vault_id, key_version,
+           sync_passwords, sync_private_keys, last_revision, last_etag, last_sync_at,
+           base_doc_cipher, pending_changes, read_only_remote_schema, remote_schema_version,
+           doc_extra, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           server_url = excluded.server_url,
+           email = excluded.email,
+           remember_email = excluded.remember_email,
+           keep_signed_in = excluded.keep_signed_in,
+           auto_sync = excluded.auto_sync,
+           write_mode = excluded.write_mode,
+           encrypted_refresh_token = excluded.encrypted_refresh_token,
+           encrypted_vault_key = excluded.encrypted_vault_key,
+           device_id = excluded.device_id,
+           device_name = excluded.device_name,
+           vault_id = excluded.vault_id,
+           key_version = excluded.key_version,
+           sync_passwords = excluded.sync_passwords,
+           sync_private_keys = excluded.sync_private_keys,
+           last_revision = excluded.last_revision,
+           last_etag = excluded.last_etag,
+           last_sync_at = excluded.last_sync_at,
+           base_doc_cipher = excluded.base_doc_cipher,
+           pending_changes = excluded.pending_changes,
+           read_only_remote_schema = excluded.read_only_remote_schema,
+           remote_schema_version = excluded.remote_schema_version,
+           doc_extra = excluded.doc_extra,
+           updated_at = excluded.updated_at`
+      )
+      .run(
+        id,
+        patch.serverUrl,
+        patch.email,
+        patch.rememberEmail ? 1 : 0,
+        patch.keepSignedIn ? 1 : 0,
+        patch.autoSync ? 1 : 0,
+        nextWriteMode,
+        nextToken,
+        nextVaultKey,
+        patch.deviceId,
+        patch.deviceName,
+        patch.vaultId !== undefined ? patch.vaultId : (existing?.vaultId ?? null),
+        patch.keyVersion ?? existing?.keyVersion ?? 1,
+        (patch.syncPasswords ?? existing?.syncPasswords ?? false) ? 1 : 0,
+        (patch.syncPrivateKeys ?? existing?.syncPrivateKeys ?? false) ? 1 : 0,
+        resetCursor
+          ? null
+          : patch.lastRevision !== undefined
+            ? patch.lastRevision
+            : (existing?.lastRevision ?? null),
+        resetCursor ? null : patch.lastEtag !== undefined ? patch.lastEtag : (existing?.lastEtag ?? null),
+        resetCursor
+          ? null
+          : patch.lastSyncAt !== undefined
+            ? patch.lastSyncAt
+            : (existing?.lastSyncAt ?? null),
+        nextBase,
+        (patch.pendingChanges ?? existing?.pendingChanges ?? false) ? 1 : 0,
+        (resetCursor ? false : (patch.readOnlyRemoteSchema ?? existing?.readOnlyRemoteSchema ?? false))
+          ? 1
+          : 0,
+        resetCursor
+          ? null
+          : patch.remoteSchemaVersion !== undefined
+            ? patch.remoteSchemaVersion
+            : (existing?.remoteSchemaVersion ?? null),
+        resetCursor
+          ? null
+          : patch.docExtra !== undefined
+            ? patch.docExtra
+              ? JSON.stringify(patch.docExtra)
+              : null
+            : existing?.docExtra
+              ? JSON.stringify(existing.docExtra)
+              : null,
+        updatedAt
+      )
+    return this.syncAccountGet(id)!
+  }
+
+  syncAccountClearAuth(opts: { id?: string; clearEmail?: boolean } = {}): SyncAccountRecord | undefined {
+    const id = opts.id ?? 'primary'
+    this.vaultLock(id)
+    const existing = this.syncAccountGet(id)
+    if (!existing) return undefined
+    const clearEmail = opts.clearEmail ?? !existing.rememberEmail
+    this.db
+      .prepare(
+        `UPDATE sync_accounts
+         SET encrypted_refresh_token = NULL,
+             encrypted_vault_key = NULL,
+             keep_signed_in = 0,
+             email = CASE WHEN ? THEN '' ELSE email END,
+             updated_at = ?
+         WHERE id = ?`
+      )
+      .run(clearEmail ? 1 : 0, new Date().toISOString(), id)
+    return this.syncAccountGet(id)
+  }
+
+  syncListSecretBlobs(): Array<{ id: string; secret: Uint8Array }> {
+    return this.db.prepare('SELECT id, secret FROM hosts WHERE secret IS NOT NULL').all() as Array<{
+      id: string
+      secret: Buffer
+    }>
+  }
+
+  vaultHasUnlockedKey(accountId = 'primary'): boolean {
+    return this.vaultKeys.has(accountId)
+  }
+
+  vaultExportKey(accountId = 'primary'): string | null {
+    const key = this.vaultKeys.get(accountId)
+    return key ? key.toString('base64') : null
+  }
+
+  vaultRestoreKey(input: { accountId?: string; rawKeyBase64: string }): boolean {
+    const accountId = input.accountId ?? 'primary'
+    const buf = Buffer.from(input.rawKeyBase64, 'base64')
+    if (buf.length !== 32) return false
+    this.vaultLock(accountId)
+    this.vaultKeys.set(accountId, buf)
+    return true
+  }
+
+  vaultLock(accountId = 'primary'): void {
+    const key = this.vaultKeys.get(accountId)
+    if (key) {
+      key.fill(0)
+      this.vaultKeys.delete(accountId)
+    }
+    const pending = this.pendingRotatedKeys.get(accountId)
+    if (pending) {
+      pending.key.fill(0)
+      this.pendingRotatedKeys.delete(accountId)
+    }
+  }
+
+  async vaultCreate(input: {
+    accountId?: string
+    keyVersion: number
+    masterPassword: string
+  }): Promise<{ envelope: VaultMetadataWire; recoveryKey: string }> {
+    const accountId = input.accountId ?? 'primary'
+    const created = await createVaultMaterial(input.keyVersion, input.masterPassword)
+    this.vaultLock(accountId)
+    this.vaultKeys.set(accountId, created.vaultKey)
+    return { envelope: created.envelope, recoveryKey: created.recoveryKey }
+  }
+
+  async vaultUnlock(input: {
+    accountId?: string
+    metadata: VaultMetadataWire
+    masterPassword: string
+  }): Promise<boolean> {
+    const accountId = input.accountId ?? 'primary'
+    const key = await unlockVaultWithPassword(input.metadata, input.masterPassword)
+    this.vaultLock(accountId)
+    this.vaultKeys.set(accountId, key)
+    const vaultId = input.metadata.id ?? this.syncAccountGet(accountId)?.vaultId ?? null
+    this.db
+      .prepare('UPDATE sync_accounts SET vault_id = ?, key_version = ?, updated_at = ? WHERE id = ?')
+      .run(vaultId, input.metadata.keyVersion, new Date().toISOString(), accountId)
+    return true
+  }
+
+  async vaultRecover(input: {
+    accountId?: string
+    metadata: VaultMetadataWire
+    recoveryKey: string
+    newMasterPassword?: string
+  }): Promise<{ updatedEnvelope?: VaultMetadataWire }> {
+    const accountId = input.accountId ?? 'primary'
+    const res = await recoverVaultWithKey(input.metadata, input.recoveryKey, input.newMasterPassword)
+    this.vaultLock(accountId)
+    this.vaultKeys.set(accountId, res.vaultKey)
+    const vaultId = input.metadata.id ?? this.syncAccountGet(accountId)?.vaultId ?? null
+    this.db
+      .prepare('UPDATE sync_accounts SET vault_id = ?, key_version = ?, updated_at = ? WHERE id = ?')
+      .run(vaultId, input.metadata.keyVersion, new Date().toISOString(), accountId)
+    return { updatedEnvelope: res.updatedEnvelope }
+  }
+
+  private buildLocalSyncSource(
+    plaintextPasswords: Record<string, string>,
+    overridePreferences?: { syncPasswords: boolean; syncPrivateKeys: boolean },
+    accountId = 'primary'
+  ): LocalSyncSource {
+    const account = this.syncAccountGet(accountId)
+    const hostRows = this.db
+      .prepare(
+        'SELECT document, secret IS NOT NULL AS saved, sync_extras FROM hosts ORDER BY name COLLATE NOCASE'
+      )
+      .all() as Array<{ document: string; saved: number; sync_extras: string | null }>
+    const hosts = hostRows.map((row) => {
+      const parsed = JSON.parse(row.document) as Host
+      const syncExtras = row.sync_extras ? (JSON.parse(row.sync_extras) as HostSyncExtras) : undefined
+      return {
+        ...parsed,
+        keepalive: parsed.keepalive ?? 30,
+        hasPassword: Boolean(row.saved),
+        syncExtras
+      }
+    })
+    const knownRows = this.db.prepare('SELECT address, port, fingerprint FROM known_hosts').all() as Array<{
+      address: string
+      port: number
+      fingerprint: string
+    }>
+    const knownFingerprints: Record<string, string> = {}
+    for (const row of knownRows) {
+      knownFingerprints[`${row.address}:${row.port}`] = row.fingerprint
+    }
+
+    const groups = this.groupsList()
+    const groupExtras: Record<string, Record<string, unknown>> = {}
+    for (const row of this.db
+      .prepare('SELECT id, unknown_extra FROM groups WHERE unknown_extra IS NOT NULL')
+      .all() as Array<{
+      id: string
+      unknown_extra: string
+    }>) {
+      groupExtras[row.id] = JSON.parse(row.unknown_extra) as Record<string, unknown>
+    }
+
+    const tunnels = this.tunnelsList()
+    const tunnelExtras: Record<string, Record<string, unknown>> = {}
+    for (const row of this.db
+      .prepare('SELECT id, unknown_extra FROM tunnels WHERE unknown_extra IS NOT NULL')
+      .all() as Array<{
+      id: string
+      unknown_extra: string
+    }>) {
+      tunnelExtras[row.id] = JSON.parse(row.unknown_extra) as Record<string, unknown>
+    }
+
+    return {
+      hosts,
+      plaintextPasswords,
+      knownFingerprints,
+      groups,
+      tunnels,
+      tunnelExtras,
+      groupExtras,
+      preferences: overridePreferences ?? {
+        syncPasswords: account?.syncPasswords ?? false,
+        syncPrivateKeys: account?.syncPrivateKeys ?? false
+      },
+      docExtra: account?.docExtra
+    }
+  }
+
+  syncEvaluateRemoteAndMerge(input: {
+    accountId?: string
+    plaintextPasswords: Record<string, string>
+    baseDocJson?: string | null
+    remoteEnvelope?: SyncDocumentEnvelope | null
+    resolutions?: Record<string, 'local' | 'remote'>
+  }): SyncEvaluateOutput {
+    const accountId = input.accountId ?? 'primary'
+    const vaultKey = this.vaultKeys.get(accountId)
+    if (!vaultKey) throw new Error('保管库未解锁，请先输入主密码解锁')
+    const account = this.syncAccountGet(accountId)
+    if (!account?.vaultId) throw new Error('同步账号尚未绑定保管库')
+
+    let remoteDoc: SyncDocumentV1 | null = null
+    if (input.remoteEnvelope) {
+      const decrypted = decryptSyncDocument(vaultKey, account.vaultId, input.remoteEnvelope)
+      if (decrypted.readOnlySchema) {
+        this.db
+          .prepare(
+            'UPDATE sync_accounts SET read_only_remote_schema = 1, remote_schema_version = ?, updated_at = ? WHERE id = ?'
+          )
+          .run(decrypted.schemaVersion, new Date().toISOString(), accountId)
+        return {
+          readOnlySchema: true,
+          remoteSchemaVersion: decrypted.schemaVersion,
+          conflicts: [],
+          needsUpload: false,
+          hostSecretsToEncrypt: [],
+          localHostUpdates: [],
+          deletedHostIds: [],
+          localGroups: [],
+          localTunnels: [],
+          nextPreferences: {
+            syncPasswords: account.syncPasswords,
+            syncPrivateKeys: account.syncPrivateKeys
+          },
+          remoteHostFingerprints: []
+        }
+      }
+      remoteDoc = normalizeRemoteDocument(decrypted.rawDocument)
+    }
+
+    let baseDoc: SyncDocumentV1 | null = null
+    if (input.baseDocJson) {
+      const parsedBase = JSON.parse(input.baseDocJson) as Record<string, unknown>
+      baseDoc = normalizeRemoteDocument(parsedBase)
+    }
+
+    const localSource = this.buildLocalSyncSource(input.plaintextPasswords, undefined, accountId)
+    const merge = threeWayMerge({
+      localSource,
+      baseDoc,
+      remoteDoc,
+      resolutions: input.resolutions
+    })
+
+    if (merge.conflicts.length > 0) {
+      return {
+        readOnlySchema: false,
+        conflicts: merge.conflicts,
+        needsUpload: false,
+        hostSecretsToEncrypt: [],
+        localHostUpdates: [],
+        deletedHostIds: [],
+        localGroups: [],
+        localTunnels: [],
+        nextPreferences: merge.nextPreferences,
+        remoteHostFingerprints: []
+      }
+    }
+
+    const uploadEnvelope = merge.needsUpload
+      ? encryptSyncDocument(vaultKey, account.vaultId, account.keyVersion, merge.merged)
+      : undefined
+    const hostSecretsToEncrypt = merge.localHostUpdates
+      .filter((item) => item.passwordTouched)
+      .map((item) => ({
+        hostId: item.host.id,
+        password: item.plaintextPassword ?? null
+      }))
+
+    const docExtraKeys = Object.keys(merge.merged).filter(
+      (k) => !['schemaVersion', 'updatedAt', 'preferences', 'servers', 'tunnels', 'groups'].includes(k)
+    )
+    const docExtra: Record<string, unknown> | undefined = docExtraKeys.length
+      ? Object.fromEntries(docExtraKeys.map((k) => [k, merge.merged[k]]))
+      : undefined
+
+    return {
+      readOnlySchema: false,
+      conflicts: [],
+      needsUpload: merge.needsUpload,
+      uploadEnvelope,
+      mergedBaseJson: JSON.stringify(merge.merged),
+      hostSecretsToEncrypt,
+      localHostUpdates: merge.localHostUpdates,
+      deletedHostIds: merge.deletedHostIds,
+      localGroups: merge.localGroups,
+      localTunnels: merge.localTunnels,
+      nextPreferences: merge.nextPreferences,
+      remoteHostFingerprints: merge.remoteHostFingerprints,
+      docExtra
+    }
+  }
+
+  async syncPrepareRotate(input: {
+    accountId?: string
+    newKeyVersion: number
+    masterPassword: string
+    syncPasswords: boolean
+    plaintextPasswords: Record<string, string>
+  }): Promise<{
+    recoveryKey: string
+    keyEnvelope: VaultMetadataWire
+    reencryptedEnvelope: SyncDocumentEnvelope
+    nextBaseDocJson: string
+  }> {
+    const accountId = input.accountId ?? 'primary'
+    const account = this.syncAccountGet(accountId)
+    if (!account?.vaultId) throw new Error('尚未创建或关联保管库')
+    const materials = await rotateVaultKeyMaterials(input.newKeyVersion, input.masterPassword)
+    const source = this.buildLocalSyncSource(
+      input.plaintextPasswords,
+      { syncPasswords: input.syncPasswords, syncPrivateKeys: account.syncPrivateKeys },
+      accountId
+    )
+    const doc = threeWayMerge({
+      localSource: source,
+      baseDoc: null,
+      remoteDoc: null
+    }).merged
+    doc.preferences.syncPasswords = input.syncPasswords
+    if (!input.syncPasswords) {
+      doc.servers = doc.servers.map((server) => {
+        if (!server.secrets) return server
+        const nextSecrets = { ...server.secrets }
+        delete nextSecrets.password
+        delete nextSecrets.passphrase
+        const next = { ...server }
+        if (Object.keys(nextSecrets).length > 0) next.secrets = nextSecrets
+        else delete next.secrets
+        return next
+      })
+    }
+    const reencryptedEnvelope = encryptSyncDocument(
+      materials.vaultKey,
+      account.vaultId,
+      input.newKeyVersion,
+      doc
+    )
+    const oldPending = this.pendingRotatedKeys.get(accountId)
+    if (oldPending) oldPending.key.fill(0)
+    this.pendingRotatedKeys.set(accountId, { keyVersion: input.newKeyVersion, key: materials.vaultKey })
+    return {
+      recoveryKey: materials.recoveryKey,
+      keyEnvelope: materials.envelope,
+      reencryptedEnvelope,
+      nextBaseDocJson: JSON.stringify(doc)
+    }
+  }
+
+  syncCommitRotate(input: {
+    accountId?: string
+    keyVersion: number
+    syncPasswords: boolean
+    revision: string
+    etag: string | null
+    baseDocCipher: Uint8Array
+  }): void {
+    const accountId = input.accountId ?? 'primary'
+    const pending = this.pendingRotatedKeys.get(accountId)
+    if (!pending || pending.keyVersion !== input.keyVersion) {
+      throw new Error('轮换密钥会话不存在或已过期')
+    }
+    const oldKey = this.vaultKeys.get(accountId)
+    if (oldKey) oldKey.fill(0)
+    this.vaultKeys.set(accountId, pending.key)
+    this.pendingRotatedKeys.delete(accountId)
+    this.db
+      .prepare(
+        `UPDATE sync_accounts
+         SET key_version = ?, sync_passwords = ?, last_revision = ?, last_etag = ?,
+             last_sync_at = ?, base_doc_cipher = ?, pending_changes = 0, updated_at = ?
+         WHERE id = ?`
+      )
+      .run(
+        input.keyVersion,
+        input.syncPasswords ? 1 : 0,
+        input.revision,
+        input.etag,
+        new Date().toISOString(),
+        Buffer.from(input.baseDocCipher),
+        new Date().toISOString(),
+        accountId
+      )
+  }
+
+  syncCancelRotate(accountId = 'primary'): void {
+    const pending = this.pendingRotatedKeys.get(accountId)
+    if (pending) {
+      pending.key.fill(0)
+      this.pendingRotatedKeys.delete(accountId)
+    }
+  }
+
+  syncEvaluateRevisionRestore(input: {
+    accountId?: string
+    plaintextPasswords: Record<string, string>
+    revisionEnvelope: SyncDocumentEnvelope
+  }): SyncEvaluateOutput {
+    const accountId = input.accountId ?? 'primary'
+    const vaultKey = this.vaultKeys.get(accountId)
+    if (!vaultKey) throw new Error('保管库未解锁')
+    const account = this.syncAccountGet(accountId)
+    if (!account?.vaultId) throw new Error('同步账号尚未绑定保管库')
+    const decrypted = decryptSyncDocument(vaultKey, account.vaultId, input.revisionEnvelope)
+    if (decrypted.readOnlySchema) {
+      throw new Error(`历史版本 schemaVersion=${decrypted.schemaVersion} 高于当前客户端版本，无法回滚恢复。`)
+    }
+    const remoteDoc = normalizeRemoteDocument(decrypted.rawDocument)
+    const localSource = this.buildLocalSyncSource(input.plaintextPasswords, undefined, accountId)
+    // Force full restore by treating current local entities missing in archive as deleted cleanly
+    const currentLocalDoc = threeWayMerge({ localSource, baseDoc: null, remoteDoc: null }).merged
+    const merge = threeWayMerge({
+      localSource,
+      baseDoc: currentLocalDoc,
+      remoteDoc
+    })
+    const hostSecretsToEncrypt = merge.localHostUpdates
+      .filter((item) => item.passwordTouched)
+      .map((item) => ({
+        hostId: item.host.id,
+        password: item.plaintextPassword ?? null
+      }))
+    return {
+      readOnlySchema: false,
+      conflicts: [],
+      needsUpload: false,
+      mergedBaseJson: JSON.stringify(merge.merged),
+      hostSecretsToEncrypt,
+      localHostUpdates: merge.localHostUpdates,
+      deletedHostIds: merge.deletedHostIds,
+      localGroups: merge.localGroups,
+      localTunnels: merge.localTunnels,
+      nextPreferences: merge.nextPreferences,
+      remoteHostFingerprints: merge.remoteHostFingerprints
+    }
+  }
+
+  syncCommitApplied(input: {
+    accountId?: string
+    localHostUpdates: LocalMergedHost[]
+    encryptedHostSecrets: Record<string, Uint8Array | null>
+    deletedHostIds: string[]
+    localGroups: Array<SyncGroup & { unknownExtra?: Record<string, unknown> }>
+    localTunnels: Array<SyncTunnel & { unknownExtra?: Record<string, unknown> }>
+    nextPreferences: { syncPasswords: boolean; syncPrivateKeys: boolean }
+    remoteHostFingerprints: Array<{ address: string; port: number; fingerprint: string }>
+    revision: string | null
+    etag: string | null
+    baseDocCipher: Uint8Array | null
+    docExtra?: Record<string, unknown>
+  }): { hosts: Host[]; groups: SyncGroup[]; tunnels: SyncTunnel[] } {
+    const accountId = input.accountId ?? 'primary'
+    const nowIso = new Date().toISOString()
+
+    this.db.transaction(() => {
+      for (const deletedId of input.deletedHostIds) {
+        this.db.prepare('DELETE FROM hosts WHERE id = ?').run(deletedId)
+      }
+
+      const selectExisting = this.db.prepare('SELECT id, secret FROM hosts WHERE id = ?')
+      const selectByName = this.db.prepare('SELECT id FROM hosts WHERE name = ? COLLATE NOCASE AND id != ?')
+      const upsertHost = this.db.prepare(
+        `INSERT INTO hosts (id, name, document, secret, sync_extras, account_scope)
+         VALUES (?, ?, ?, ?, ?, 'sync')
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name,
+           document = excluded.document,
+           secret = excluded.secret,
+           sync_extras = excluded.sync_extras,
+           account_scope = excluded.account_scope`
+      )
+
+      for (const entry of input.localHostUpdates) {
+        const existing = selectExisting.get(entry.host.id) as
+          | { id: string; secret: Buffer | null }
+          | undefined
+        const hasOverride = Object.prototype.hasOwnProperty.call(input.encryptedHostSecrets, entry.host.id)
+        const nextSecret = hasOverride
+          ? input.encryptedHostSecrets[entry.host.id]
+            ? Buffer.from(input.encryptedHostSecrets[entry.host.id]!)
+            : null
+          : (existing?.secret ?? null)
+
+        let candidateName = entry.host.name
+        const conflict = selectByName.get(candidateName, entry.host.id) as { id: string } | undefined
+        if (conflict) {
+          candidateName = `${entry.host.name.slice(0, 70)} (${entry.host.id.slice(0, 4)})`
+        }
+        const hostDoc: Host = {
+          ...entry.host,
+          name: candidateName,
+          hasPassword: Boolean(nextSecret)
+        }
+        upsertHost.run(
+          hostDoc.id,
+          hostDoc.name,
+          JSON.stringify(hostDoc),
+          nextSecret,
+          entry.syncExtras ? JSON.stringify(entry.syncExtras) : null
+        )
+      }
+
+      this.db.prepare('DELETE FROM tunnels').run()
+      this.db.prepare('DELETE FROM groups').run()
+      const insertGroup = this.db.prepare(
+        `INSERT INTO groups (id, name, color, updated_at, unknown_extra, account_scope)
+         VALUES (?, ?, ?, ?, ?, 'sync')`
+      )
+      for (const group of input.localGroups) {
+        insertGroup.run(
+          group.id,
+          group.name,
+          group.color,
+          group.updatedAt,
+          group.unknownExtra ? JSON.stringify(group.unknownExtra) : null
+        )
+      }
+      const insertTunnel = this.db.prepare(
+        `INSERT INTO tunnels (
+           id, name, server_id, group_id, type, listen_host, listen_port, dest_host, dest_port,
+           dest_server_id, auto_reconnect, enabled, updated_at, unknown_extra, account_scope
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sync')`
+      )
+      for (const tunnel of input.localTunnels) {
+        insertTunnel.run(
+          tunnel.id,
+          tunnel.name,
+          tunnel.serverId,
+          tunnel.groupId ?? null,
+          tunnel.type,
+          tunnel.listenHost,
+          tunnel.listenPort,
+          tunnel.destHost,
+          tunnel.destPort,
+          tunnel.destServerId ?? null,
+          tunnel.autoReconnect ? 1 : 0,
+          tunnel.enabled ? 1 : 0,
+          tunnel.updatedAt,
+          tunnel.unknownExtra ? JSON.stringify(tunnel.unknownExtra) : null
+        )
+      }
+
+      const checkKnown = this.db.prepare('SELECT 1 FROM known_hosts WHERE address = ? AND port = ?')
+      const insertKnown = this.db.prepare(
+        `INSERT INTO known_hosts (address, port, fingerprint, algorithm, public_key, trusted_at, source)
+         VALUES (?, ?, ?, 'sync', NULL, ?, 'sync')`
+      )
+      for (const item of input.remoteHostFingerprints) {
+        if (!checkKnown.get(item.address, item.port)) {
+          insertKnown.run(item.address, item.port, item.fingerprint, nowIso)
+        }
+      }
+
+      this.db
+        .prepare(
+          `UPDATE sync_accounts
+           SET sync_passwords = ?,
+               sync_private_keys = ?,
+               last_revision = ?,
+               last_etag = ?,
+               last_sync_at = ?,
+               base_doc_cipher = ?,
+               pending_changes = 0,
+               read_only_remote_schema = 0,
+               remote_schema_version = NULL,
+               doc_extra = ?,
+               updated_at = ?
+           WHERE id = ?`
+        )
+        .run(
+          input.nextPreferences.syncPasswords ? 1 : 0,
+          input.nextPreferences.syncPrivateKeys ? 1 : 0,
+          input.revision,
+          input.etag,
+          nowIso,
+          input.baseDocCipher ? Buffer.from(input.baseDocCipher) : null,
+          input.docExtra ? JSON.stringify(input.docExtra) : null,
+          nowIso,
+          accountId
+        )
+    })()
+
+    return {
+      hosts: this.list(),
+      groups: this.groupsList(),
+      tunnels: this.tunnelsList()
+    }
+  }
+
+  close(): void {
+    if (this.closed) return
+    this.closed = true
+    for (const key of this.vaultKeys.values()) key.fill(0)
+    this.vaultKeys.clear()
+    for (const item of this.pendingRotatedKeys.values()) item.key.fill(0)
+    this.pendingRotatedKeys.clear()
+    this.db.close()
+  }
+}
