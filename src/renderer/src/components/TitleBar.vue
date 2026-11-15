@@ -1,8 +1,17 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Minus, Square, Copy, X, Sparkles, Minimize2 } from 'lucide-vue-next'
+import { Minus, Square, Copy, X, Sparkles, Minimize2, ArrowUpCircle } from 'lucide-vue-next'
 import orbitIcon from '../assets/orbit-icon.svg'
-import { cycleUiTheme, maximized, trayState, uiTheme } from '../stores/workbench'
+import {
+  bootstrap,
+  cycleUiTheme,
+  hasVisibleUpdate,
+  maximized,
+  openUpdateSettings,
+  trayState,
+  uiTheme,
+  updateState
+} from '../stores/workbench'
 import { UI_THEME_PRESETS } from '../services/ui-themes'
 
 const windowControls = window.orbit.window
@@ -11,6 +20,22 @@ const currentThemeLabel = computed(() => {
   if (uiTheme.value === 'custom') return '太虚·自定'
   const preset = UI_THEME_PRESETS.find((item) => item.id === uiTheme.value)
   return preset ? `${preset.trigram} ${preset.element}` : '☰ 主题'
+})
+
+const updateBadgeText = computed(() => {
+  const s = updateState.value
+  if (s.phase === 'downloading') {
+    return s.progress?.percent !== null && s.progress?.percent !== undefined
+      ? `下载更新 ${s.progress.percent}%`
+      : '下载更新中'
+  }
+  if (s.phase === 'downloaded' && s.latest) {
+    return `就绪待装 v${s.latest.version}`
+  }
+  if (s.phase === 'available' && s.latest) {
+    return `新版本 v${s.latest.version}`
+  }
+  return ''
 })
 </script>
 
@@ -22,8 +47,20 @@ const currentThemeLabel = computed(() => {
     <strong class="container_app_brand_header_name">玄剑天枢 · Graphite Orbit</strong>
     <span class="container_app_brand_header_separator">/</span>
     <span class="container_app_brand_header_workspace">青冥道场</span>
-    <span class="container_app_brand_header_badge">剑印 · 0.1</span>
+    <span class="container_app_brand_header_badge">剑印 · {{ bootstrap?.versions.app ?? '0.1.0' }}</span>
     <div class="container_app_window_header_controls">
+      <button
+        v-if="hasVisibleUpdate"
+        class="container_app_window_header_update"
+        type="button"
+        :data-phase="updateState.phase"
+        title="查看并安装新版本更新"
+        aria-label="查看版本更新"
+        @click="openUpdateSettings"
+      >
+        <ArrowUpCircle :size="12" />
+        <span class="container_app_window_header_update-label">{{ updateBadgeText }}</span>
+      </button>
       <button
         class="container_app_brand_header_theme"
         type="button"
@@ -136,7 +173,11 @@ const currentThemeLabel = computed(() => {
   height: 100%;
   margin-left: auto;
   -webkit-app-region: no-drag;
-  button:not(.container_app_brand_header_theme, .container_app_window_header_tray) {
+  button:not(
+    .container_app_brand_header_theme,
+    .container_app_window_header_tray,
+    .container_app_window_header_update
+  ) {
     width: 46px;
     height: 100%;
     border: none;
@@ -144,7 +185,8 @@ const currentThemeLabel = computed(() => {
   }
 }
 .container_app_brand_header_theme,
-.container_app_window_header_tray {
+.container_app_window_header_tray,
+.container_app_window_header_update {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -157,6 +199,19 @@ const currentThemeLabel = computed(() => {
   color: var(--color-text-secondary);
   font-size: 11px;
   white-space: nowrap;
+}
+.container_app_window_header_update {
+  border-color: var(--color-seal-ring);
+  background: var(--color-seal-soft);
+  color: #f4d9cf;
+  &[data-phase='downloaded'] {
+    border-color: rgba(89, 214, 160, 0.45);
+    background: rgba(89, 214, 160, 0.12);
+    color: #86efac;
+  }
+}
+.container_app_window_header_update-label {
+  font-weight: 500;
 }
 .container_app_brand_header_theme {
   border-color: var(--color-accent-primary-ring);

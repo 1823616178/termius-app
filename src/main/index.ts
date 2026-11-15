@@ -51,6 +51,8 @@ import { discoverShells } from './shells'
 import { SyncService } from './sync-service'
 import { OrbitTrayManager } from './tray-manager'
 import { probeTcpConnectivity, TunnelRuntimeManager } from './tunnel-network'
+import { OrbitUpdateService } from './update-service'
+import type { UpdateStatusSnapshot } from '../shared/updater'
 
 if (process.env.ORBIT_USER_DATA) app.setPath('userData', process.env.ORBIT_USER_DATA)
 const windows = new Map<number, BrowserWindow>()
@@ -58,6 +60,7 @@ let repository: DataClient
 let syncService: SyncService
 let tunnelRuntime: TunnelRuntimeManager
 let trayManager: OrbitTrayManager | undefined
+let updateService: OrbitUpdateService | undefined
 let diagnostics: DiagnosticLog
 let profiles: ShellProfile[] = []
 let syncPhaseLabel = '本地工作区'
@@ -267,6 +270,7 @@ function registerIpc(): void {
         trayCreated: false,
         windowHiddenToTray: false
       },
+      update: updateService!.getState(),
       versions: {
         app: app.getVersion(),
         electron: process.versions.electron,
@@ -529,6 +533,46 @@ function registerIpc(): void {
     if (!trayManager) throw new Error('系统托盘尚未就绪')
     return trayManager.updatePreferences(raw)
   })
+  ipcMain.handle(IPC.updateState, (event) => {
+    authorize(event)
+    if (!updateService) throw new Error('更新服务尚未就绪')
+    return updateService.getState()
+  })
+  ipcMain.handle(IPC.updateCheck, (event) => {
+    authorize(event)
+    if (!updateService) throw new Error('更新服务尚未就绪')
+    return updateService.checkForUpdates({ silent: false })
+  })
+  ipcMain.handle(IPC.updateDownload, (event) => {
+    authorize(event)
+    if (!updateService) throw new Error('更新服务尚未就绪')
+    return updateService.downloadUpdate()
+  })
+  ipcMain.handle(IPC.updateCancelDownload, (event) => {
+    authorize(event)
+    if (!updateService) throw new Error('更新服务尚未就绪')
+    return updateService.cancelDownload()
+  })
+  ipcMain.handle(IPC.updateInstall, (event) => {
+    authorize(event)
+    if (!updateService) throw new Error('更新服务尚未就绪')
+    return updateService.installUpdate()
+  })
+  ipcMain.handle(IPC.updateRevealFile, (event) => {
+    authorize(event)
+    if (!updateService) throw new Error('更新服务尚未就绪')
+    return updateService.revealDownloadedFile()
+  })
+  ipcMain.handle(IPC.updateOpenReleasePage, (event) => {
+    authorize(event)
+    if (!updateService) throw new Error('更新服务尚未就绪')
+    return updateService.openReleasePage()
+  })
+  ipcMain.handle(IPC.updateUpdatePreferences, (event, raw) => {
+    authorize(event)
+    if (!updateService) throw new Error('更新服务尚未就绪')
+    return updateService.updatePreferences(raw)
+  })
   ipcMain.handle(IPC.windowIsMaximized, (event) => {
     const owner = authorize(event)
     return owner.isMaximized()
@@ -662,6 +706,46 @@ else {
         (message) => diagnostics.write('sync', message)
       )
       await syncService.initFromDb()
+      updateService = new OrbitUpdateService(userDataDir, {
+        onStateChanged: (snapshot: UpdateStatusSnapshot) => {
+          for (const win of windows.values()) {
+            if (!win.isDestroyed()) win.webContents.send(IPC.updateStateChanged, snapshot)
+          }
+        },
+        onDiagnostic: (message) => diagnostics.write('updater', message),
+        onConfirmInstall: async () => {
+          if (process.env.ORBIT_UPDATE_TEST_DRY_INSTALL === '1') return true
+          const win = [...windows.values()][0]
+          const activeSessions = sessions.size
+          const activeTunnels = tunnelRuntime?.getActiveCount() ?? 0
+          const extra =
+            activeSessions > 0 || activeTunnels > 0
+              ? `\n当前仍有 ${activeSessions} 个终端会话与 ${activeTunnels} 条活动转发将在安装前关闭。`
+              : ''
+          const detail = `安装程序启动后，Graphite Orbit 将自动退出以完成文件更新。${extra}`
+          const result = win
+            ? await dialog.showMessageBox(win, {
+                type: 'question',
+                title: '退出并启动更新安装程序？',
+                message: '已准备好安装新版本',
+                detail,
+                buttons: ['暂不安装', '退出并安装'],
+                defaultId: 1,
+                cancelId: 0,
+                noLink: true
+              })
+            : { response: 1 }
+          return result.response === 1
+        },
+        onPrepareInstallQuit: () => {
+          quitting = true
+          for (const win of windows.values()) {
+            if (!win.isDestroyed()) win.destroy()
+          }
+          trayManager?.destroy()
+          app.quit()
+        }
+      })
       trayManager = new OrbitTrayManager(userDataDir, {
         getMainWindow: () => [...windows.values()][0],
         getSessionCount: () => sessions.size,
@@ -710,6 +794,7 @@ else {
       await createWindow()
       trayManager.reconcileTrayVisibility()
       void syncService.resumeSession()
+      updateService.scheduleStartupCheck()
     })
     .catch((error) => {
       diagnostics?.write('main', error instanceof Error ? error.message : String(error))
@@ -726,6 +811,7 @@ else {
     if (shuttingDown) return
     shuttingDown = true
     trayManager?.destroy()
+    updateService?.dispose()
     syncService?.dispose()
     const shutdownTasks = [
       ...(tunnelRuntime ? [tunnelRuntime.dispose()] : []),

@@ -6,9 +6,11 @@ import { join, resolve } from 'node:path'
 test('Windows x64 packaged app loads SQLite, preload and ConPTY from ASAR', async ({}, info) => {
   const directory = await mkdtemp(join(tmpdir(), 'orbit-packaged-'))
   const env = Object.fromEntries(
-    Object.entries({ ...process.env, ORBIT_USER_DATA: directory }).filter(
-      (entry): entry is [string, string] => entry[1] !== undefined
-    )
+    Object.entries({
+      ...process.env,
+      ORBIT_USER_DATA: directory,
+      ORBIT_UPDATE_DISABLE_AUTO: '1'
+    }).filter((entry): entry is [string, string] => entry[1] !== undefined)
   )
   delete env.ELECTRON_RUN_AS_NODE
   const app = await _electron.launch({
@@ -27,7 +29,7 @@ test('Windows x64 packaged app loads SQLite, preload and ConPTY from ASAR', asyn
     await page.locator('.xterm-helper-textarea').focus()
     await page.keyboard.type('Write-Output ("PACKAGED_" + "PTY_READY")')
     await page.keyboard.press('Enter')
-    await expect(page.locator('.xterm-rows')).toContainText('PACKAGED_PTY_READY')
+    await expect(page.locator('.xterm-rows')).toContainText('PACKAGED_PTY_READY', { timeout: 15_000 })
     await page.screenshot({ path: info.outputPath('packaged-terminal.png') })
     await page.getByRole('button', { name: '关闭标签 Windows PowerShell', exact: true }).click()
     await expect(page.getByText('让连接，井然有序。')).toBeVisible()

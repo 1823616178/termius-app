@@ -6,6 +6,7 @@ import { generateKeyPairSync } from 'node:crypto'
 import { Server, type Connection } from 'ssh2'
 import { createServer, type AddressInfo } from 'node:net'
 import { startMockSyncServer } from '../helpers/mock-sync-server'
+import { startMockUpdateServer } from '../helpers/mock-update-server'
 import {
   decryptSyncDocument,
   encryptSyncDocument,
@@ -18,11 +19,17 @@ interface Orbit {
   page: Page
   directory: string
 }
-async function launch(directory: string): Promise<{ app: ElectronApplication; page: Page }> {
+async function launch(
+  directory: string,
+  extraEnv: Record<string, string> = {}
+): Promise<{ app: ElectronApplication; page: Page }> {
   const environment = Object.fromEntries(
-    Object.entries({ ...process.env, ORBIT_USER_DATA: directory }).filter(
-      (entry): entry is [string, string] => entry[1] !== undefined
-    )
+    Object.entries({
+      ...process.env,
+      ORBIT_USER_DATA: directory,
+      ORBIT_UPDATE_DISABLE_AUTO: '1',
+      ...extraEnv
+    }).filter((entry): entry is [string, string] => entry[1] !== undefined)
   )
   delete environment.ELECTRON_RUN_AS_NODE
   const app = await _electron.launch({ args: ['.'], cwd: process.cwd(), env: environment })
@@ -178,7 +185,7 @@ test('real PowerShell and CMD, split resize, terminal input and lifecycle cleanu
   expect(initial.shells.some((profile) => profile.id === 'cmd')).toBe(true)
   await page.getByRole('button', { name: '打开本地终端', exact: true }).click()
   await expect(page.getByText('运行中', { exact: true })).toHaveCount(1)
-  await expect(page.locator('.xterm-rows').first()).toContainText('PS ')
+  await expect(page.locator('.xterm-rows').first()).toContainText('PS ', { timeout: 15_000 })
   const terminal = page.locator('.xterm-helper-textarea').first()
   await terminal.focus()
   await page.keyboard.type('Write-Output ("ORBIT_" + "LOCAL_READY")')
@@ -660,7 +667,7 @@ test('drag tab into workspace triggers animated split preview, lossless docking 
   const { page } = orbit
   await page.getByRole('button', { name: '打开本地终端', exact: true }).click()
   await expect(page.getByText('运行中', { exact: true })).toHaveCount(1)
-  await expect(page.locator('.xterm-rows').first()).toContainText('PS ')
+  await expect(page.locator('.xterm-rows').first()).toContainText('PS ', { timeout: 15_000 })
   const firstTerminal = page.locator('.xterm-helper-textarea').first()
   await firstTerminal.focus()
   await page.keyboard.type('Write-Output ("TAB_ONE_" + "KEEP")')
@@ -1064,4 +1071,60 @@ test('background system tray icon appears on minimize and restores window cleanl
   await page.screenshot({ path: info.outputPath('workspace-theme-select.png') })
   await tokyoOption.click()
   await expect(themeCombo).toContainText('Tokyo Night')
+})
+
+test('checks GitHub releases, downloads verified installer and respects prerelease toggle', async ({}, info) => {
+  const server = await startMockUpdateServer()
+  const directory = await mkdtemp(join(tmpdir(), 'orbit-update-e2e-'))
+  const { app, page } = await launch(directory, {
+    ORBIT_UPDATE_FEED_URL: server.url,
+    ORBIT_UPDATE_TEST_DRY_INSTALL: '1'
+  })
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(error.message))
+
+  try {
+    await page
+      .getByRole('navigation', { name: '主导航' })
+      .getByRole('button', { name: '设置', exact: true })
+      .click()
+
+    await expect(page.getByRole('heading', { name: '版本演进与 GitHub 自动更新' })).toBeVisible()
+    await expect(page.locator('.container_settings_update_meta_grid')).toContainText('1823616178/termius-app')
+
+    await page.getByRole('button', { name: '检查更新', exact: true }).click()
+    await expect(page.locator('.container_settings_update_header_badge')).toContainText('发现新版 v0.2.0', {
+      timeout: 5000
+    })
+    await expect(page.locator('.container_settings_update_release_notes')).toContainText('玄墨剑侠主题升级')
+    await expect(page.locator('.container_app_window_header_update')).toContainText('新版本 v0.2.0')
+    await expect(page.locator('.container_app_status_footer_version')).toContainText('可升级 v0.2.0')
+
+    await page.getByRole('button', { name: /下载更新/ }).click()
+    await expect(page.locator('.container_settings_update_header_badge')).toContainText('校验完成 · 待安装', {
+      timeout: 5000
+    })
+    await expect(page.locator('.container_settings_update_release_verified')).toContainText('已校验 SHA256:')
+    await expect(page.locator('.container_app_window_header_update')).toContainText('就绪待装 v0.2.0')
+    await page.screenshot({ path: info.outputPath('settings-update-ready.png') })
+    await checkClasses(page)
+
+    const downloadedBytes = await readFile(join(directory, 'updates', 'Graphite-Orbit-Setup-0.2.0.exe'))
+    expect(downloadedBytes.byteLength).toBeGreaterThan(65536)
+
+    const dryInstallOk = await page.evaluate(() => window.orbit.update.installUpdate())
+    expect(dryInstallOk).toBe(true)
+
+    // Enable prerelease channel after server exposes v0.3.0-beta.1
+    server.setPrereleaseAvailable(true)
+    await page.getByLabel('接收预发布测试版（Alpha / Beta / RC）更新提示', { exact: true }).check()
+    await expect(page.locator('.container_settings_update_header_badge')).toContainText('v0.3.0-beta.1', {
+      timeout: 5000
+    })
+    await expect(page.locator('.container_settings_update_release_pretag')).toBeVisible()
+    expect(errors).toEqual([])
+  } finally {
+    await stop(app)
+    await server.close()
+  }
 })

@@ -1,0 +1,64 @@
+name: CI Verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js from .nvmrc
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies (immutable)
+        run: yarn install --immutable
+
+      - name: Check code formatting
+        run: yarn format:check
+
+      - name: Run TypeScript & Vue typechecks
+        run: yarn typecheck
+
+      - name: Verify semantic CSS classes
+        run: yarn check:classes
+
+      - name: Run unit tests
+        run: yarn test
+
+      - name: Build production bundles & verify unpacked app
+        run: yarn pack:dir
+
+      - name: Run packaged Windows smoke test
+        env:
+          ORBIT_UPDATE_DISABLE_AUTO: '1'
+        run: yarn exec playwright test packaged.spec.ts --output=test-results/packaged
+
+      - name: Upload Playwright packaged test artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-packaged-test-results
+          path: test-results/
+          retention-days: 7

@@ -9,6 +9,7 @@ import type {
   TrayPreferencesPatch,
   TrayState
 } from '../shared/contracts'
+import type { UpdatePreferencesPatch, UpdateStatusSnapshot } from '../shared/updater'
 import type {
   SyncConflictResolutionItem,
   SyncGroupInput,
@@ -141,6 +142,24 @@ const api: Bridge = {
       ipcRenderer.on(IPC.trayAction, listener)
       return () => {
         ipcRenderer.removeListener(IPC.trayAction, listener)
+      }
+    }
+  },
+  update: {
+    getState: () => ipcRenderer.invoke(IPC.updateState),
+    checkForUpdates: () => ipcRenderer.invoke(IPC.updateCheck),
+    downloadUpdate: () => ipcRenderer.invoke(IPC.updateDownload),
+    cancelDownload: () => ipcRenderer.invoke(IPC.updateCancelDownload),
+    installUpdate: () => ipcRenderer.invoke(IPC.updateInstall),
+    revealDownloadedFile: () => ipcRenderer.invoke(IPC.updateRevealFile),
+    openReleasePage: () => ipcRenderer.invoke(IPC.updateOpenReleasePage),
+    updatePreferences: (patch: UpdatePreferencesPatch) =>
+      ipcRenderer.invoke(IPC.updateUpdatePreferences, patch),
+    onStateChanged: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, state: UpdateStatusSnapshot) => callback(state)
+      ipcRenderer.on(IPC.updateStateChanged, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.updateStateChanged, listener)
       }
     }
   }

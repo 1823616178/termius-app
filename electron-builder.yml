@@ -3,6 +3,11 @@ productName: Graphite Orbit
 npmRebuild: false
 directories:
   output: release
+publish:
+  - provider: github
+    owner: 1823616178
+    repo: termius-app
+    releaseType: release
 files:
   - out/**
   - package.json
@@ -38,6 +43,7 @@ win:
       arch: [x64]
   signExecutable: false
 nsis:
+  artifactName: Graphite-Orbit-Setup-${version}.${ext}
   installerIcon: resources/icon.ico
   uninstallerIcon: resources/icon.ico
   oneClick: false

@@ -46,5 +46,14 @@ export const IPC = {
   trayState: 'orbit:tray-state',
   trayUpdatePreferences: 'orbit:tray-update-preferences',
   trayStateChanged: 'orbit:tray-state-changed',
-  trayAction: 'orbit:tray-action'
+  trayAction: 'orbit:tray-action',
+  updateState: 'orbit:update-state',
+  updateCheck: 'orbit:update-check',
+  updateDownload: 'orbit:update-download',
+  updateCancelDownload: 'orbit:update-cancel-download',
+  updateInstall: 'orbit:update-install',
+  updateRevealFile: 'orbit:update-reveal-file',
+  updateOpenReleasePage: 'orbit:update-open-release-page',
+  updateUpdatePreferences: 'orbit:update-update-preferences',
+  updateStateChanged: 'orbit:update-state-changed'
 } as const

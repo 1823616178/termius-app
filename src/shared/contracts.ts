@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { UpdatePreferencesPatch, UpdateStatusSnapshot } from './updater'
 import type {
   SyncConfigFormDefaults,
   SyncConflictResolutionItem,
@@ -124,6 +125,7 @@ export interface Bootstrap {
   encryptionAvailable: boolean
   maximized: boolean
   tray: TrayState
+  update: UpdateStatusSnapshot
   versions: { app: string; electron: string; node: string; chrome: string; modules: string }
 }
 
@@ -316,6 +318,17 @@ export interface Bridge {
     updatePreferences(patch: TrayPreferencesPatch): Promise<TrayState>
     onStateChanged(callback: (state: TrayState) => void): () => void
     onAction(callback: (action: TrayAction) => void): () => void
+  }
+  update: {
+    getState(): Promise<UpdateStatusSnapshot>
+    checkForUpdates(): Promise<UpdateStatusSnapshot>
+    downloadUpdate(): Promise<UpdateStatusSnapshot>
+    cancelDownload(): Promise<UpdateStatusSnapshot>
+    installUpdate(): Promise<boolean>
+    revealDownloadedFile(): Promise<boolean>
+    openReleasePage(): Promise<void>
+    updatePreferences(patch: UpdatePreferencesPatch): Promise<UpdateStatusSnapshot>
+    onStateChanged(callback: (state: UpdateStatusSnapshot) => void): () => void
   }
 }
 export { IPC } from './channels'

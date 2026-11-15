@@ -1,5 +1,14 @@
 <script setup lang="ts">
-import { ShieldCheck, Minimize2 } from 'lucide-vue-next'
+import { computed, nextTick, ref, watch } from 'vue'
+import {
+  ShieldCheck,
+  Minimize2,
+  RefreshCw,
+  Download,
+  ExternalLink,
+  FolderOpen,
+  Rocket
+} from 'lucide-vue-next'
 import { instanceClass } from '../../../shared/classes'
 import type { TrayVisibilityMode } from '../../../shared/contracts'
 import orbitIcon from '../assets/orbit-icon.svg'
@@ -8,26 +17,81 @@ import { TERMINAL_THEMES, type CursorShape } from '../services/terminal-themes'
 import { DEFAULT_CUSTOM_COLORS, UI_THEME_PRESETS } from '../services/ui-themes'
 import {
   bootstrap,
+  cancelUpdateDownload,
+  checkForUpdates,
   copyOnSelect,
   cursorBlink,
   cursorStyle,
   customUiColors,
+  downloadAvailableUpdate,
+  focusUpdateSectionToken,
   fontSize,
   hideWindowToTray,
   highContrast,
+  installDownloadedUpdate,
   lineHeight,
   motionTier,
+  openUpdateReleasePage,
   page,
+  revealDownloadedUpdate,
   screenReaderDefault,
   setUiTheme,
   terminalTheme,
   trayState,
   uiTheme,
   updateCustomUiColors,
+  updateState,
   updateTrayPreferences,
+  updateUpdaterPreferences,
   windowInstance,
   type MotionTier
 } from '../stores/workbench'
+
+const updateSectionRef = ref<HTMLElement>()
+
+watch(focusUpdateSectionToken, async () => {
+  await nextTick()
+  updateSectionRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+})
+
+const updateStatusLabel = computed(() => {
+  const phase = updateState.value.phase
+  if (phase === 'checking') return '正在检测…'
+  if (phase === 'up-to-date') return '已是最新'
+  if (phase === 'available') return `发现新版 v${updateState.value.latest?.version ?? ''}`
+  if (phase === 'downloading') return '下载更新中'
+  if (phase === 'downloaded') return '校验完成 · 待安装'
+  if (phase === 'error') return '检测异常'
+  return '待检测'
+})
+
+function formatByteSize(bytes: number | null | undefined): string {
+  if (!bytes || bytes <= 0) return '未知大小'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function formatIsoTime(iso: string | null | undefined): string {
+  if (!iso) return '尚未检测'
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso
+  return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+const updateMetaItems = computed(() => [
+  { key: 'current', label: '当前版本', value: `v${updateState.value.currentVersion}` },
+  {
+    key: 'repo',
+    label: 'GitHub 发布源',
+    value: `${updateState.value.repository.owner}/${updateState.value.repository.repo}`
+  },
+  {
+    key: 'checked',
+    label: '最近检查',
+    value: formatIsoTime(updateState.value.checkedAt ?? updateState.value.preferences.lastCheckedAt)
+  }
+])
 
 const c = (base: string, token: string) => instanceClass(base, windowInstance(token))
 
@@ -370,6 +434,164 @@ function resetCustomUiTheme(): void {
         主机配置保存在本地 SQLite 数据库；选择保存的密码由 Windows 系统保护。终端输出和输入历史默认不落盘。
       </p>
     </section>
+    <section ref="updateSectionRef" class="container_settings_update_body_section">
+      <div class="container_settings_update_header_row">
+        <h3 class="container_settings_update_header_title">版本演进与 GitHub 自动更新</h3>
+        <span class="container_settings_update_header_badge" :data-phase="updateState.phase">
+          {{ updateStatusLabel }}
+        </span>
+      </div>
+      <div class="container_settings_update_meta_grid">
+        <div
+          v-for="item in updateMetaItems"
+          :key="item.key"
+          :class="c('container_settings_update_meta_item', item.key)"
+        >
+          <span :class="c('container_settings_update_meta_label', item.key)">{{ item.label }}</span>
+          <strong :class="c('container_settings_update_meta_value', item.key)">{{ item.value }}</strong>
+        </div>
+      </div>
+
+      <p class="container_settings_update_status_text" :data-phase="updateState.phase">
+        {{ updateState.message }}
+      </p>
+
+      <div
+        v-if="updateState.phase === 'downloading' && updateState.progress"
+        class="container_settings_update_progress_box"
+      >
+        <div class="container_settings_update_progress_track">
+          <div
+            class="container_settings_update_progress_fill"
+            :style="{ width: `${updateState.progress.percent ?? 15}%` }"
+          />
+        </div>
+        <span class="container_settings_update_progress_text">
+          {{ updateState.progress.percent ?? 0 }}% ·
+          {{ formatByteSize(updateState.progress.transferredBytes) }} /
+          {{ formatByteSize(updateState.progress.totalBytes) }}
+        </span>
+      </div>
+
+      <div v-if="updateState.latest" class="container_settings_update_release_card">
+        <div class="container_settings_update_release_head">
+          <strong class="container_settings_update_release_version">
+            {{ updateState.latest.title || updateState.latest.tagName }}
+          </strong>
+          <span v-if="updateState.latest.prerelease" class="container_settings_update_release_pretag">
+            预发布版
+          </span>
+          <span class="container_settings_update_release_date">
+            {{ formatIsoTime(updateState.latest.publishedAt) }}
+          </span>
+        </div>
+        <div class="container_settings_update_release_assetrow">
+          <span class="container_settings_update_release_assetname">
+            安装包：{{ updateState.latest.assetName }}（{{ formatByteSize(updateState.latest.sizeBytes) }}）
+          </span>
+          <span v-if="updateState.verifiedHash" class="container_settings_update_release_verified">
+            已校验 {{ updateState.verifiedHash.slice(0, 22) }}…
+          </span>
+        </div>
+        <pre class="container_settings_update_release_notes">{{
+          updateState.latest.notes || '此版本未附带额外说明，可在 GitHub Release 页面查看完整提交记录。'
+        }}</pre>
+      </div>
+
+      <div class="container_settings_update_actions_row">
+        <button
+          class="container_settings_update_actions_check"
+          type="button"
+          :disabled="updateState.phase === 'checking' || updateState.phase === 'downloading'"
+          @click="checkForUpdates"
+        >
+          <RefreshCw :size="13" />
+          {{ updateState.phase === 'checking' ? '正在检查…' : '检查更新' }}
+        </button>
+
+        <button
+          v-if="updateState.phase === 'available' && updateState.latest?.downloadUrl"
+          class="container_settings_update_actions_download"
+          type="button"
+          data-primary="true"
+          @click="downloadAvailableUpdate"
+        >
+          <Download :size="13" />
+          下载更新（{{ formatByteSize(updateState.latest.sizeBytes) }}）
+        </button>
+
+        <button
+          v-if="updateState.phase === 'downloading'"
+          class="container_settings_update_actions_cancel"
+          type="button"
+          @click="cancelUpdateDownload"
+        >
+          取消下载
+        </button>
+
+        <button
+          v-if="updateState.phase === 'downloaded'"
+          class="container_settings_update_actions_install"
+          type="button"
+          data-primary="true"
+          @click="installDownloadedUpdate"
+        >
+          <Rocket :size="13" />
+          立即安装更新
+        </button>
+
+        <button
+          v-if="updateState.phase === 'downloaded'"
+          class="container_settings_update_actions_reveal"
+          type="button"
+          @click="revealDownloadedUpdate"
+        >
+          <FolderOpen :size="13" />
+          在文件夹中显示
+        </button>
+
+        <button class="container_settings_update_actions_github" type="button" @click="openUpdateReleasePage">
+          <ExternalLink :size="13" />
+          查看 GitHub 发布页
+        </button>
+
+        <button
+          v-if="
+            updateState.phase === 'available' &&
+            updateState.latest &&
+            updateState.preferences.ignoredVersion !== updateState.latest.version
+          "
+          class="container_settings_update_actions_ignore"
+          type="button"
+          @click="updateUpdaterPreferences({ ignoredVersion: updateState.latest.version })"
+        >
+          忽略此版本
+        </button>
+      </div>
+
+      <label class="container_settings_update_autocheck_label">
+        <input
+          class="container_settings_update_autocheck_check"
+          type="checkbox"
+          :checked="updateState.preferences.autoCheckOnStartup"
+          @change="
+            updateUpdaterPreferences({ autoCheckOnStartup: ($event.target as HTMLInputElement).checked })
+          "
+        />
+        启动应用时在后台自动检查 GitHub 最新稳定版本
+      </label>
+
+      <label class="container_settings_update_prerelease_label">
+        <input
+          class="container_settings_update_prerelease_check"
+          type="checkbox"
+          :checked="updateState.preferences.allowPrerelease"
+          @change="updateUpdaterPreferences({ allowPrerelease: ($event.target as HTMLInputElement).checked })"
+        />
+        接收预发布测试版（Alpha / Beta / RC）更新提示
+      </label>
+    </section>
+
     <section class="container_settings_about_body_base">
       <h3 class="container_settings_about_header_title">关于此开发版</h3>
       <div class="container_settings_about_body_brand">
@@ -410,6 +632,7 @@ function resetCustomUiTheme(): void {
 .container_settings_terminal_body_base,
 .container_settings_tray_body_section,
 .container_settings_security_body_base,
+.container_settings_update_body_section,
 .container_settings_about_body_base {
   padding: 22px 0;
   border-bottom: 1px solid var(--color-border);
@@ -765,5 +988,177 @@ function resetCustomUiTheme(): void {
   p:first-child {
     margin-top: 0;
   }
+}
+.container_settings_update_header_row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+  h3 {
+    margin: 0;
+  }
+}
+.container_settings_update_header_badge {
+  font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-1);
+  color: var(--color-text-muted);
+  &[data-phase='up-to-date'],
+  &[data-phase='downloaded'] {
+    border-color: rgba(89, 214, 160, 0.42);
+    background: rgba(89, 214, 160, 0.1);
+    color: #86efac;
+  }
+  &[data-phase='available'],
+  &[data-phase='downloading'] {
+    border-color: var(--color-accent-primary-ring);
+    background: var(--color-accent-primary-soft);
+    color: var(--color-accent-primary-hover);
+  }
+  &[data-phase='error'] {
+    border-color: var(--color-seal-ring);
+    background: var(--color-seal-soft);
+    color: #f4d9cf;
+  }
+}
+.container_settings_update_meta_grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.container_settings_update_meta_item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-1);
+}
+.container_settings_update_meta_label {
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+.container_settings_update_meta_value {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+}
+.container_settings_update_status_text {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  &[data-phase='error'] {
+    color: #fca5a5;
+  }
+}
+.container_settings_update_progress_box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.container_settings_update_progress_track {
+  width: 100%;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-border);
+  overflow: hidden;
+}
+.container_settings_update_progress_fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-accent-primary), var(--color-accent-secondary));
+  transition: width 140ms ease;
+}
+.container_settings_update_progress_text {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+.container_settings_update_release_card {
+  padding: 12px 14px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-1);
+  margin-bottom: 14px;
+}
+.container_settings_update_release_head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  flex-wrap: wrap;
+}
+.container_settings_update_release_version {
+  font-size: 13px;
+  color: var(--color-accent-primary-hover);
+}
+.container_settings_update_release_pretag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--color-seal-ring);
+  background: var(--color-seal-soft);
+  color: #f4d9cf;
+}
+.container_settings_update_release_date {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+.container_settings_update_release_assetrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--color-text-muted);
+  margin-bottom: 8px;
+}
+.container_settings_update_release_verified {
+  font-family: var(--font-mono);
+  color: #86efac;
+}
+.container_settings_update_release_notes {
+  margin: 0;
+  padding: 10px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-2);
+  color: var(--color-text-secondary);
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  max-height: 160px;
+  overflow: auto;
+}
+.container_settings_update_actions_row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+  button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+}
+.container_settings_update_autocheck_label,
+.container_settings_update_prerelease_label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
 }
 </style>

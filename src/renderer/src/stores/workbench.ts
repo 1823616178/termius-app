@@ -12,6 +12,11 @@ import type {
   TrayState,
   TunnelRuntimeStatus
 } from '../../../shared/contracts'
+import {
+  DEFAULT_UPDATE_REPOSITORY,
+  type UpdatePreferencesPatch,
+  type UpdateStatusSnapshot
+} from '../../../shared/updater'
 import { disposeTerminalByToken } from '../services/terminal-registry'
 import { TERMINAL_THEMES, type CursorShape, type TerminalThemeId } from '../services/terminal-themes'
 import {
@@ -123,6 +128,33 @@ export const trayState = ref<TrayState>({
   trayCreated: false,
   windowHiddenToTray: false
 })
+export const updateState = ref<UpdateStatusSnapshot>({
+  phase: 'idle',
+  currentVersion: '0.1.0',
+  repository: { ...DEFAULT_UPDATE_REPOSITORY },
+  preferences: {
+    autoCheckOnStartup: true,
+    allowPrerelease: false,
+    ignoredVersion: null,
+    lastCheckedAt: null
+  },
+  latest: null,
+  progress: null,
+  downloadedFilePath: null,
+  verifiedHash: null,
+  message: '尚未检查更新',
+  error: null,
+  checkedAt: null
+})
+export const hasVisibleUpdate = computed(() => {
+  const s = updateState.value
+  if (s.phase === 'downloading' || s.phase === 'downloaded') return true
+  if (s.phase === 'available' && s.latest) {
+    return s.preferences.ignoredVersion !== s.latest.version
+  }
+  return false
+})
+export const focusUpdateSectionToken = ref(0)
 
 export const sidebarWidth = ref(240)
 export const sidebarCollapsed = ref(false)
@@ -139,6 +171,7 @@ let removeSyncStatus: (() => void) | undefined
 let removeSyncData: (() => void) | undefined
 let removeTrayStateChanged: (() => void) | undefined
 let removeTrayAction: (() => void) | undefined
+let removeUpdateStateChanged: (() => void) | undefined
 
 export function registerPaneContainer(tabToken: string, el: HTMLElement | null): void {
   if (el) paneContainers.set(tabToken, el)
@@ -402,6 +435,7 @@ export async function initialize(): Promise<void> {
     }
     maximized.value = bootstrap.value.maximized
     if (bootstrap.value.tray) trayState.value = bootstrap.value.tray
+    if (bootstrap.value.update) updateState.value = bootstrap.value.update
     void refreshTunnelStatuses()
     void refreshKnownHosts()
     if (!removeTrust) {
@@ -455,6 +489,15 @@ export async function initialize(): Promise<void> {
         }
       })
     }
+    if (!removeUpdateStateChanged) {
+      removeUpdateStateChanged = window.orbit.update.onStateChanged((next) => {
+        const previousPhase = updateState.value.phase
+        updateState.value = next
+        if (previousPhase !== 'downloaded' && next.phase === 'downloaded' && next.latest) {
+          notify(`新版本 v${next.latest.version} 已下载并校验完成，前往设置即可安装`)
+        }
+      })
+    }
   } catch (error) {
     initError.value = error instanceof Error ? error.message : '读取本地数据失败'
   }
@@ -483,8 +526,69 @@ export function disposeWorkbenchListeners(): void {
   removeTrayStateChanged = undefined
   removeTrayAction?.()
   removeTrayAction = undefined
+  removeUpdateStateChanged?.()
+  removeUpdateStateChanged = undefined
   clearTimeout(noticeTimeout)
   clearTimeout(splitAnimationTimer)
+}
+
+export function openUpdateSettings(): void {
+  page.value = 'settings'
+  focusUpdateSectionToken.value++
+}
+
+export async function checkForUpdates(): Promise<void> {
+  try {
+    const next = await window.orbit.update.checkForUpdates()
+    updateState.value = next
+    if (next.phase === 'available' && next.latest) {
+      notify(`发现新版本 v${next.latest.version}`)
+    } else if (next.phase === 'up-to-date') {
+      notify(next.message)
+    } else if (next.phase === 'error' && next.error) {
+      notify(`检查更新失败：${next.error}`)
+    }
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '检查更新失败')
+  }
+}
+
+export async function downloadAvailableUpdate(): Promise<void> {
+  try {
+    updateState.value = await window.orbit.update.downloadUpdate()
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '下载更新失败')
+  }
+}
+
+export async function cancelUpdateDownload(): Promise<void> {
+  updateState.value = await window.orbit.update.cancelDownload()
+  notify('已取消更新下载')
+}
+
+export async function installDownloadedUpdate(): Promise<void> {
+  try {
+    await window.orbit.update.installUpdate()
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '启动安装程序失败')
+  }
+}
+
+export async function revealDownloadedUpdate(): Promise<void> {
+  const revealed = await window.orbit.update.revealDownloadedFile()
+  if (!revealed) notify('未找到已下载的安装包文件')
+}
+
+export async function openUpdateReleasePage(): Promise<void> {
+  try {
+    await window.orbit.update.openReleasePage()
+  } catch (error) {
+    notify(error instanceof Error ? error.message : '打开 GitHub 发布页失败')
+  }
+}
+
+export async function updateUpdaterPreferences(patch: UpdatePreferencesPatch): Promise<void> {
+  updateState.value = await window.orbit.update.updatePreferences(patch)
 }
 
 export async function saveSyncGroup(input: SyncGroupInput): Promise<void> {

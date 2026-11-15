@@ -6,10 +6,13 @@ import {
   bootstrap,
   focusedPane,
   fontSize,
+  hasVisibleUpdate,
+  openUpdateSettings,
   page,
   runningCount,
   syncStatus,
-  terminalTheme
+  terminalTheme,
+  updateState
 } from '../stores/workbench'
 
 const activeTheme = computed(() => getTerminalTheme(terminalTheme.value))
@@ -59,7 +62,16 @@ const syncLabel = computed(() => {
     <span class="container_app_status_footer_protocol">
       {{ focusedPane?.kind === 'ssh' ? 'SSH · TrueColor' : focusedPane ? 'ConPTY · TrueColor' : '准备就绪' }}
     </span>
-    <span class="container_app_status_footer_version">v{{ bootstrap?.versions.app ?? '0.1.0' }}</span>
+    <button
+      class="container_app_status_footer_version"
+      type="button"
+      :data-update="hasVisibleUpdate"
+      title="查看版本信息与 GitHub 更新检查"
+      @click="openUpdateSettings"
+    >
+      v{{ bootstrap?.versions.app ?? '0.1.0'
+      }}{{ hasVisibleUpdate && updateState.latest ? ` · 可升级 v${updateState.latest.version}` : '' }}
+    </button>
   </footer>
 </template>
 
@@ -126,7 +138,21 @@ const syncLabel = computed(() => {
   border: 1px solid var(--color-accent-primary-ring);
 }
 .container_app_status_footer_version {
+  min-height: 18px;
+  border: none;
   border-left: 1px solid var(--color-border);
-  padding-left: 10px;
+  border-radius: 0;
+  padding: 0 0 0 10px;
+  background: transparent;
+  color: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  &:hover {
+    color: var(--color-text-primary);
+  }
+  &[data-update='true'] {
+    color: var(--color-accent-primary-hover);
+    font-weight: 500;
+  }
 }
 </style>
