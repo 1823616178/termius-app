@@ -45,7 +45,14 @@ import {
   tunnelBusy,
   tunnelStatuses
 } from '../stores/workbench'
+import OrbitSelect from './OrbitSelect.vue'
 import OrbitStage3D from './OrbitStage3D.vue'
+
+const quickFwdTypeOptions = [
+  { value: 'L', label: '-L 本地转发' },
+  { value: 'R', label: '-R 远端转发' },
+  { value: 'D', label: '-D SOCKS5' }
+]
 
 const props = defineProps<{
   token: string
@@ -691,11 +698,15 @@ onBeforeUnmount(() => {
         </span>
       </div>
       <div :class="c('container_workspace_terminal_tunnel_quickadd')">
-        <select v-model="quickFwdType" :class="c('container_workspace_terminal_tunnel_type')">
-          <option :class="c('container_workspace_terminal_tunnel_optl')" value="L">-L 本地转发</option>
-          <option :class="c('container_workspace_terminal_tunnel_optr')" value="R">-R 远端转发</option>
-          <option :class="c('container_workspace_terminal_tunnel_optd')" value="D">-D SOCKS5</option>
-        </select>
+        <OrbitSelect
+          :model-value="quickFwdType"
+          :options="quickFwdTypeOptions"
+          aria-label="转发模式"
+          size="sm"
+          width="132px"
+          :instance="`pane-fwd-${token}`"
+          @update:model-value="quickFwdType = $event as 'L' | 'R' | 'D'"
+        />
         <input
           v-model.number="quickFwdListenPort"
           :class="c('container_workspace_terminal_tunnel_lport')"
@@ -1317,12 +1328,11 @@ onBeforeUnmount(() => {
   background: var(--color-surface-1);
   border-bottom: 1px solid var(--color-border);
   font-size: 12px;
-  input,
-  select {
+  input {
     padding: 4px 8px;
     font-size: 12px;
   }
-  button {
+  button:not([role='combobox']):not([role='option']) {
     min-height: 26px;
     padding: 3px 8px;
     font-size: 11px;

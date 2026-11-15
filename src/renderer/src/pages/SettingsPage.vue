@@ -3,7 +3,8 @@ import { ShieldCheck, Minimize2 } from 'lucide-vue-next'
 import { instanceClass } from '../../../shared/classes'
 import type { TrayVisibilityMode } from '../../../shared/contracts'
 import orbitIcon from '../assets/orbit-icon.svg'
-import { TERMINAL_THEMES } from '../services/terminal-themes'
+import OrbitSelect from '../components/OrbitSelect.vue'
+import { TERMINAL_THEMES, type CursorShape } from '../services/terminal-themes'
 import { DEFAULT_CUSTOM_COLORS, UI_THEME_PRESETS } from '../services/ui-themes'
 import {
   bootstrap,
@@ -24,10 +25,28 @@ import {
   uiTheme,
   updateCustomUiColors,
   updateTrayPreferences,
-  windowInstance
+  windowInstance,
+  type MotionTier
 } from '../stores/workbench'
 
 const c = (base: string, token: string) => instanceClass(base, windowInstance(token))
+
+const cursorStyleOptions = [
+  { value: 'block', label: '实心方块 (Block)' },
+  { value: 'bar', label: '竖线 (Bar)' },
+  { value: 'underline', label: '下划线 (Underline)' }
+]
+
+const motionTierOptions = [
+  { value: 'full', label: '完整' },
+  { value: 'light', label: '轻量' },
+  { value: 'off', label: '关闭' }
+]
+
+const trayVisibilityOptions = [
+  { value: 'when-minimized', label: '仅最小化或收到后台时显示（推荐）' },
+  { value: 'always', label: '程序运行期间始终显示图标' }
+]
 
 function patchCustomColor(key: keyof typeof DEFAULT_CUSTOM_COLORS, value: string): void {
   updateCustomUiColors({
@@ -201,15 +220,14 @@ function resetCustomUiTheme(): void {
       </label>
       <label class="container_settings_terminal_body_cursor-label">
         光标形态
-        <select v-model="cursorStyle" class="container_settings_terminal_body_cursor-select">
-          <option class="container_settings_terminal_body_cursor-block" value="block">
-            实心方块 (Block)
-          </option>
-          <option class="container_settings_terminal_body_cursor-bar" value="bar">竖线 (Bar)</option>
-          <option class="container_settings_terminal_body_cursor-underline" value="underline">
-            下划线 (Underline)
-          </option>
-        </select>
+        <OrbitSelect
+          :model-value="cursorStyle"
+          :options="cursorStyleOptions"
+          aria-label="光标形态"
+          width="190px"
+          instance="settings-cursor"
+          @update:model-value="cursorStyle = $event as CursorShape"
+        />
       </label>
       <label class="container_settings_terminal_body_blink-label">
         <input v-model="cursorBlink" class="container_settings_terminal_body_blink-check" type="checkbox" />
@@ -221,11 +239,14 @@ function resetCustomUiTheme(): void {
       </label>
       <label class="container_settings_terminal_body_motion-label">
         动效与性能档
-        <select v-model="motionTier" class="container_settings_terminal_body_motion-select">
-          <option class="container_settings_terminal_body_motion-full" value="full">完整</option>
-          <option class="container_settings_terminal_body_motion-light" value="light">轻量</option>
-          <option class="container_settings_terminal_body_motion-off" value="off">关闭</option>
-        </select>
+        <OrbitSelect
+          :model-value="motionTier"
+          :options="motionTierOptions"
+          aria-label="动效与性能档"
+          width="190px"
+          instance="settings-motion"
+          @update:model-value="motionTier = $event as MotionTier"
+        />
       </label>
       <label class="container_settings_terminal_body_contrast-label">
         <input
@@ -318,23 +339,14 @@ function resetCustomUiTheme(): void {
       </label>
       <label class="container_settings_tray_visibility_label">
         系统托盘图标显示时机
-        <select
-          class="container_settings_tray_visibility_select"
+        <OrbitSelect
+          :model-value="trayState.trayVisibility"
+          :options="trayVisibilityOptions"
           aria-label="系统托盘图标显示时机"
-          :value="trayState.trayVisibility"
-          @change="
-            updateTrayPreferences({
-              trayVisibility: ($event.target as HTMLSelectElement).value as TrayVisibilityMode
-            })
-          "
-        >
-          <option class="container_settings_tray_visibility_minimized" value="when-minimized">
-            仅最小化或收到后台时显示（推荐）
-          </option>
-          <option class="container_settings_tray_visibility_always" value="always">
-            程序运行期间始终显示图标
-          </option>
-        </select>
+          width="276px"
+          instance="settings-tray-visibility"
+          @update:model-value="updateTrayPreferences({ trayVisibility: $event as TrayVisibilityMode })"
+        />
       </label>
       <div class="container_settings_tray_actions_row">
         <button class="container_settings_tray_actions_hide" type="button" @click="hideWindowToTray">
@@ -452,9 +464,6 @@ function resetCustomUiTheme(): void {
   gap: 12px;
   margin-top: 16px;
   font-size: 13px;
-  select {
-    width: 240px;
-  }
 }
 .container_settings_tray_actions_row {
   display: flex;
@@ -522,9 +531,6 @@ function resetCustomUiTheme(): void {
   justify-content: space-between;
   margin-top: 18px;
   font-size: 13px;
-  select {
-    width: 190px;
-  }
 }
 .container_settings_terminal_body_blink-label,
 .container_settings_terminal_body_copy-label,

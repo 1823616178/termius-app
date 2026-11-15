@@ -128,6 +128,23 @@ test('secure empty workspace, semantic DOM and saved host persistence', async ({
   await expect(editor.getByRole('alert')).toContainText('名称已存在')
   await editor.getByRole('button', { name: '取消', exact: true }).click()
   await checkClasses(page)
+
+  // Search hosts input sits inside a bordered wrapper and must not draw an inner focus outline.
+  const searchInput = page.getByLabel('搜索主机', { exact: true })
+  await page.keyboard.press('Control+k')
+  await expect(searchInput).toBeFocused()
+  const searchFocusStyles = await searchInput.evaluate((el) => {
+    const cs = window.getComputedStyle(el)
+    return {
+      outlineStyle: cs.outlineStyle,
+      outlineWidth: cs.outlineWidth,
+      boxShadow: cs.boxShadow
+    }
+  })
+  expect(searchFocusStyles.outlineStyle).toBe('none')
+  expect(searchFocusStyles.outlineWidth).toBe('0px')
+  expect(searchFocusStyles.boxShadow).toBe('none')
+
   await page.screenshot({ path: info.outputPath('hosts.png') })
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await checkClasses(page)
@@ -930,13 +947,22 @@ test('background system tray icon appears on minimize and restores window cleanl
       windowHiddenToTray: false
     })
 
-  // SettingsPage tray preferences toggle "always" visibility
+  // SettingsPage tray preferences toggle "always" visibility via custom OrbitSelect
   await page
     .getByRole('navigation', { name: '主导航' })
     .getByRole('button', { name: '设置', exact: true })
     .click()
   await expect(page.getByRole('heading', { name: '后台运行与系统托盘' })).toBeVisible()
-  await page.getByLabel('系统托盘图标显示时机', { exact: true }).selectOption('always')
+  const trayVisibilityCombo = page.getByRole('combobox', {
+    name: '系统托盘图标显示时机',
+    exact: true
+  })
+  await trayVisibilityCombo.click()
+  const alwaysOption = page.getByRole('option', { name: '程序运行期间始终显示图标', exact: true })
+  await expect(alwaysOption).toBeVisible()
+  await page.screenshot({ path: info.outputPath('orbit-select-open.png') })
+  await checkClasses(page)
+  await alwaysOption.click()
   await expect
     .poll(async () => page.evaluate(() => window.orbit.tray.getState()))
     .toMatchObject({
@@ -951,7 +977,8 @@ test('background system tray icon appears on minimize and restores window cleanl
   await checkClasses(page)
 
   // Switching back to when-minimized destroys tray while foregrounded
-  await page.getByLabel('系统托盘图标显示时机', { exact: true }).selectOption('when-minimized')
+  await trayVisibilityCombo.click()
+  await page.getByRole('option', { name: '仅最小化或收到后台时显示（推荐）', exact: true }).click()
   await expect
     .poll(async () => page.evaluate(() => window.orbit.tray.getState()))
     .toMatchObject({
@@ -959,4 +986,18 @@ test('background system tray icon appears on minimize and restores window cleanl
       trayCreated: false,
       windowHiddenToTray: false
     })
+
+  // Also verify WorkspacePage OrbitSelect menu (theme preset with color swatches) renders and switches cleanly
+  await page
+    .getByRole('navigation', { name: '主导航' })
+    .getByRole('button', { name: '工作台', exact: true })
+    .click()
+  const themeCombo = page.getByRole('combobox', { name: '切换终端配色主题', exact: true })
+  await themeCombo.click()
+  const tokyoOption = page.getByRole('option', { name: /Tokyo Night/i })
+  await expect(tokyoOption).toBeVisible()
+  await checkClasses(page)
+  await page.screenshot({ path: info.outputPath('workspace-theme-select.png') })
+  await tokyoOption.click()
+  await expect(themeCombo).toContainText('Tokyo Night')
 })

@@ -15,6 +15,7 @@ import {
 } from 'lucide-vue-next'
 import { instanceClass } from '../../../shared/classes'
 import type { Host } from '../../../shared/contracts'
+import OrbitSelect from './OrbitSelect.vue'
 import {
   bootstrap,
   connectHost,
@@ -22,7 +23,6 @@ import {
   filteredHosts,
   group,
   groups,
-  groupToken,
   hosts,
   openEditor,
   openLocal,
@@ -34,6 +34,11 @@ import {
   sidebarWidth,
   windowInstance
 } from '../stores/workbench'
+
+const groupFilterOptions = computed(() => [
+  { value: 'all', label: '所有分组' },
+  ...groups.value.map((item) => ({ value: item, label: item }))
+])
 
 const searchInput = ref<HTMLInputElement>()
 const listRef = ref<HTMLElement>()
@@ -195,22 +200,16 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
         <Star :size="13" />
       </button>
     </div>
-    <select
-      v-if="groups.length"
-      v-model="group"
-      class="container_hosts_filter_toolbar_group"
-      aria-label="按分组筛选"
-    >
-      <option class="container_hosts_filter_toolbar_all-option" value="all">所有分组</option>
-      <option
-        v-for="item in groups"
-        :key="item"
-        :class="c('container_hosts_filter_toolbar_group-option', `g${groupToken(item)}`)"
-        :value="item"
-      >
-        {{ item }}
-      </option>
-    </select>
+    <div v-if="groups.length" class="container_hosts_filter_toolbar_group">
+      <OrbitSelect
+        v-model="group"
+        :options="groupFilterOptions"
+        aria-label="按分组筛选"
+        size="md"
+        block
+        instance="sidebar-group"
+      />
+    </div>
     <div ref="listRef" class="container_hosts_list_body_base" @scroll.passive="onListScroll">
       <div
         v-if="visibleRange.topPad"
@@ -378,8 +377,12 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
   border: 1px solid var(--color-border-control);
   border-radius: 6px;
   background: var(--color-surface-input);
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease;
   &:focus-within {
     border-color: var(--color-accent-primary);
+    box-shadow: 0 0 0 2px var(--color-accent-primary-ring);
   }
 }
 .container_hosts_search_body_input {
@@ -388,6 +391,12 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
   padding: 7px 0;
   background: transparent;
   font-size: 12px;
+  outline: 0 none;
+  &:focus,
+  &:focus-visible {
+    outline: 0 none;
+    box-shadow: none;
+  }
 }
 .container_hosts_search_body_shortcut {
   flex-shrink: 0;
@@ -421,8 +430,6 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
 }
 .container_hosts_filter_toolbar_group {
   margin: 0 14px 8px;
-  padding: 6px 8px;
-  font-size: 12px;
 }
 .container_hosts_list_body_base {
   flex: 1;

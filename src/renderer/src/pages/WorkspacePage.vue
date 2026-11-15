@@ -14,9 +14,10 @@ import {
   X
 } from 'lucide-vue-next'
 import { instanceClass } from '../../../shared/classes'
+import OrbitSelect from '../components/OrbitSelect.vue'
 import OrbitStage3D from '../components/OrbitStage3D.vue'
 import TerminalPane from '../components/TerminalPane.vue'
-import { TERMINAL_THEMES } from '../services/terminal-themes'
+import { TERMINAL_THEMES, type TerminalThemeId } from '../services/terminal-themes'
 import {
   activeTab,
   bootstrap,
@@ -73,6 +74,22 @@ const dragPointerBlock = ref(false)
 const ctaHovered = ref(false)
 let dragBlockRaf = 0
 let tabHoverSwitchTimer = 0
+
+const shellOptions = computed(() =>
+  (bootstrap.value?.shells ?? []).map((shell) => ({
+    value: shell.id,
+    label: shell.name
+  }))
+)
+
+const terminalThemeOptions = computed(() =>
+  TERMINAL_THEMES.map((preset) => ({
+    value: preset.id,
+    label: preset.name,
+    hint: preset.badge,
+    swatch: preset.swatches[1] || preset.swatches[0]
+  }))
+)
 
 const c = (base: string, token: string) => instanceClass(base, windowInstance(token))
 const draggedTabInfo = computed(() => tabs.value.find((item) => item.token === draggedTab.value))
@@ -595,23 +612,18 @@ function resizePanes(event: PointerEvent, tab: Tab) {
           + 释放拆分为独立标签
         </span>
       </div>
-      <select
-        v-if="bootstrap?.shells.length"
-        :value="selectedShellId || bootstrap.shells[0]?.id"
-        class="container_workspace_tabs_header_shell-select"
-        aria-label="选择新建本地终端类型"
-        title="选择新建本地终端类型"
-        @change="selectedShellId = ($event.target as HTMLSelectElement).value"
-      >
-        <option
-          v-for="shell in bootstrap.shells"
-          :key="shell.id"
-          :class="c('container_workspace_tabs_header_shell-option', shell.id)"
-          :value="shell.id"
-        >
-          {{ shell.name }}
-        </option>
-      </select>
+      <div v-if="bootstrap?.shells.length" class="container_workspace_tabs_header_shell-select">
+        <OrbitSelect
+          :model-value="selectedShellId || bootstrap.shells[0]?.id"
+          :options="shellOptions"
+          aria-label="选择新建本地终端类型"
+          title="选择新建本地终端类型"
+          size="sm"
+          width="146px"
+          instance="workspace-shell"
+          @update:model-value="selectedShellId = $event"
+        />
+      </div>
       <button
         class="container_workspace_tabs_header_add"
         type="button"
@@ -622,21 +634,18 @@ function resizePanes(event: PointerEvent, tab: Tab) {
       >
         <Plus :size="16" />
       </button>
-      <select
-        v-model="terminalTheme"
-        class="container_workspace_tabs_header_theme-select"
-        aria-label="切换终端配色主题"
-        title="快速切换所有终端的配色主题"
-      >
-        <option
-          v-for="preset in TERMINAL_THEMES"
-          :key="preset.id"
-          :class="c('container_workspace_tabs_header_theme-option', preset.id)"
-          :value="preset.id"
-        >
-          {{ preset.name }}
-        </option>
-      </select>
+      <div class="container_workspace_tabs_header_theme-select">
+        <OrbitSelect
+          :model-value="terminalTheme"
+          :options="terminalThemeOptions"
+          aria-label="切换终端配色主题"
+          title="快速切换所有终端的配色主题"
+          size="sm"
+          width="156px"
+          instance="workspace-theme"
+          @update:model-value="terminalTheme = $event as TerminalThemeId"
+        />
+      </div>
       <button
         class="container_workspace_tabs_header_split-horizontal"
         type="button"
@@ -859,15 +868,9 @@ function resizePanes(event: PointerEvent, tab: Tab) {
 }
 .container_workspace_tabs_header_shell-select,
 .container_workspace_tabs_header_theme-select {
-  height: 26px;
-  padding: 2px 8px;
-  font-size: 11px;
   margin-left: 4px;
-  border-radius: 5px;
-  color: var(--color-text-secondary);
-  background: var(--color-surface-1);
-  border: 1px solid var(--color-border);
-  max-width: 146px;
+  display: inline-flex;
+  align-items: center;
   flex-shrink: 0;
 }
 .container_workspace_tabs_header_dot {

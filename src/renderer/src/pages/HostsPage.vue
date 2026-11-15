@@ -19,6 +19,7 @@ import {
 import { instanceClass } from '../../../shared/classes'
 import type { Host } from '../../../shared/contracts'
 import type { SyncTunnel } from '../../../shared/sync'
+import OrbitSelect from '../components/OrbitSelect.vue'
 import {
   checkPortOccupancy,
   connectHost,
@@ -68,6 +69,11 @@ const quickSaving = ref(false)
 
 const showGroupManager = ref(false)
 const newGroupName = ref('')
+const tunnelTypeOptions = [
+  { value: 'L', label: '-L 本地转发' },
+  { value: 'R', label: '-R 远端转发' },
+  { value: 'D', label: '-D SOCKS5' }
+]
 const newGroupColor = ref('#a78bfa')
 
 const distinctGroups = computed(() => {
@@ -484,11 +490,15 @@ async function handleCreateGroup(): Promise<void> {
                 type="text"
                 placeholder="规则名称"
               />
-              <select v-model="quickTunnelType" :class="c('container_hosts_drawer_select_type', host.id)">
-                <option :class="c('container_hosts_drawer_opt_typel', host.id)" value="L">-L 本地转发</option>
-                <option :class="c('container_hosts_drawer_opt_typer', host.id)" value="R">-R 远端转发</option>
-                <option :class="c('container_hosts_drawer_opt_typed', host.id)" value="D">-D SOCKS5</option>
-              </select>
+              <OrbitSelect
+                :model-value="quickTunnelType"
+                :options="tunnelTypeOptions"
+                aria-label="转发模式"
+                size="sm"
+                width="132px"
+                :instance="`hosts-tunnel-${host.id}`"
+                @update:model-value="quickTunnelType = $event as 'L' | 'R' | 'D'"
+              />
               <input
                 v-model="quickListenHost"
                 :class="c('container_hosts_drawer_input_lhost', host.id)"
@@ -953,8 +963,7 @@ async function handleCreateGroup(): Promise<void> {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
-  input,
-  select {
+  input {
     padding: 5px 8px;
     font-size: 12px;
   }

@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { Network, Play, Square, Activity, ShieldCheck, Plus, Trash2, Pencil, Server } from 'lucide-vue-next'
 import { instanceClass } from '../../../shared/classes'
 import type { SyncTunnel } from '../../../shared/sync'
+import OrbitSelect from '../components/OrbitSelect.vue'
 import {
   checkPortOccupancy,
   hosts,
@@ -46,6 +47,26 @@ const portCheckHost = ref('127.0.0.1')
 const portCheckPort = ref(1080)
 
 const activeCount = computed(() => Object.values(tunnelStatuses.value).filter((item) => item.active).length)
+
+const serverOptions = computed(() =>
+  hosts.value.length === 0
+    ? [{ value: '', label: '暂无已配置主机' }]
+    : hosts.value.map((h) => ({
+        value: h.id,
+        label: `${h.name} (${h.username}@${h.address}:${h.port})`
+      }))
+)
+
+const tunnelTypeOptions = [
+  { value: 'L', label: '本地转发 (-L)' },
+  { value: 'R', label: '远端转发 (-R)' },
+  { value: 'D', label: '动态 SOCKS5 (-D)' }
+]
+
+const groupOptions = computed(() => [
+  { value: '', label: '未分组' },
+  ...syncGroups.value.map((g) => ({ value: g.id, label: g.name }))
+])
 
 const hostMap = computed(() => {
   const m = new Map<string, string>()
@@ -345,41 +366,34 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
         </label>
         <label class="container_tunnels_editor_field_server">
           <span class="container_tunnels_editor_label_server">跳板 SSH 服务器</span>
-          <select v-model="formServerId" class="container_tunnels_editor_select_server">
-            <option v-if="hosts.length === 0" class="container_tunnels_editor_opt_noserver" value="">
-              暂无已配置主机
-            </option>
-            <option
-              v-for="h in hosts"
-              :key="h.id"
-              :class="c('container_tunnels_editor_opt_server', h.id)"
-              :value="h.id"
-            >
-              {{ h.name }} ({{ h.username }}@{{ h.address }}:{{ h.port }})
-            </option>
-          </select>
+          <OrbitSelect
+            v-model="formServerId"
+            :options="serverOptions"
+            aria-label="跳板 SSH 服务器"
+            block
+            instance="tunnels-server"
+          />
         </label>
         <label class="container_tunnels_editor_field_type">
           <span class="container_tunnels_editor_label_type">转发模式</span>
-          <select v-model="formType" class="container_tunnels_editor_select_type">
-            <option class="container_tunnels_editor_opt_typel" value="L">本地转发 (-L)</option>
-            <option class="container_tunnels_editor_opt_typer" value="R">远端转发 (-R)</option>
-            <option class="container_tunnels_editor_opt_typed" value="D">动态 SOCKS5 (-D)</option>
-          </select>
+          <OrbitSelect
+            :model-value="formType"
+            :options="tunnelTypeOptions"
+            aria-label="转发模式"
+            block
+            instance="tunnels-type"
+            @update:model-value="formType = $event as 'L' | 'R' | 'D'"
+          />
         </label>
         <label class="container_tunnels_editor_field_group">
           <span class="container_tunnels_editor_label_group">所属分组</span>
-          <select v-model="formGroupId" class="container_tunnels_editor_select_group">
-            <option class="container_tunnels_editor_opt_nogroup" value="">未分组</option>
-            <option
-              v-for="g in syncGroups"
-              :key="g.id"
-              :class="c('container_tunnels_editor_opt_group', g.id)"
-              :value="g.id"
-            >
-              {{ g.name }}
-            </option>
-          </select>
+          <OrbitSelect
+            v-model="formGroupId"
+            :options="groupOptions"
+            aria-label="所属分组"
+            block
+            instance="tunnels-group"
+          />
         </label>
         <label class="container_tunnels_editor_field_lhost">
           <span class="container_tunnels_editor_label_lhost">监听地址</span>

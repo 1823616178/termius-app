@@ -2,6 +2,12 @@
 import { nextTick, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue'
 import { X, ShieldCheck } from 'lucide-vue-next'
 import { hostInputSchema, type Host, type HostInput } from '../../../shared/contracts'
+import OrbitSelect from './OrbitSelect.vue'
+
+const authOptions = [
+  { value: 'password', label: '密码' },
+  { value: 'agent', label: 'Windows OpenSSH Agent' }
+]
 
 const props = defineProps<{ host?: Host; encryptionAvailable: boolean; busy: boolean; error: string }>()
 const emit = defineEmits<{ save: [input: HostInput]; close: [] }>()
@@ -170,12 +176,14 @@ function submit() {
       </label>
       <label class="container_hosts_editor_body_auth-label">
         认证方式
-        <select v-model="form.auth" class="container_hosts_editor_body_auth-select">
-          <option class="container_hosts_editor_body_password-option" value="password">密码</option>
-          <option class="container_hosts_editor_body_agent-option" value="agent">
-            Windows OpenSSH Agent
-          </option>
-        </select>
+        <OrbitSelect
+          :model-value="form.auth"
+          :options="authOptions"
+          aria-label="认证方式"
+          block
+          instance="host-editor-auth"
+          @update:model-value="form.auth = $event as 'password' | 'agent'"
+        />
       </label>
       <template v-if="form.auth === 'password'">
         <label class="container_hosts_editor_body_password-label">
@@ -319,7 +327,6 @@ function submit() {
     font-size: 12px;
   }
   input,
-  select,
   textarea {
     width: 100%;
   }
