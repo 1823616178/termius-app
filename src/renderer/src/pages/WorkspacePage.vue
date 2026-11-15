@@ -35,6 +35,7 @@ import {
   page,
   registerPaneContainer,
   reorderTab,
+  requestPanePassword,
   resolveSplitDropZone,
   screenReaderDefault,
   selectedShellId,
@@ -759,6 +760,8 @@ function resizePanes(event: PointerEvent, tab: Tab) {
             :profile-id="pane.profileId"
             :host-id="pane.hostId"
             :password="pane.password"
+            :retry-seq="pane.retrySeq ?? 0"
+            :auth-cancelled-seq="pane.authCancelledSeq ?? 0"
             :visible="activeTab === tab.token && page === 'workspace'"
             :can-unsplit="tab.panes.length > 1"
             :is-dragging="draggedPane?.paneToken === pane.token"
@@ -766,6 +769,7 @@ function resizePanes(event: PointerEvent, tab: Tab) {
             :screen-reader-default="screenReaderDefault"
             @consumed="pane.password = undefined"
             @state="pane.state = $event"
+            @auth-failed="requestPanePassword(tab.token, pane.token, $event)"
             @unsplit="detachPaneToTab(tab.token, pane.token)"
             @close-pane="closePane(tab.token, pane.token)"
             @header-drag-start="onPaneHeaderDragStart($event, tab, pane)"

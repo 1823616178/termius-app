@@ -40,6 +40,8 @@ export interface Pane {
   profileId?: string
   hostId?: string
   password?: string
+  retrySeq?: number
+  authCancelledSeq?: number
   state: string
 }
 
@@ -57,6 +59,11 @@ export interface PromptState {
   host?: Host
   trust?: HostTrust
   split?: boolean
+  paneToken?: string
+  tabToken?: string
+  reason?: 'auth-failed'
+  message?: string
+  attempt?: number
 }
 
 export const bootstrap = ref<Bootstrap>()
@@ -90,7 +97,9 @@ export const shellsRefreshing = ref(false)
 
 export const prompt = ref<PromptState>()
 export const trustQueue = ref<HostTrust[]>([])
+export const passwordQueue = ref<PromptState[]>([])
 export const promptBusy = ref(false)
+let promptAttempt = 0
 
 export const fontSize = ref(14)
 export const terminalTheme = ref<TerminalThemeId>('orbit-vivid')
@@ -226,17 +235,60 @@ export function notify(message: string): void {
   }, 6000)
 }
 
-function advanceTrustQueue(): void {
-  if (prompt.value || trustQueue.value.length === 0) return
-  const next = trustQueue.value.shift()
-  if (next) prompt.value = { kind: 'trust', trust: next }
+function advancePromptQueue(): void {
+  if (prompt.value) return
+  const nextTrust = trustQueue.value.shift()
+  if (nextTrust) {
+    prompt.value = { kind: 'trust', trust: nextTrust, attempt: ++promptAttempt }
+    return
+  }
+  const nextPassword = passwordQueue.value.shift()
+  if (nextPassword) {
+    prompt.value = nextPassword
+  }
 }
 
 function dismissStaleTrust(sessionId: string): void {
   trustQueue.value = trustQueue.value.filter((item) => item.sessionId !== sessionId)
   if (prompt.value?.kind === 'trust' && prompt.value.trust?.sessionId === sessionId) {
     prompt.value = undefined
-    advanceTrustQueue()
+    advancePromptQueue()
+  }
+}
+
+function dismissStalePanePrompts(paneToken: string): void {
+  passwordQueue.value = passwordQueue.value.filter((item) => item.paneToken !== paneToken)
+  if (prompt.value?.kind === 'password' && prompt.value.paneToken === paneToken) {
+    prompt.value = undefined
+    advancePromptQueue()
+  }
+}
+
+export function requestPanePassword(tabToken: string, paneToken: string, errorMessage?: string): void {
+  const tab = tabs.value.find((item) => item.token === tabToken)
+  const pane = tab?.panes.find((item) => item.token === paneToken)
+  if (!tab || !pane || pane.kind !== 'ssh' || !pane.hostId) return
+  const host = hosts.value.find((item) => item.id === pane.hostId)
+  if (!host) return
+  if (
+    (prompt.value?.kind === 'password' && prompt.value.paneToken === paneToken) ||
+    passwordQueue.value.some((item) => item.paneToken === paneToken)
+  ) {
+    return
+  }
+  const nextPrompt: PromptState = {
+    kind: 'password',
+    host,
+    tabToken,
+    paneToken,
+    reason: 'auth-failed',
+    message: errorMessage || 'SSH 密码认证失败，请重新输入登录密码。',
+    attempt: ++promptAttempt
+  }
+  if (prompt.value) {
+    passwordQueue.value.push(nextPrompt)
+  } else {
+    prompt.value = nextPrompt
   }
 }
 
@@ -358,7 +410,7 @@ export async function initialize(): Promise<void> {
           trustQueue.value.push(trust)
           return
         }
-        prompt.value = { kind: 'trust', trust }
+        prompt.value = { kind: 'trust', trust, attempt: ++promptAttempt }
       })
     }
     if (!removeSessionFailure) {
@@ -701,7 +753,7 @@ export function connectHost(
     }
   }
   if (host.auth === 'password' && !host.hasPassword && password === undefined) {
-    prompt.value = { kind: 'password', host, split }
+    prompt.value = { kind: 'password', host, split, attempt: ++promptAttempt }
     return false
   }
   return addPane(
@@ -930,6 +982,7 @@ export function closePane(tabToken: string, paneToken: string): void {
   if (tab.panes.length === 1) {
     tab.title = tab.panes[0]!.title
   }
+  dismissStalePanePrompts(paneToken)
   disposeTerminalByToken(windowInstance(paneToken))
 }
 
@@ -940,6 +993,7 @@ export function closeTab(id: string): void {
   paneContainers.delete(id)
   if (closing) {
     for (const pane of closing.panes) {
+      dismissStalePanePrompts(pane.token)
       disposeTerminalByToken(windowInstance(pane.token))
     }
   }
@@ -963,12 +1017,46 @@ export function cycleTab(step: 1 | -1): void {
   page.value = 'workspace'
 }
 
-export async function confirmAction(password: string): Promise<void> {
+export async function confirmAction(password: string, savePassword = false): Promise<void> {
   const action = prompt.value
   if (!action || promptBusy.value) return
   promptBusy.value = true
   try {
-    if (action.kind === 'password' && action.host) connectHost(action.host, action.split, password)
+    if (action.kind === 'password' && action.host) {
+      if (savePassword && password && action.host.auth === 'password') {
+        try {
+          hosts.value = await window.orbit.hosts.save({
+            id: action.host.id,
+            name: action.host.name,
+            address: action.host.address,
+            port: action.host.port,
+            username: action.host.username,
+            auth: 'password',
+            keepalive: action.host.keepalive ?? 30,
+            group: action.host.group,
+            notes: action.host.notes,
+            favorite: action.host.favorite,
+            password,
+            savePassword: true
+          })
+          notify(`已更新「${action.host.name}」的保存密码`)
+        } catch (error) {
+          notify(error instanceof Error ? error.message : '密码保存失败，将仅用于本次连接')
+        }
+      }
+      if (action.paneToken) {
+        const targetPane = tabs.value
+          .flatMap((tab) => tab.panes)
+          .find((pane) => pane.token === action.paneToken)
+        if (targetPane) {
+          targetPane.password = password
+          targetPane.state = 'connecting'
+          targetPane.retrySeq = (targetPane.retrySeq ?? 0) + 1
+        }
+      } else {
+        connectHost(action.host, action.split, password)
+      }
+    }
     if (action.kind === 'delete' && action.host) {
       hosts.value = await window.orbit.hosts.remove(action.host.id)
       if (selected.value === action.host.id) selected.value = undefined
@@ -978,7 +1066,7 @@ export async function confirmAction(password: string): Promise<void> {
       await window.orbit.sessions.trust(action.trust.sessionId, true)
     }
     prompt.value = undefined
-    advanceTrustQueue()
+    advancePromptQueue()
   } catch (error) {
     notify(error instanceof Error ? error.message : '操作失败，请重试')
   } finally {
@@ -991,6 +1079,16 @@ export function cancelAction(): void {
   if (prompt.value?.trust) {
     void window.orbit.sessions.trust(prompt.value.trust.sessionId, false).catch(() => {})
   }
+  if (prompt.value?.kind === 'password' && prompt.value.paneToken) {
+    const targetPane = tabs.value
+      .flatMap((tab) => tab.panes)
+      .find((pane) => pane.token === prompt.value?.paneToken)
+    if (targetPane) {
+      targetPane.password = undefined
+      targetPane.state = 'error'
+      targetPane.authCancelledSeq = (targetPane.authCancelledSeq ?? 0) + 1
+    }
+  }
   prompt.value = undefined
-  advanceTrustQueue()
+  advancePromptQueue()
 }

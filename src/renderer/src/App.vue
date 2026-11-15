@@ -197,7 +197,7 @@ onBeforeUnmount(() => {
     />
     <ActionDialog
       v-if="prompt"
-      :key="prompt.trust?.sessionId ?? prompt.host?.id"
+      :key="`${prompt.trust?.sessionId ?? prompt.paneToken ?? prompt.host?.id ?? ''}-${prompt.attempt ?? 0}`"
       :kind="prompt.kind"
       :title="
         prompt.kind === 'trust'
@@ -206,17 +206,28 @@ onBeforeUnmount(() => {
             : '确认服务器身份'
           : prompt.kind === 'delete'
             ? '删除主机配置？'
-            : `连接 ${prompt.host?.name}`
+            : prompt.reason === 'auth-failed'
+              ? `重新输入密码 · ${prompt.host?.name}`
+              : `连接 ${prompt.host?.name}`
       "
       :description="
         prompt.kind === 'trust'
           ? `${prompt.trust?.address}:${prompt.trust?.port} · ${prompt.trust?.algorithm}${prompt.trust?.previous ? '。密钥变更可能表示服务器重装或连接被拦截。' : ''}`
           : prompt.kind === 'delete'
             ? `删除 ${prompt.host?.name} 及其保存的密码。已经建立的终端会话会继续运行。`
-            : `${prompt.host?.username}@${prompt.host?.address}:${prompt.host?.port}。本次输入的密码不会保存到磁盘。`
+            : prompt.reason === 'auth-failed'
+              ? `${prompt.host?.username}@${prompt.host?.address}:${prompt.host?.port}。如不勾选保存，新密码仅用于本次重连。`
+              : `${prompt.host?.username}@${prompt.host?.address}:${prompt.host?.port}。本次输入的密码默认不会保存到磁盘。`
+      "
+      :alert-message="
+        prompt.kind === 'password' && prompt.reason === 'auth-failed'
+          ? prompt.message || 'SSH 密码认证失败，请重新输入登录密码。'
+          : undefined
       "
       :fingerprint="prompt.trust?.fingerprint"
       :previous="prompt.trust?.previous"
+      :encryption-available="bootstrap?.encryptionAvailable ?? false"
+      :has-saved-password="Boolean(prompt.host?.hasPassword)"
       :busy="promptBusy"
       @confirm="confirmAction"
       @cancel="cancelAction"

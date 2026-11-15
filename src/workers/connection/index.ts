@@ -36,7 +36,8 @@ process.parentPort?.on('message', ({ data, ports }) => {
   let cols = data.cols as number,
     rows = data.rows as number
   let deadline: NodeJS.Timeout | undefined
-  const secretPassword = data.host.auth === 'password' ? (data.password as string | undefined) : undefined
+  const secretPassword = typeof data.password === 'string' ? data.password : undefined
+  let keyboardAttempted = false
 
   const armDeadline = () => {
     clearTimeout(deadline)
@@ -74,7 +75,8 @@ process.parentPort?.on('message', ({ data, ports }) => {
   sessions.set(data.id, channel.close)
   channel.send({ type: 'state', state: 'connecting' })
   client.on('keyboard-interactive', (_name, _instructions, _lang, prompts, finish) => {
-    if (secretPassword !== undefined && prompts.length === 1 && !prompts[0]?.echo) {
+    if (!keyboardAttempted && secretPassword !== undefined && prompts.length === 1 && !prompts[0]?.echo) {
+      keyboardAttempted = true
       finish([secretPassword])
       return
     }
@@ -119,13 +121,20 @@ process.parentPort?.on('message', ({ data, ports }) => {
   client.on('error', (error: Error & { level?: string }) => {
     ended = true
     clearTimeout(deadline)
-    const message =
-      error.level === 'client-authentication'
-        ? 'SSH 认证失败，请检查用户名、密码或 OpenSSH Agent。'
-        : error.level === 'client-timeout'
-          ? 'SSH 连接超时，请检查网络与端口。'
-          : 'SSH 连接失败，请检查地址、端口、网络和主机信任状态。'
-    channel.finish({ type: 'state', state: 'error', message })
+    const isAuthError = error.level === 'client-authentication'
+    const message = isAuthError
+      ? data.host.auth === 'agent'
+        ? 'SSH Agent 认证失败，请输入密码继续连接或检查 OpenSSH Agent。'
+        : 'SSH 密码认证失败，请重新输入登录密码。'
+      : error.level === 'client-timeout'
+        ? 'SSH 连接超时，请检查网络与端口。'
+        : 'SSH 连接失败，请检查地址、端口、网络和主机信任状态。'
+    channel.finish({
+      type: 'state',
+      state: 'error',
+      message,
+      ...(isAuthError ? { reason: 'auth-failed' as const } : {})
+    })
   })
   client.on('close', () => {
     clearTimeout(deadline)
@@ -142,8 +151,11 @@ process.parentPort?.on('message', ({ data, ports }) => {
       port: data.host.port,
       username: data.host.username,
       password: secretPassword,
-      tryKeyboard: data.host.auth === 'password' && secretPassword !== undefined,
-      agent: data.host.auth === 'agent' ? '\\\\.\\pipe\\openssh-ssh-agent' : undefined,
+      tryKeyboard: secretPassword !== undefined,
+      agent:
+        data.host.auth === 'agent' && secretPassword === undefined
+          ? '\\\\.\\pipe\\openssh-ssh-agent'
+          : undefined,
       readyTimeout: 0,
       keepaliveInterval: 30_000,
       keepaliveCountMax: 3,

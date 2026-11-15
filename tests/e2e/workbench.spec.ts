@@ -359,6 +359,70 @@ test('real SSH handshake, trust prompt, encrypted credential and PTY data', asyn
     await expect(changedTrust.getByRole('button', { name: '信任并继续' })).toBeDisabled()
     await changedTrust.getByRole('button', { name: '取消', exact: true }).click()
     await expect(page.getByText('连接失败', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '关闭标签 协议测试服务器', exact: true }).click()
+
+    // Password authentication failure should prompt to re-enter password rather than failing permanently
+    await new Promise<void>((resolve) => replacement!.close(() => resolve()))
+    replacement = new Server({ hostKeys: [hostKey] }, (client) => {
+      connections.add(client)
+      client.on('error', () => {})
+      client.on('close', () => connections.delete(client))
+      client.on('authentication', (context) =>
+        context.method === 'password' && context.username === 'orbit-test' && context.password === password
+          ? context.accept()
+          : context.reject()
+      )
+      client.on('ready', () =>
+        client.on('session', (accept) => {
+          const session = accept()
+          session.on('pty', (acceptPty) => acceptPty?.())
+          session.on('window-change', (acceptResize) => acceptResize?.())
+          session.on('shell', (acceptShell) => {
+            const stream = acceptShell()
+            stream.write('ORBIT_SSH_RETRY_OK\r\n')
+            stream.on('data', (data: Buffer) => stream.write(data))
+          })
+        })
+      )
+    })
+    await new Promise<void>((resolve) => replacement!.listen(port, '127.0.0.1', resolve))
+
+    await createHost(page, '密码重试服务器', port, 'wrong-saved-password')
+    await page.getByRole('button', { name: '连接 密码重试服务器', exact: true }).click()
+    const retryPrompt1 = page.getByRole('dialog', { name: '重新输入密码 · 密码重试服务器' })
+    await expect(retryPrompt1).toBeVisible()
+    await expect(retryPrompt1.getByRole('alert')).toContainText('SSH 密码认证失败')
+    await checkClasses(page)
+    await page.screenshot({ path: info.outputPath('ssh-auth-retry-prompt.png') })
+
+    // Submitting another wrong password should remind again instead of ending in permanent failure
+    await retryPrompt1.getByLabel('本次连接密码', { exact: true }).fill('wrong-second-try')
+    await retryPrompt1.getByRole('button', { name: '重新连接', exact: true }).click()
+    const retryPrompt2 = page.getByRole('dialog', { name: '重新输入密码 · 密码重试服务器' })
+    await expect(retryPrompt2).toBeVisible()
+    await retryPrompt2.getByRole('button', { name: '取消', exact: true }).click()
+    await expect(page.getByRole('button', { name: '输入密码重试' })).toBeVisible()
+
+    // Re-opening from the retry button accepts the right password and can update the saved credential
+    await page.getByRole('button', { name: '输入密码重试' }).click()
+    const retryPrompt3 = page.getByRole('dialog', { name: '重新输入密码 · 密码重试服务器' })
+    await expect(retryPrompt3).toBeVisible()
+    await retryPrompt3.getByLabel('本次连接密码', { exact: true }).fill(password)
+    const saveNewCheckbox = retryPrompt3.getByLabel(/保存密码到此主机/)
+    const canSavePassword = await saveNewCheckbox.isVisible()
+    if (canSavePassword) {
+      await saveNewCheckbox.check()
+    }
+    await retryPrompt3.getByRole('button', { name: '重新连接', exact: true }).click()
+    await expect(page.locator('.xterm-rows')).toContainText('ORBIT_SSH_RETRY_OK')
+    await page.getByRole('button', { name: '关闭标签 密码重试服务器', exact: true }).click()
+
+    // Subsequent connection succeeds without prompt when the updated password was saved
+    if (canSavePassword) {
+      await page.getByRole('button', { name: '连接 密码重试服务器', exact: true }).click()
+      await expect(page.locator('.xterm-rows')).toContainText('ORBIT_SSH_RETRY_OK')
+      await expect(page.getByRole('dialog')).toHaveCount(0)
+    }
   } finally {
     for (const connection of connections) connection.end()
     if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()))

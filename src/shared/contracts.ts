@@ -183,6 +183,7 @@ export type TerminalEvent =
       state: 'connecting' | 'verifying' | 'authenticating' | 'running' | 'exited' | 'error'
       message?: string
       exitCode?: number
+      reason?: 'auth-failed'
     }
 export const netProbeSchema = z
   .object({

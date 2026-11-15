@@ -61,6 +61,8 @@ const props = defineProps<{
   profileId?: string
   hostId?: string
   password?: string
+  retrySeq?: number
+  authCancelledSeq?: number
   visible: boolean
   canUnsplit?: boolean
   isDragging?: boolean
@@ -70,6 +72,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   consumed: []
   state: [state: string]
+  authFailed: [message: string]
   unsplit: []
   closePane: []
   headerDragStart: [event: DragEvent]
@@ -84,6 +87,7 @@ const status = ref<'connecting' | 'verifying' | 'authenticating' | 'running' | '
   'connecting'
 )
 const message = ref('')
+const lastErrorWasAuth = ref(false)
 const tunnelDrawerOpen = ref(false)
 const quickFwdType = ref<'L' | 'R' | 'D'>('L')
 const quickFwdListenPort = ref(1080)
@@ -202,7 +206,29 @@ const paneCssVars = computed(() => ({
   '--pane-border-glow': activeThemePreset.value.borderGlow
 }))
 
-const updateState = (event: Extract<TerminalEvent, { type: 'state' }>) => {
+const updateState = (event: Extract<TerminalEvent, { type: 'state' }>, silent = false) => {
+  if (event.reason === 'auth-failed' && props.kind === 'ssh' && props.hostId) {
+    lastErrorWasAuth.value = true
+    message.value = event.message ?? 'SSH 密码认证失败，请重新输入登录密码。'
+    if (hudTimer) {
+      window.clearTimeout(hudTimer)
+      hudTimer = undefined
+    }
+    hudMounted.value = false
+    hudFading.value = false
+    if (silent) {
+      status.value = 'error'
+      emit('state', 'error')
+      return
+    }
+    status.value = 'authenticating'
+    emit('state', 'authenticating')
+    emit('authFailed', message.value)
+    return
+  }
+  if (event.state === 'running' || event.state === 'connecting' || event.state === 'verifying') {
+    lastErrorWasAuth.value = false
+  }
   status.value = event.state
   message.value = event.message ?? ''
   if (props.kind === 'ssh') {
@@ -396,6 +422,7 @@ function disposeHandle() {
 async function mountAndConnect() {
   disposeHandle()
   if (!surface.value) return
+  lastErrorWasAuth.value = false
   status.value = 'connecting'
   message.value = ''
   hudMounted.value = props.kind === 'ssh'
@@ -410,7 +437,7 @@ async function mountAndConnect() {
   })
   const alreadyConnected = handle.isConnected()
   if (alreadyConnected) {
-    updateState(handle.getLastState())
+    updateState(handle.getLastState(), true)
   }
   dims.value = handle.getDimensions()
   if (props.visible) activeTerminalDimensions.value = dims.value
@@ -467,11 +494,22 @@ async function mountAndConnect() {
       await handle.connect({ kind: 'ssh', hostId: props.hostId, password: props.password })
     }
   } catch (error) {
-    updateState({
-      type: 'state',
-      state: 'error',
-      message: error instanceof Error ? error.message : '连接失败'
-    })
+    const errorMessage = error instanceof Error ? error.message : '连接失败'
+    if (props.kind === 'ssh' && props.hostId && errorMessage.includes('请输入本次连接密码')) {
+      lastErrorWasAuth.value = true
+      status.value = 'authenticating'
+      message.value = errorMessage
+      hudMounted.value = false
+      hudFading.value = false
+      emit('state', 'authenticating')
+      emit('authFailed', errorMessage)
+    } else {
+      updateState({
+        type: 'state',
+        state: 'error',
+        message: errorMessage
+      })
+    }
   } finally {
     emit('consumed')
   }
@@ -480,6 +518,13 @@ async function mountAndConnect() {
 async function reconnectTerminal() {
   contextMenu.value = null
   if (props.kind === 'ssh' && !props.hostId) return
+  if (
+    props.kind === 'ssh' &&
+    (lastErrorWasAuth.value || (paneHost.value?.auth === 'password' && !paneHost.value.hasPassword))
+  ) {
+    emit('authFailed', message.value || '请重新输入 SSH 登录密码。')
+    return
+  }
   await mountAndConnect()
 }
 
@@ -519,6 +564,29 @@ watch(
   (value) => {
     screenReader.value = value
     if (handle) handle.terminal.options.screenReaderMode = value
+  }
+)
+
+watch(
+  () => props.retrySeq,
+  (next, prev) => {
+    if (next && next !== prev) {
+      void mountAndConnect()
+    }
+  }
+)
+
+watch(
+  () => props.authCancelledSeq,
+  (next, prev) => {
+    if (!next || next === prev) return
+    if (lastErrorWasAuth.value) {
+      updateState({
+        type: 'state',
+        state: 'error',
+        message: '已取消输入密码，SSH 密码认证未完成，请点击右侧按钮重新输入密码。'
+      })
+    }
   }
 )
 
@@ -860,7 +928,7 @@ onBeforeUnmount(() => {
         @click="reconnectTerminal"
       >
         <RotateCw :size="12" />
-        重新连接
+        {{ lastErrorWasAuth ? '输入密码重试' : '重新连接' }}
       </button>
     </div>
     <div

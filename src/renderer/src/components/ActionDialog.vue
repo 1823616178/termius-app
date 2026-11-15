@@ -6,15 +6,19 @@ defineProps<{
   kind: 'password' | 'trust' | 'delete'
   title: string
   description: string
+  alertMessage?: string
   fingerprint?: string
   previous?: string
+  encryptionAvailable?: boolean
+  hasSavedPassword?: boolean
   busy?: boolean
 }>()
-const emit = defineEmits<{ confirm: [value: string]; cancel: [] }>()
+const emit = defineEmits<{ confirm: [value: string, savePassword?: boolean]; cancel: [] }>()
 
 const titleId = useId()
 const root = ref<HTMLDialogElement>()
 const password = ref('')
+const savePassword = ref(false)
 const field = ref<HTMLInputElement>()
 const acknowledge = ref(false)
 const previousFocus = document.activeElement as HTMLElement | null
@@ -27,6 +31,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   password.value = ''
+  savePassword.value = false
   if (previousFocus?.isConnected) previousFocus.focus()
 })
 </script>
@@ -38,23 +43,36 @@ onBeforeUnmount(() => {
     :aria-labelledby="titleId"
     @cancel.prevent="!busy && emit('cancel')"
   >
-    <form class="container_shared_action_body_form" @submit.prevent="emit('confirm', password)">
+    <form class="container_shared_action_body_form" @submit.prevent="emit('confirm', password, savePassword)">
       <span class="container_shared_action_header_icon">
-        <TriangleAlert v-if="kind === 'delete' || previous" :size="24" />
+        <TriangleAlert v-if="kind === 'delete' || previous || alertMessage" :size="24" />
         <ShieldCheck v-else :size="24" />
       </span>
       <h2 :id="titleId" class="container_shared_action_header_title">{{ title }}</h2>
+      <p v-if="alertMessage" class="container_shared_action_body_alert" role="alert">
+        {{ alertMessage }}
+      </p>
       <p class="container_shared_action_body_description">{{ description }}</p>
-      <label v-if="kind === 'password'" class="container_shared_action_body_password-label">
-        本次连接密码
-        <input
-          ref="field"
-          v-model="password"
-          class="container_shared_action_body_password-input"
-          type="password"
-          autocomplete="current-password"
-        />
-      </label>
+      <template v-if="kind === 'password'">
+        <label class="container_shared_action_body_password-label">
+          本次连接密码
+          <input
+            ref="field"
+            v-model="password"
+            class="container_shared_action_body_password-input"
+            type="password"
+            autocomplete="current-password"
+          />
+        </label>
+        <label v-if="encryptionAvailable" class="container_shared_action_body_save-label">
+          <input v-model="savePassword" class="container_shared_action_body_save-input" type="checkbox" />
+          {{
+            hasSavedPassword
+              ? '更新并保存密码到此主机（Windows 凭据保护）'
+              : '保存密码到此主机（Windows 凭据保护）'
+          }}
+        </label>
+      </template>
       <template v-if="kind === 'trust'">
         <span class="container_shared_action_body_fingerprint-label">服务器公钥指纹</span>
         <code class="container_shared_action_body_fingerprint">{{ fingerprint }}</code>
@@ -89,7 +107,17 @@ onBeforeUnmount(() => {
           :data-primary="kind !== 'delete'"
           :disabled="busy || (!!previous && !acknowledge)"
         >
-          {{ busy ? '处理中…' : kind === 'trust' ? '信任并继续' : kind === 'delete' ? '删除配置' : '连接' }}
+          {{
+            busy
+              ? '处理中…'
+              : kind === 'trust'
+                ? '信任并继续'
+                : kind === 'delete'
+                  ? '删除配置'
+                  : alertMessage
+                    ? '重新连接'
+                    : '连接'
+          }}
         </button>
       </footer>
     </form>
@@ -129,12 +157,30 @@ onBeforeUnmount(() => {
   line-height: 1.8;
   overflow-wrap: anywhere;
 }
+.container_shared_action_body_alert {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--color-warning-soft);
+  border: 1px solid rgba(245, 196, 107, 0.35);
+  color: var(--color-warning);
+  font-size: 13px;
+  line-height: 1.6;
+}
 .container_shared_action_body_password-label {
   display: flex;
   flex-direction: column;
   gap: 8px;
   font-size: 12px;
   color: var(--color-text-secondary);
+}
+.container_shared_action_body_save-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
 }
 .container_shared_action_body_fingerprint,
 .container_shared_action_body_previous {
