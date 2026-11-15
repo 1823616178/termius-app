@@ -180,6 +180,8 @@ function contrastTextForAccent(accentHex: string): string {
 function buildUiThemeVariables(c: UiThemeColors): Record<string, string> {
   const [ar, ag, ab] = parseHexRgb(c.accentPrimary, [212, 175, 99])
   const [sr, sg, sb] = parseHexRgb(c.accentSecondary, [94, 196, 166])
+  const wine = mixHex('#b66c24', c.accentPrimary, 0.18)
+  const [wr, wg, wb] = parseHexRgb(wine, [182, 108, 36])
 
   return {
     '--color-app-bg': c.appBg,
@@ -189,7 +191,9 @@ function buildUiThemeVariables(c: UiThemeColors): Record<string, string> {
     '--color-surface-tab': mixHex(c.surface1, c.appBg, 0.35),
     '--color-surface-canvas': c.appBg,
     '--color-surface-terminal': c.appBg,
+    '--color-surface-rail': mixHex(c.appBg, c.surface1, 0.45),
     '--color-terminal-bg': c.appBg,
+    '--color-scrollbar': mixHex(c.surface2, c.textPrimary, 0.2),
     '--color-border': mixHex(c.surface2, c.accentPrimary, 0.16),
     '--color-border-subtle': mixHex(c.surface1, c.surface2, 0.55),
     '--color-border-control': mixHex(c.surface2, c.accentPrimary, 0.25),
@@ -211,35 +215,55 @@ function buildUiThemeVariables(c: UiThemeColors): Record<string, string> {
     '--color-seal': '#c94c38',
     '--color-seal-soft': 'rgba(201, 76, 56, 0.16)',
     '--color-seal-ring': 'rgba(201, 76, 56, 0.44)',
-    '--surface-card-gradient': `linear-gradient(162deg, ${mixHex(c.surface2, c.accentPrimary, 0.06)}, ${c.surface1} 58%, ${darkenHex(c.appBg, 0.1)})`,
-    '--shadow-3d-card': `0 12px 26px -6px rgba(0, 0, 0, 0.62), 0 0 0 1px rgba(${ar}, ${ag}, ${ab}, 0.14), inset 0 1px 0 rgba(255, 244, 218, 0.08)`,
-    '--shadow-3d-dialog': `0 26px 64px rgba(0, 0, 0, 0.78), 0 0 0 1px rgba(${ar}, ${ag}, ${ab}, 0.24), inset 0 1px 0 rgba(255, 244, 218, 0.11)`
+    '--color-scene-wine': wine,
+    '--color-scene-wine-soft': `rgba(${wr}, ${wg}, ${wb}, 0.12)`,
+    '--color-scene-steel': mixHex(c.accentSecondary, c.textPrimary, 0.64),
+    '--color-scene-metal-soft': `rgba(${ar}, ${ag}, ${ab}, 0.12)`,
+    '--color-scene-mist': `rgba(${sr}, ${sg}, ${sb}, 0.09)`,
+    '--surface-card-gradient': `linear-gradient(155deg, ${mixHex(c.surface2, c.accentPrimary, 0.09)}, ${c.surface1} 54%, ${darkenHex(c.appBg, 0.14)})`,
+    '--shadow-3d-card': `0 14px 32px -10px rgba(0, 0, 0, 0.72), 0 0 0 1px rgba(${ar}, ${ag}, ${ab}, 0.13), inset 0 1px 0 rgba(255, 244, 218, 0.09)`,
+    '--shadow-3d-dialog': `0 28px 72px rgba(0, 0, 0, 0.8), 0 0 0 1px rgba(${ar}, ${ag}, ${ab}, 0.24), inset 0 1px 0 rgba(255, 244, 218, 0.12)`
   }
 }
 
 export function resolveUiThemeVariables(
   themeId: UiThemeId,
-  custom?: Partial<UiThemeColors>
+  custom?: Partial<UiThemeColors>,
+  contrast: 'standard' | 'high' = 'standard'
 ): Record<string, string> {
-  if (themeId !== 'custom') {
-    const preset = UI_THEME_PRESETS.find((item) => item.id === themeId) ?? UI_THEME_PRESETS[0]!
-    return buildUiThemeVariables(preset.colors)
+  const colors =
+    themeId === 'custom'
+      ? {
+          appBg: normalizeHexColor(custom?.appBg ?? '', DEFAULT_CUSTOM_COLORS.appBg),
+          surface1: normalizeHexColor(custom?.surface1 ?? '', DEFAULT_CUSTOM_COLORS.surface1),
+          surface2: normalizeHexColor(custom?.surface2 ?? '', DEFAULT_CUSTOM_COLORS.surface2),
+          accentPrimary: normalizeHexColor(custom?.accentPrimary ?? '', DEFAULT_CUSTOM_COLORS.accentPrimary),
+          accentSecondary: normalizeHexColor(
+            custom?.accentSecondary ?? '',
+            DEFAULT_CUSTOM_COLORS.accentSecondary
+          ),
+          textPrimary: normalizeHexColor(custom?.textPrimary ?? '', DEFAULT_CUSTOM_COLORS.textPrimary)
+        }
+      : (UI_THEME_PRESETS.find((item) => item.id === themeId) ?? UI_THEME_PRESETS[0]!).colors
+  const variables = buildUiThemeVariables(colors)
+  if (contrast === 'high') {
+    Object.assign(variables, {
+      '--color-scene-steel': '#e8f0e9',
+      '--color-scene-metal-soft': 'rgba(234, 200, 122, 0.2)',
+      '--color-scene-mist': 'rgba(127, 224, 195, 0.14)'
+    })
   }
-
-  return buildUiThemeVariables({
-    appBg: normalizeHexColor(custom?.appBg ?? '', DEFAULT_CUSTOM_COLORS.appBg),
-    surface1: normalizeHexColor(custom?.surface1 ?? '', DEFAULT_CUSTOM_COLORS.surface1),
-    surface2: normalizeHexColor(custom?.surface2 ?? '', DEFAULT_CUSTOM_COLORS.surface2),
-    accentPrimary: normalizeHexColor(custom?.accentPrimary ?? '', DEFAULT_CUSTOM_COLORS.accentPrimary),
-    accentSecondary: normalizeHexColor(custom?.accentSecondary ?? '', DEFAULT_CUSTOM_COLORS.accentSecondary),
-    textPrimary: normalizeHexColor(custom?.textPrimary ?? '', DEFAULT_CUSTOM_COLORS.textPrimary)
-  })
+  return variables
 }
 
 export function applyUiThemeToDocument(themeId: UiThemeId, custom?: Partial<UiThemeColors>): void {
   if (typeof document === 'undefined') return
   const root = document.documentElement
-  const vars = resolveUiThemeVariables(themeId, custom)
+  const vars = resolveUiThemeVariables(
+    themeId,
+    custom,
+    root.dataset.contrast === 'high' ? 'high' : 'standard'
+  )
   for (const [key, value] of Object.entries(vars)) {
     root.style.setProperty(key, value)
   }

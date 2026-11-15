@@ -145,20 +145,42 @@ const avatarTitle = computed(() => {
   padding: 14px 0 12px;
   gap: 9px;
   border-right: 1px solid var(--color-border);
-  background: var(--color-surface-rail);
+  background:
+    linear-gradient(180deg, var(--color-accent-primary-soft), transparent 22%), var(--color-surface-rail);
+  box-shadow: inset -1px 0 0 rgba(255, 244, 218, 0.025);
   button {
+    position: relative;
     width: 38px;
     height: 38px;
     padding: 0;
+    overflow: hidden;
     color: var(--color-text-muted);
     transition:
       background 140ms,
       color 140ms,
       transform 140ms,
       box-shadow 140ms;
+    &::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(
+        115deg,
+        transparent 28%,
+        var(--color-scene-metal-soft) 48%,
+        transparent 68%
+      );
+      transform: translateX(-110%);
+      transition: transform 240ms ease-out;
+      pointer-events: none;
+    }
     &:hover:not(:disabled) {
       transform: translateY(-1px);
+      color: var(--color-accent-primary-bright);
       box-shadow: var(--shadow-3d-sm);
+      &::after {
+        transform: translateX(110%);
+      }
     }
     &[aria-current='page'] {
       color: var(--color-accent-primary);
@@ -166,7 +188,7 @@ const avatarTitle = computed(() => {
       box-shadow:
         inset 2px 0 var(--color-accent-primary),
         inset 0 1px 0 rgba(255, 244, 218, 0.12),
-        0 6px 14px -4px var(--color-accent-primary-glow);
+        0 8px 20px -6px var(--color-accent-primary-glow);
     }
   }
 }

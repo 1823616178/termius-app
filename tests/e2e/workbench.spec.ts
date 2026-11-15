@@ -193,8 +193,8 @@ test('homepage sword realm, border flight, resize and motion tiers', async ({ or
     BrowserWindow.getAllWindows()[0]!.setSize(1100, 700)
   })
   await expect.poll(() => flight.getAttribute('style')).not.toBe(initialPath)
-  await page.waitForTimeout(11_500)
-  await page.screenshot({ path: info.outputPath('sword-gathering.png') })
+  await expect(stage).toHaveAttribute('data-ready', 'true')
+  await page.screenshot({ path: info.outputPath('sword-resized.png') })
 
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await page.getByRole('combobox', { name: '动效与性能档' }).click()

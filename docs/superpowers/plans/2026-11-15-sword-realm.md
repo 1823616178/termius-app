@@ -13,6 +13,7 @@
 ### Task 1: Deterministic sword and border motion
 
 **Files:**
+
 - Create: `src/renderer/src/services/sword-motion.ts`
 - Create: `src/renderer/src/services/border-flight.ts`
 - Test: `tests/unit/sword-motion.test.ts`
@@ -22,7 +23,11 @@
 
 ```ts
 import { describe, expect, it } from 'vitest'
-import { formationCount, gatheringStrength, sampleSwordPose } from '../../src/renderer/src/services/sword-motion'
+import {
+  formationCount,
+  gatheringStrength,
+  sampleSwordPose
+} from '../../src/renderer/src/services/sword-motion'
 
 describe('sword formation choreography', () => {
   it('uses bounded full and light instance counts', () => {
@@ -96,9 +101,11 @@ git commit -m "feat: add deterministic sword formation motion"
 ### Task 2: Lazy real 3D scene
 
 **Files:**
+
 - Modify: `package.json`
 - Modify: `yarn.lock`
 - Create: `src/renderer/src/services/sword-scene.ts`
+- Create: `src/renderer/src/services/sword-models.ts`
 - Replace: `src/renderer/src/components/OrbitStage3D.vue`
 
 - [ ] **Step 1: Install exact Three.js runtime and type packages**
@@ -145,8 +152,10 @@ Stage only new scene/component files, the full lockfile, and the dependency-only
 ### Task 3: Border sword and homepage composition
 
 **Files:**
+
 - Create: `src/renderer/src/components/BorderFlyingSword.vue`
 - Modify: `src/renderer/src/pages/WorkspacePage.vue`
+- Test: `tests/e2e/workbench.spec.ts`
 
 - [ ] **Step 1: Implement one semantic DOM flying sword**
 
@@ -175,10 +184,12 @@ git commit -m "feat: compose cinematic sword realm homepage"
 ### Task 4: Theme refinement and documentation
 
 **Files:**
+
 - Modify: `src/renderer/src/styles/_tokens.scss`
 - Modify: `src/renderer/src/styles/global.scss`
 - Modify: `src/renderer/src/services/ui-themes.ts`
 - Modify: `src/renderer/src/components/NavRail.vue`
+- Test: `tests/unit/ui-theme.test.ts`
 - Modify: `doc/03-UI-DESIGN-SYSTEM.md`
 - Modify: `doc/07-IMPLEMENTATION-STATUS.md`
 

@@ -75,6 +75,10 @@ function syncScene(): void {
   resizeScene()
 }
 
+function canAnimate(): boolean {
+  return !disposed && !failed.value && !motionDisabled.value && props.active && !props.paused && visible
+}
+
 function stopLoop(): void {
   if (rafId) cancelAnimationFrame(rafId)
   rafId = 0
@@ -93,7 +97,7 @@ function tick(now: number): void {
 }
 
 function ensureRunning(): void {
-  if (disposed || failed.value || motionDisabled.value || !props.active || props.paused || !visible) {
+  if (!canAnimate()) {
     stopLoop()
     return
   }
@@ -113,16 +117,18 @@ async function initializeScene(): Promise<void> {
   loading = true
   try {
     const { createSwordScene } = await import('../services/sword-scene')
-    if (disposed || !canvas.value || motionDisabled.value || failed.value) return
+    if (!canvas.value || !canAnimate()) return
     scene = createSwordScene(canvas.value, sceneOptions())
     ready.value = true
     await nextTick()
-    if (disposed || !scene) return
+    if (!scene || !canAnimate()) return
     syncScene()
     scene.render(elapsedSeconds)
     ensureRunning()
   } catch (error) {
     console.warn('3D sword scene unavailable', error)
+    scene?.dispose()
+    scene = null
     failed.value = true
     ready.value = false
     stopLoop()
@@ -172,6 +178,7 @@ function onPointerLeave(): void {
 }
 
 onMounted(() => {
+  visible = document.visibilityState !== 'hidden'
   mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
   readPreferences()
   mediaQuery.addEventListener('change', handleMotionChange)

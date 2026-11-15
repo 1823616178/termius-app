@@ -17,6 +17,8 @@
   --color-border: #272d27;
   --color-border-subtle: #1d231e;
   --color-border-control: #353b31;
+  --color-surface-rail: #0d1210;
+  --color-scrollbar: #3b4138;
   --color-text-primary: #efe9da;
   --color-text-secondary: #bfb7a4;
   --color-text-muted: #827b6d;
@@ -35,6 +37,11 @@
   --color-seal: #c94c38;
   --color-seal-soft: rgba(201, 76, 56, 0.16);
   --color-seal-ring: rgba(201, 76, 56, 0.44);
+  --color-scene-wine: #b66c24;
+  --color-scene-wine-soft: rgba(182, 108, 36, 0.12);
+  --color-scene-steel: #b8ccc3;
+  --color-scene-metal-soft: rgba(239, 221, 180, 0.12);
+  --color-scene-mist: rgba(94, 196, 166, 0.09);
   --color-success: #5ec4a6;
   --color-warning: #e0ad58;
   --color-warning-soft: #e0ad581f;
@@ -61,6 +68,7 @@
   --z-floating: 200;
   --z-modal: 300;
   --z-tooltip: 400;
+  --z-toast: 500;
 }
 
 [data-contrast='high'] {
@@ -82,4 +90,7 @@
   --color-accent-primary-bright: #faecd0;
   --color-accent-secondary: #7fe0c3;
   --color-seal: #e26450;
+  --color-scene-steel: #e8f0e9;
+  --color-scene-metal-soft: rgba(234, 200, 122, 0.2);
+  --color-scene-mist: rgba(127, 224, 195, 0.14);
 }

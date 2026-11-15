@@ -36,20 +36,64 @@ interface Trail {
 const UP = new THREE.Vector3(0, 1, 0)
 const GLYPHS = ['☰', '☱', '☲', '☳', '☴', '☵', '☶', '☷']
 
+function disposeSceneResources(scene: THREE.Scene, renderer: THREE.WebGLRenderer): void {
+  const geometries = new Set<THREE.BufferGeometry>()
+  const materials = new Set<THREE.Material>()
+  const textures = new Set<THREE.Texture>()
+  scene.traverse((object) => {
+    const renderable = object as unknown as {
+      geometry?: THREE.BufferGeometry
+      material?: THREE.Material | THREE.Material[]
+    }
+    if (renderable.geometry) geometries.add(renderable.geometry)
+    if (renderable.material) {
+      for (const material of Array.isArray(renderable.material)
+        ? renderable.material
+        : [renderable.material]) {
+        materials.add(material)
+      }
+    }
+    if (object instanceof THREE.InstancedMesh) object.dispose()
+  })
+  for (const material of materials) {
+    for (const value of Object.values(material)) {
+      if (value instanceof THREE.Texture) textures.add(value)
+    }
+  }
+  geometries.forEach((geometry) => geometry.dispose())
+  materials.forEach((material) => material.dispose())
+  textures.forEach((texture) => texture.dispose())
+  renderer.dispose()
+  renderer.forceContextLoss()
+  scene.clear()
+}
+
 export function createSwordScene(canvas: HTMLCanvasElement, initialOptions: SwordSceneOptions): SwordScene {
-  let options = { ...initialOptions, palette: { ...initialOptions.palette } }
   const renderer = new THREE.WebGLRenderer({
     canvas,
     alpha: true,
     antialias: true,
     powerPreference: 'high-performance'
   })
+  const scene = new THREE.Scene()
+  try {
+    return buildSwordScene(renderer, scene, initialOptions)
+  } catch (error) {
+    disposeSceneResources(scene, renderer)
+    throw error
+  }
+}
+
+function buildSwordScene(
+  renderer: THREE.WebGLRenderer,
+  scene: THREE.Scene,
+  initialOptions: SwordSceneOptions
+): SwordScene {
+  let options = { ...initialOptions, palette: { ...initialOptions.palette } }
   renderer.outputColorSpace = THREE.SRGBColorSpace
   renderer.toneMapping = THREE.ACESFilmicToneMapping
   renderer.toneMappingExposure = 1.18
   renderer.setClearColor(0x000000, 0)
-
-  const scene = new THREE.Scene()
   scene.fog = new THREE.FogExp2('#080b0a', 0.026)
   const camera = new THREE.PerspectiveCamera(42, 1, 0.1, 60)
   camera.position.set(0, 1.1, 9.2)
@@ -369,35 +413,7 @@ export function createSwordScene(canvas: HTMLCanvasElement, initialOptions: Swor
     dispose() {
       if (disposed) return
       disposed = true
-      const geometries = new Set<THREE.BufferGeometry>()
-      const materials = new Set<THREE.Material>()
-      const textures = new Set<THREE.Texture>()
-      scene.traverse((object) => {
-        const renderable = object as unknown as {
-          geometry?: THREE.BufferGeometry
-          material?: THREE.Material | THREE.Material[]
-        }
-        if (renderable.geometry) geometries.add(renderable.geometry)
-        if (renderable.material) {
-          for (const material of Array.isArray(renderable.material)
-            ? renderable.material
-            : [renderable.material]) {
-            materials.add(material)
-          }
-        }
-      })
-      for (const material of materials) {
-        for (const value of Object.values(material)) {
-          if (value instanceof THREE.Texture) textures.add(value)
-        }
-      }
-      geometries.forEach((geometry) => geometry.dispose())
-      materials.forEach((material) => material.dispose())
-      textures.forEach((texture) => texture.dispose())
-      swords.dispose()
-      renderer.dispose()
-      renderer.forceContextLoss()
-      scene.clear()
+      disposeSceneResources(scene, renderer)
     }
   }
 }
