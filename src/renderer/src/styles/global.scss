@@ -55,27 +55,37 @@ button {
     background: linear-gradient(180deg, var(--color-accent-primary-hover), var(--color-accent-primary));
     color: var(--color-text-on-accent);
     font-weight: 600;
+    border-color: var(--color-accent-primary-ring);
     box-shadow:
-      0 6px 16px -4px rgba(167, 139, 250, 0.45),
-      inset 0 1px 0 rgba(255, 255, 255, 0.35);
+      0 6px 16px -4px var(--color-accent-primary-glow),
+      inset 0 1px 0 rgba(255, 248, 224, 0.42);
     &:hover:not(:disabled) {
-      background: linear-gradient(180deg, #cbb8ff, var(--color-accent-primary-hover));
+      background: linear-gradient(
+        180deg,
+        var(--color-accent-primary-bright),
+        var(--color-accent-primary-hover)
+      );
       transform: translateY(-1px);
       box-shadow:
-        0 8px 20px -4px rgba(167, 139, 250, 0.58),
-        inset 0 1px 0 rgba(255, 255, 255, 0.45);
+        0 9px 20px -4px var(--color-accent-primary-glow),
+        inset 0 1px 0 rgba(255, 248, 224, 0.56);
     }
     &:active:not(:disabled) {
       transform: translateY(1px);
       box-shadow:
-        0 2px 6px -2px rgba(167, 139, 250, 0.35),
-        inset 0 1px 2px rgba(21, 16, 33, 0.25);
+        0 2px 6px -2px var(--color-accent-primary-glow),
+        inset 0 1px 2px rgba(23, 18, 9, 0.35);
     }
   }
   &[data-danger='true'] {
-    background: var(--color-danger-soft);
+    background: var(--color-seal-soft);
+    border-color: var(--color-seal-ring);
     color: var(--color-error);
   }
+}
+h1,
+h2 {
+  font-family: var(--font-display);
 }
 input,
 select,
@@ -83,7 +93,7 @@ textarea {
   color: var(--color-text-primary);
   background: var(--color-app-bg);
   border: 1px solid var(--color-border-control);
-  border-radius: 6px;
+  border-radius: var(--radius-control);
   padding: 8px 11px;
   min-width: 0;
   outline: none;

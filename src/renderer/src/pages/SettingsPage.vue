@@ -63,7 +63,7 @@ function resetCustomUiTheme(): void {
 
 <template>
   <section v-if="page === 'settings'" class="container_settings_page_body_base">
-    <span class="container_settings_page_header_eyebrow">MAKE IT YOURS · 五行八卦美学工坊</span>
+    <span class="container_settings_page_header_eyebrow">丹青剑意 · 五行八卦美学工坊</span>
     <h2 class="container_settings_page_header_title">设置</h2>
 
     <section class="container_settings_uitheme_body_section">
@@ -126,7 +126,7 @@ function resetCustomUiTheme(): void {
             启用自定义配色
           </button>
           <button class="container_settings_customui_reset_btn" type="button" @click="resetCustomUiTheme">
-            恢复默认太极紫微
+            恢复默认玄墨古剑
           </button>
         </div>
         <div class="container_settings_customui_pickers_grid">
@@ -376,8 +376,8 @@ function resetCustomUiTheme(): void {
         <img class="container_settings_about_body_icon" :src="orbitIcon" alt="" />
         <div class="container_settings_about_body_meta">
           <p class="container_settings_about_body_version">
-            Graphite Orbit {{ bootstrap?.versions.app }} · Electron {{ bootstrap?.versions.electron }} · Node
-            {{ bootstrap?.versions.node }}
+            玄剑天枢 · Graphite Orbit {{ bootstrap?.versions.app }} · Electron
+            {{ bootstrap?.versions.electron }} · Node {{ bootstrap?.versions.node }}
           </p>
           <p class="container_settings_about_body_scope">
             已开放：本地主机管理、本地终端、基础 SSH 密码与 Agent 连接、主机指纹确认、标签分屏、实时 3D
@@ -603,8 +603,9 @@ function resetCustomUiTheme(): void {
 .container_settings_theme_card_badge {
   font-size: 10px;
   padding: 1px 6px;
-  border-radius: 4px;
-  background: rgba(167, 139, 250, 0.14);
+  border-radius: 3px;
+  background: var(--color-accent-primary-soft);
+  border: 1px solid var(--color-accent-primary-ring);
   color: var(--color-accent-primary-hover);
 }
 .container_settings_theme_card_swatches {
@@ -649,7 +650,7 @@ function resetCustomUiTheme(): void {
   gap: 7px;
   padding: 11px 12px;
   text-align: left;
-  border-radius: 10px;
+  border-radius: 6px;
   border: 1px solid var(--color-border);
   background: var(--color-surface-1);
   &[aria-pressed='true'] {
@@ -675,9 +676,10 @@ function resetCustomUiTheme(): void {
   margin-left: auto;
   font-size: 10px;
   padding: 1px 6px;
-  border-radius: 999px;
-  background: var(--color-accent-primary-soft);
-  color: var(--color-accent-primary-hover);
+  border-radius: 3px;
+  border: 1px solid var(--color-seal-ring);
+  background: var(--color-seal-soft);
+  color: #f3c6be;
 }
 [class*='container_settings_uitheme_card_desc'] {
   margin: 0;
@@ -751,8 +753,8 @@ function resetCustomUiTheme(): void {
   width: 64px;
   height: 64px;
   flex-shrink: 0;
-  border-radius: 15px;
-  filter: drop-shadow(0 8px 18px rgba(167, 139, 250, 0.25));
+  border-radius: 10px;
+  filter: drop-shadow(0 8px 18px var(--color-accent-primary-glow));
   transition: transform 220ms cubic-bezier(0.22, 1, 0.36, 1);
   &:hover {
     transform: perspective(400px) rotateY(-12deg) rotateX(8deg) scale(1.04);

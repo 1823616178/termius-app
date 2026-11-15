@@ -209,7 +209,7 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
   <section v-if="page === 'tunnels'" class="container_tunnels_page_body_base">
     <header class="container_tunnels_page_header_base">
       <div class="container_tunnels_page_header_copy">
-        <span class="container_tunnels_page_header_eyebrow">PORT FORWARDING · NETWORK PROBE</span>
+        <span class="container_tunnels_page_header_eyebrow">周天经脉 · 凌空暗渡</span>
         <h2 class="container_tunnels_page_header_title">端口转发与网络探测中心</h2>
         <p class="container_tunnels_page_header_description">
           支持本地转发 (-L)、远端转发 (-R) 与 SOCKS5 动态代理 (-D)，并可随时检测本地端口占用与远端 TCP

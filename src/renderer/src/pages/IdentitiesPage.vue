@@ -26,7 +26,7 @@ const c = (base: string, token: string) => instanceClass(base, windowInstance(to
 
 const editingGroupId = ref<string | null>(null)
 const groupName = ref('')
-const groupColor = ref('#a78bfa')
+const groupColor = ref('#d4af63')
 const groupSaving = ref(false)
 const knownHostFilter = ref('')
 
@@ -50,13 +50,13 @@ const filteredKnownHosts = computed(() => {
 function startEditGroup(item: SyncGroup): void {
   editingGroupId.value = item.id
   groupName.value = item.name
-  groupColor.value = item.color || '#a78bfa'
+  groupColor.value = item.color || '#d4af63'
 }
 
 function resetGroupForm(): void {
   editingGroupId.value = null
   groupName.value = ''
-  groupColor.value = '#a78bfa'
+  groupColor.value = '#d4af63'
 }
 
 async function handleSaveGroup(): Promise<void> {
@@ -84,7 +84,7 @@ function jumpToHostsGroup(groupNameText: string): void {
   <section v-if="page === 'identities'" class="container_identities_page_body_base">
     <header class="container_identities_page_header_base">
       <div class="container_identities_page_header_copy">
-        <span class="container_identities_page_header_eyebrow">IDENTITIES · GROUPS · KNOWN HOSTS</span>
+        <span class="container_identities_page_header_eyebrow">令符玉牒 · 宗门印鉴</span>
         <h2 class="container_identities_page_header_title">凭据、同步分组与主机指纹库</h2>
         <p class="container_identities_page_header_description">
           集中管理服务器同步分组、每台主机的本地 DPAPI / OpenSSH Agent 认证凭据状态与 SSH 可信指纹。

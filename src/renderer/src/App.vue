@@ -161,7 +161,7 @@ onBeforeUnmount(() => {
         </div>
         <div v-else-if="!bootstrap" class="container_app_loading_body_pending" role="status">
           <OrbitStage3D variant="welcome" state="connecting" instance="app-boot" />
-          <span class="container_app_loading_body_text">正在启动太极星轨工作区…</span>
+          <span class="container_app_loading_body_text">正在凝神开启青冥剑阁工作区…</span>
         </div>
         <WorkspacePage />
         <HostsPage />

@@ -33,7 +33,8 @@ const ALLOWED_METHODS = new Set<keyof Repository>([
   'syncCommitRotate',
   'syncCancelRotate',
   'syncEvaluateRevisionRestore',
-  'syncCommitApplied'
+  'syncCommitApplied',
+  'syncRecordUploadedCheckpoint'
 ])
 
 process.parentPort.on('message', ({ data }) => {

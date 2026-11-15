@@ -672,7 +672,7 @@ function resizePanes(event: PointerEvent, tab: Tab) {
       <div class="container_workspace_orbit_body_grid" aria-hidden="true" />
       <div class="container_workspace_welcome_header_kicker">
         <span class="container_workspace_welcome_header_dot" />
-        YOUR CONNECTIONS. YOUR SPACE.
+        御剑凌虚 · 万象归宗
       </div>
       <OrbitStage3D
         :active="!tabs.length && page === 'workspace'"
@@ -718,9 +718,9 @@ function resizePanes(event: PointerEvent, tab: Tab) {
         <span class="container_workspace_welcome_footer_keyboard">Ctrl + Shift + T 新建终端</span>
       </div>
       <div class="container_workspace_welcome_footer_phase">
-        <span class="container_workspace_welcome_footer_phase-label">BUILDING IN THE OPEN</span>
+        <span class="container_workspace_welcome_footer_phase-label">剑气藏锋 · 静水流深</span>
         <span class="container_workspace_welcome_footer_phase-copy">
-          M0 / M1 基础开发阶段 · SFTP、监控与云同步尚未开放
+          玄密秘钥护持 · 多端同步、分屏御令与周天经脉一应俱全
         </span>
       </div>
     </div>
@@ -902,8 +902,8 @@ function resizePanes(event: PointerEvent, tab: Tab) {
   height: 100%;
   overflow-x: auto;
   &[data-detach-ready='true'] {
-    background: rgba(91, 220, 244, 0.08);
-    box-shadow: inset 0 0 0 1px rgba(91, 220, 244, 0.4);
+    background: var(--color-accent-secondary-soft);
+    box-shadow: inset 0 0 0 1px var(--color-accent-secondary-ring);
   }
 }
 .container_workspace_tabs_header_empty {
@@ -918,11 +918,11 @@ function resizePanes(event: PointerEvent, tab: Tab) {
   align-items: center;
   margin-left: 8px;
   padding: 3px 10px;
-  border-radius: 999px;
-  border: 1px dashed rgba(91, 220, 244, 0.45);
+  border-radius: 4px;
+  border: 1px dashed var(--color-accent-secondary-ring);
   font-size: 11px;
   color: var(--color-text-secondary);
-  background: rgba(91, 220, 244, 0.08);
+  background: var(--color-accent-secondary-soft);
   white-space: nowrap;
   flex-shrink: 0;
   pointer-events: none;
@@ -932,9 +932,9 @@ function resizePanes(event: PointerEvent, tab: Tab) {
     color 140ms ease,
     transform 140ms ease;
   &[data-active='true'] {
-    color: #e8faff;
-    border-color: rgba(91, 220, 244, 0.92);
-    background: linear-gradient(135deg, rgba(91, 220, 244, 0.24), rgba(167, 139, 250, 0.24));
+    color: var(--color-text-primary);
+    border-color: var(--color-accent-primary);
+    background: linear-gradient(135deg, var(--color-accent-secondary-soft), var(--color-accent-primary-soft));
     transform: scale(1.03);
   }
 }
@@ -983,27 +983,27 @@ function resizePanes(event: PointerEvent, tab: Tab) {
     cursor: grabbing;
     transform: translateY(-1px) scale(0.96);
     box-shadow:
-      inset 0 0 0 1px rgba(167, 139, 250, 0.7),
+      inset 0 0 0 1px var(--color-accent-primary-ring),
       0 8px 20px rgba(0, 0, 0, 0.45);
   }
   &[data-drop-target='true'] {
-    background: rgba(91, 220, 244, 0.08);
+    background: var(--color-accent-secondary-soft);
     box-shadow:
       inset 3px 0 0 var(--color-accent-secondary),
-      inset 0 0 18px rgba(91, 220, 244, 0.14);
+      inset 0 0 18px var(--color-accent-secondary-soft);
     transform: translateX(2px);
   }
 }
 .container_workspace_tabs_header_split-badge {
   margin-left: 5px;
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: 3px;
   font-size: 10px;
   line-height: 1.4;
   font-family: var(--font-mono);
-  color: #7af2ff;
-  background: rgba(91, 220, 244, 0.14);
-  border: 1px solid rgba(91, 220, 244, 0.34);
+  color: var(--color-accent-secondary);
+  background: var(--color-accent-secondary-soft);
+  border: 1px solid var(--color-accent-secondary-ring);
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -1043,44 +1043,74 @@ function resizePanes(event: PointerEvent, tab: Tab) {
   align-items: center;
   justify-content: center;
   position: relative;
-  background: radial-gradient(ellipse at 50% 38%, rgba(167, 139, 250, 0.08), transparent 62%);
+  background:
+    radial-gradient(ellipse at 50% 34%, var(--color-accent-primary-soft), transparent 58%),
+    radial-gradient(circle at 50% 62%, var(--color-accent-secondary-soft), transparent 64%);
 }
 .container_workspace_orbit_body_grid {
   position: absolute;
   left: 50%;
-  top: 46%;
-  width: 680px;
-  height: 360px;
-  transform: translate(-50%, -18%) perspective(540px) rotateX(68deg);
-  background-image:
-    linear-gradient(to right, rgba(167, 139, 250, 0.09) 1px, transparent 1px),
-    linear-gradient(to bottom, rgba(91, 220, 244, 0.07) 1px, transparent 1px);
-  background-size: 36px 36px;
-  mask-image: radial-gradient(ellipse 68% 64% at 50% 50%, #000 18%, transparent 78%);
+  top: 44%;
+  width: 620px;
+  height: 440px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background:
+    repeating-radial-gradient(
+      circle at 50% 50%,
+      transparent 0,
+      transparent 52px,
+      var(--color-accent-primary-soft) 53px,
+      transparent 54px
+    ),
+    conic-gradient(
+      from 0deg,
+      transparent 0deg 43deg,
+      var(--color-accent-secondary-soft) 44deg 46deg,
+      transparent 47deg 88deg,
+      var(--color-accent-primary-soft) 89deg 91deg,
+      transparent 92deg 133deg,
+      var(--color-accent-secondary-soft) 134deg 136deg,
+      transparent 137deg 178deg,
+      var(--color-accent-primary-soft) 179deg 181deg,
+      transparent 182deg 223deg,
+      var(--color-accent-secondary-soft) 224deg 226deg,
+      transparent 227deg 268deg,
+      var(--color-accent-primary-soft) 269deg 271deg,
+      transparent 272deg 313deg,
+      var(--color-accent-secondary-soft) 314deg 316deg,
+      transparent 317deg 360deg
+    );
+  mask-image: radial-gradient(ellipse 68% 64% at 50% 50%, rgba(0, 0, 0, 0.72) 14%, transparent 74%);
   pointer-events: none;
 }
 .container_workspace_welcome_header_kicker {
-  font-size: 12px;
-  letter-spacing: 2px;
-  color: var(--color-text-muted);
+  font-family: var(--font-display);
+  font-size: 13px;
+  letter-spacing: 3.5px;
+  color: var(--color-accent-primary-hover);
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-top: 20px;
+  margin-top: 16px;
   position: relative;
 }
 .container_workspace_welcome_header_dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--color-accent-secondary);
-  box-shadow: 0 0 9px #5bdcf455;
+  width: 6px;
+  height: 6px;
+  border-radius: 1px;
+  transform: rotate(45deg);
+  background: var(--color-seal);
+  box-shadow: 0 0 8px var(--color-seal-ring);
 }
 .container_workspace_welcome_body_title {
-  font-size: 30px;
-  font-weight: 500;
-  letter-spacing: 2px;
-  margin: 9px 0 16px;
+  font-family: var(--font-display);
+  font-size: 32px;
+  font-weight: 600;
+  letter-spacing: 3px;
+  margin: 8px 0 14px;
+  color: var(--color-text-primary);
+  text-shadow: 0 2px 18px var(--color-accent-primary-glow);
 }
 .container_workspace_welcome_body_description {
   font-size: 13px;
@@ -1177,19 +1207,19 @@ function resizePanes(event: PointerEvent, tab: Tab) {
   inset: 0;
   z-index: var(--z-floating);
   pointer-events: none;
-  background: radial-gradient(circle at 50% 50%, rgba(167, 139, 250, 0.08), rgba(10, 12, 18, 0.44));
+  background: radial-gradient(circle at 50% 50%, var(--color-accent-primary-soft), rgba(8, 11, 10, 0.56));
   backdrop-filter: blur(2px);
   animation: orbit-split-overlay-in 180ms ease-out both;
 }
 .container_workspace_split_overlay_preview {
   position: absolute;
   inset: 12px;
-  border-radius: 14px;
-  border: 2px dashed rgba(91, 220, 244, 0.8);
-  background: linear-gradient(135deg, rgba(91, 220, 244, 0.16), rgba(167, 139, 250, 0.18));
+  border-radius: 6px;
+  border: 2px dashed var(--color-accent-secondary);
+  background: linear-gradient(135deg, var(--color-accent-secondary-soft), var(--color-accent-primary-soft));
   box-shadow:
-    0 0 36px rgba(91, 220, 244, 0.22),
-    inset 0 0 28px rgba(167, 139, 250, 0.18);
+    0 0 36px var(--color-accent-secondary-glow),
+    inset 0 0 28px var(--color-accent-primary-glow);
   display: grid;
   place-items: center;
   opacity: 0;
@@ -1234,15 +1264,15 @@ function resizePanes(event: PointerEvent, tab: Tab) {
   align-items: center;
   gap: 4px;
   padding: 10px 18px;
-  border-radius: 12px;
-  background: rgba(16, 20, 30, 0.92);
-  border: 1px solid rgba(91, 220, 244, 0.45);
+  border-radius: 6px;
+  background: var(--color-surface-1);
+  border: 1px solid var(--color-accent-secondary-ring);
   box-shadow: var(--shadow-3d-dialog);
 }
 .container_workspace_split_overlay_label {
   font-size: 13px;
   font-weight: 600;
-  color: #e8faff;
+  color: var(--color-text-primary);
   letter-spacing: 0.4px;
 }
 .container_workspace_split_overlay_hint {
@@ -1266,12 +1296,12 @@ function resizePanes(event: PointerEvent, tab: Tab) {
   align-items: center;
   gap: 5px;
   padding: 5px 11px;
-  border-radius: 999px;
+  border-radius: 4px;
   font-size: 11px;
   font-weight: 500;
   color: var(--color-text-secondary);
-  background: rgba(18, 22, 32, 0.88);
-  border: 1px solid rgba(167, 139, 250, 0.28);
+  background: var(--color-surface-1);
+  border: 1px solid var(--color-accent-primary-ring);
   box-shadow: var(--shadow-3d-card);
   white-space: nowrap;
   transition:
@@ -1281,10 +1311,10 @@ function resizePanes(event: PointerEvent, tab: Tab) {
     color 160ms ease,
     box-shadow 160ms ease;
   &[data-active='true'] {
-    color: #ffffff;
-    background: linear-gradient(135deg, rgba(91, 220, 244, 0.32), rgba(167, 139, 250, 0.34));
-    border-color: rgba(91, 220, 244, 0.9);
-    box-shadow: 0 0 22px rgba(91, 220, 244, 0.38);
+    color: var(--color-text-primary);
+    background: linear-gradient(135deg, var(--color-accent-secondary-soft), var(--color-accent-primary-soft));
+    border-color: var(--color-accent-primary);
+    box-shadow: 0 0 22px var(--color-accent-primary-glow);
   }
 }
 .container_workspace_split_compass_top {
@@ -1332,15 +1362,15 @@ function resizePanes(event: PointerEvent, tab: Tab) {
     opacity: 0.38;
     transform: scale(0.955) translateY(6px);
     box-shadow:
-      inset 0 0 0 2px rgba(91, 220, 244, 0.72),
-      0 0 28px rgba(167, 139, 250, 0.34);
+      inset 0 0 0 2px var(--color-accent-secondary),
+      0 0 28px var(--color-accent-primary-glow);
   }
   60% {
     opacity: 1;
     transform: scale(1.006) translateY(0);
     box-shadow:
-      inset 0 0 0 1px rgba(167, 139, 250, 0.5),
-      0 0 18px rgba(91, 220, 244, 0.18);
+      inset 0 0 0 1px var(--color-accent-primary-ring),
+      0 0 18px var(--color-accent-secondary-glow);
   }
   100% {
     opacity: 1;

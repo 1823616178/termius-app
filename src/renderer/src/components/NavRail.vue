@@ -162,11 +162,11 @@ const avatarTitle = computed(() => {
     }
     &[aria-current='page'] {
       color: var(--color-accent-primary);
-      background: linear-gradient(155deg, rgba(167, 139, 250, 0.2), rgba(167, 139, 250, 0.06));
+      background: linear-gradient(155deg, var(--color-accent-primary-soft), transparent);
       box-shadow:
         inset 2px 0 var(--color-accent-primary),
-        inset 0 1px 0 rgba(255, 255, 255, 0.1),
-        0 6px 14px -4px rgba(167, 139, 250, 0.35);
+        inset 0 1px 0 rgba(255, 244, 218, 0.12),
+        0 6px 14px -4px var(--color-accent-primary-glow);
     }
   }
 }

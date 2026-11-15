@@ -290,6 +290,7 @@ function registerIpc(): void {
         throw new Error('系统凭据保护不可用，不能保存密码。')
       encrypted = await safeStorage.encryptStringAsync(input.password)
     }
+    syncService.markLocalMutation()
     const hosts = await repository.call<Host[]>('save', { ...input, password: undefined }, encrypted)
     syncService.scheduleAutoSync(true)
     return hosts
@@ -297,6 +298,7 @@ function registerIpc(): void {
   ipcMain.handle(IPC.hostRemove, async (event, raw) => {
     authorize(event)
     const id = idSchema.parse(raw)
+    syncService.markLocalMutation()
     const hosts = await repository.call<Host[]>('remove', id)
     syncService.scheduleAutoSync(true)
     return hosts
@@ -304,6 +306,7 @@ function registerIpc(): void {
   ipcMain.handle(IPC.groupSave, async (event, raw) => {
     authorize(event)
     const input = syncGroupInputSchema.parse(raw)
+    syncService.markLocalMutation()
     const groups = await repository.call<SyncGroup[]>('groupSave', input)
     syncService.scheduleAutoSync(true)
     return groups
@@ -311,6 +314,7 @@ function registerIpc(): void {
   ipcMain.handle(IPC.groupRemove, async (event, raw) => {
     authorize(event)
     const id = idSchema.parse(raw)
+    syncService.markLocalMutation()
     const groups = await repository.call<SyncGroup[]>('groupRemove', id)
     syncService.scheduleAutoSync(true)
     return groups
@@ -318,6 +322,7 @@ function registerIpc(): void {
   ipcMain.handle(IPC.tunnelSave, async (event, raw) => {
     authorize(event)
     const input = syncTunnelInputSchema.parse(raw)
+    syncService.markLocalMutation()
     const tunnels = await repository.call<SyncTunnel[]>('tunnelSave', input)
     syncService.scheduleAutoSync(true)
     return tunnels
@@ -326,6 +331,7 @@ function registerIpc(): void {
     authorize(event)
     const id = idSchema.parse(raw)
     await tunnelRuntime.stop(id)
+    syncService.markLocalMutation()
     const tunnels = await repository.call<SyncTunnel[]>('tunnelRemove', id)
     syncService.scheduleAutoSync(true)
     trayManager?.refresh()
@@ -343,6 +349,7 @@ function registerIpc(): void {
     const tunnel = tunnels.find((item) => item.id === id)
     if (!tunnel) throw new Error('端口转发规则不存在，请刷新列表。')
     await tunnelRuntime.toggle(tunnel, active)
+    syncService.markLocalMutation()
     await repository.call<SyncTunnel[]>('tunnelSave', {
       id: tunnel.id,
       name: tunnel.name,

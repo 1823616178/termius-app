@@ -37,7 +37,7 @@ import type { SyncAccountRecord, SyncEvaluateOutput } from '../workers/data-cryp
 const REQUEST_TIMEOUT_MS = 12_000
 const AUTO_SYNC_DEBOUNCE_MS = 3_000
 const MAX_RETRY_429 = 2
-const MAX_CONFLICT_RACE_RETRIES = 3
+const MAX_CONFLICT_RACE_RETRIES = 5
 
 class SyncHttpError extends Error {
   constructor(
@@ -77,6 +77,7 @@ export class SyncService {
   private syncQueue: Promise<unknown> = Promise.resolve()
   private autoSyncTimer: NodeJS.Timeout | undefined
   private rerunRequested = false
+  private localMutationEpoch = 0
   private disposed = false
 
   constructor(
@@ -583,8 +584,14 @@ export class SyncService {
     })
   }
 
+  /** Record a local database mutation so in-flight sync commits never clobber newer local rows. */
+  markLocalMutation(): void {
+    this.localMutationEpoch += 1
+  }
+
   scheduleAutoSync(immediate = false): void {
     if (this.disposed) return
+    if (immediate) this.localMutationEpoch += 1
     void this.initFromDbIfNeeded().then(async () => {
       this.account = await this.repository.call<SyncAccountRecord | undefined>('syncAccountGet')
       if (!this.account || !this.accessToken || !this.vaultUnlocked) {
@@ -880,6 +887,7 @@ export class SyncService {
           }
         }
 
+        const snapshotEpoch = this.localMutationEpoch
         const baseDocJson = await this.decryptBaseDocIfPresent()
         const plaintextPasswords = await this.decryptLocalHostPasswords()
         let evaluated: SyncEvaluateOutput
@@ -951,8 +959,25 @@ export class SyncService {
           }
         }
 
-        await this.commitEvaluationToLocal(evaluated, targetRevision, targetEtag)
+        if (this.localMutationEpoch !== snapshotEpoch) {
+          await this.recordUploadedCheckpointIfNeeded(evaluated, targetRevision, targetEtag)
+          continue
+        }
+        const committedOk = await this.commitEvaluationToLocal(
+          evaluated,
+          targetRevision,
+          targetEtag,
+          snapshotEpoch
+        )
+        if (!committedOk) {
+          await this.recordUploadedCheckpointIfNeeded(evaluated, targetRevision, targetEtag)
+          continue
+        }
         this.pendingConflict = null
+        return
+      }
+      if (this.autoSyncTimer) {
+        this.rerunRequested = true
         return
       }
       throw new Error('远端文档并发更新频繁，请稍后重试。')
@@ -971,8 +996,9 @@ export class SyncService {
   private async commitEvaluationToLocal(
     evaluated: SyncEvaluateOutput,
     revision: string | null,
-    etag: string | null
-  ): Promise<void> {
+    etag: string | null,
+    snapshotEpoch?: number
+  ): Promise<boolean> {
     const canEncrypt = await safeStorage.isAsyncEncryptionAvailable()
     const encryptedHostSecrets: Record<string, Uint8Array | null> = {}
     for (const item of evaluated.hostSecretsToEncrypt) {
@@ -986,6 +1012,9 @@ export class SyncService {
       }
     }
     const baseDocCipher = await this.encryptBaseDoc(evaluated.mergedBaseJson ?? '')
+    if (snapshotEpoch !== undefined && this.localMutationEpoch !== snapshotEpoch) {
+      return false
+    }
     const committed = await this.repository.call<{
       hosts: Host[]
       groups: SyncGroup[]
@@ -1005,6 +1034,23 @@ export class SyncService {
     })
     this.account = await this.repository.call<SyncAccountRecord>('syncAccountGet')
     this.emitData(committed)
+    return true
+  }
+
+  private async recordUploadedCheckpointIfNeeded(
+    evaluated: SyncEvaluateOutput,
+    revision: string | null,
+    etag: string | null
+  ): Promise<void> {
+    if (!evaluated.needsUpload) return
+    const baseDocCipher = await this.encryptBaseDoc(evaluated.mergedBaseJson ?? '')
+    await this.repository.call('syncRecordUploadedCheckpoint', {
+      revision,
+      etag,
+      baseDocCipher,
+      docExtra: evaluated.docExtra
+    })
+    this.account = await this.repository.call<SyncAccountRecord>('syncAccountGet')
   }
 
   private async encryptBaseDoc(baseJson: string): Promise<Uint8Array | null> {

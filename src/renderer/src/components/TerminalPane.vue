@@ -1104,12 +1104,12 @@ onBeforeUnmount(() => {
     background 160ms ease,
     border-color 160ms ease;
   &:hover {
-    border-bottom-color: rgba(167, 139, 250, 0.34);
+    border-bottom-color: var(--color-accent-primary-ring);
   }
   &[data-dragging='true'] {
     opacity: 0.62;
     cursor: grabbing;
-    background: rgba(167, 139, 250, 0.14);
+    background: var(--color-accent-primary-soft);
   }
   > button {
     min-height: 24px;
@@ -1161,15 +1161,15 @@ onBeforeUnmount(() => {
   font-weight: 600;
   letter-spacing: 0.4px;
   padding: 2px 6px;
-  border-radius: 4px;
-  border: 1px solid rgba(167, 139, 250, 0.28);
-  background: rgba(167, 139, 250, 0.12);
+  border-radius: 3px;
+  border: 1px solid var(--color-accent-primary-ring);
+  background: var(--color-accent-primary-soft);
   color: var(--color-accent-primary-hover);
   &[data-tone='pwsh'],
   &[data-tone='ps'] {
-    border-color: rgba(91, 220, 244, 0.34);
-    background: rgba(91, 220, 244, 0.14);
-    color: #7af2ff;
+    border-color: var(--color-accent-secondary-ring);
+    background: var(--color-accent-secondary-soft);
+    color: var(--color-accent-secondary);
   }
   &[data-tone='wsl'] {
     border-color: rgba(245, 196, 107, 0.34);
@@ -1237,7 +1237,7 @@ onBeforeUnmount(() => {
   min-height: 0;
   padding: 0;
   overflow: hidden;
-  background: radial-gradient(circle at 50% 0%, rgba(167, 139, 250, 0.045), transparent 60%);
+  background: radial-gradient(circle at 50% 0%, var(--color-accent-primary-soft), transparent 60%);
   box-shadow:
     inset 0 2px 14px rgba(0, 0, 0, 0.42),
     inset 0 0 0 1px rgba(255, 255, 255, 0.025);
@@ -1266,9 +1266,9 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 6px;
   padding: 14px 20px 16px;
-  border-radius: 14px;
+  border-radius: 6px;
   background: var(--surface-card-gradient);
-  border: 1px solid rgba(167, 139, 250, 0.25);
+  border: 1px solid var(--color-accent-primary-ring);
   box-shadow: var(--shadow-3d-dialog);
 }
 .container_workspace_terminal_hud_stage {
@@ -1305,9 +1305,9 @@ onBeforeUnmount(() => {
   gap: 4px;
   padding: 6px 8px;
   border-radius: 10px;
-  background: rgba(20, 24, 34, 0.92);
+  background: var(--color-surface-1);
   backdrop-filter: blur(12px);
-  border: 1px solid var(--pane-border-glow, rgba(167, 139, 250, 0.35));
+  border: 1px solid var(--pane-border-glow, var(--color-accent-primary-ring));
   box-shadow: var(--shadow-3d-card);
   > button {
     min-height: 26px;

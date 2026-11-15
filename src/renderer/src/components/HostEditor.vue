@@ -100,7 +100,7 @@ function submit() {
     <form class="container_hosts_editor_body_form" @submit.prevent="submit">
       <header class="container_hosts_editor_header_base">
         <div class="container_hosts_editor_header_copy">
-          <span class="container_hosts_editor_header_eyebrow">SSH CONNECTION</span>
+          <span class="container_hosts_editor_header_eyebrow">御剑传讯 · 灵脉契约</span>
           <h2 :id="titleId" class="container_hosts_editor_header_title">
             {{ host ? '编辑主机' : '新建主机' }}
           </h2>
@@ -304,7 +304,7 @@ function submit() {
   width: 500px;
   padding: 0;
   border: 1px solid var(--color-border-control);
-  border-radius: 14px;
+  border-radius: 6px;
   background: var(--surface-card-gradient);
   color: var(--color-text-primary);
   box-shadow: var(--shadow-3d-dialog);

@@ -19,10 +19,10 @@ const currentThemeLabel = computed(() => {
     <span class="container_app_brand_header_mark">
       <img class="container_app_brand_header_icon" :src="orbitIcon" alt="" />
     </span>
-    <strong class="container_app_brand_header_name">Graphite Orbit</strong>
+    <strong class="container_app_brand_header_name">玄剑天枢 · Graphite Orbit</strong>
     <span class="container_app_brand_header_separator">/</span>
-    <span class="container_app_brand_header_workspace">个人工作区</span>
-    <span class="container_app_brand_header_badge">太极星轨 · 0.1</span>
+    <span class="container_app_brand_header_workspace">青冥道场</span>
+    <span class="container_app_brand_header_badge">剑印 · 0.1</span>
     <div class="container_app_window_header_controls">
       <button
         class="container_app_brand_header_theme"
@@ -100,16 +100,17 @@ const currentThemeLabel = computed(() => {
   height: 22px;
   display: block;
   border-radius: 6px;
-  filter: drop-shadow(0 2px 6px rgba(167, 139, 250, 0.25));
+  filter: drop-shadow(0 2px 6px var(--color-accent-primary-glow));
   transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
   .container_app_brand_header_mark:hover & {
     transform: rotateY(-14deg) rotateX(10deg) scale(1.06);
   }
 }
 .container_app_brand_header_name {
+  font-family: var(--font-display);
   font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.3px;
+  letter-spacing: 0.6px;
 }
 .container_app_brand_header_separator {
   color: var(--color-text-muted);
@@ -120,11 +121,13 @@ const currentThemeLabel = computed(() => {
   color: var(--color-text-muted);
 }
 .container_app_brand_header_badge {
-  font-size: 12px;
-  color: var(--color-accent-primary-hover);
-  border: 1px solid var(--color-accent-primary-ring);
-  border-radius: 4px;
-  padding: 2px 6px;
+  font-family: var(--font-display);
+  font-size: 11px;
+  color: #f4d9cf;
+  background: var(--color-seal-soft);
+  border: 1px solid var(--color-seal-ring);
+  border-radius: 3px;
+  padding: 2px 7px;
   margin-left: 6px;
 }
 .container_app_window_header_controls {
@@ -148,7 +151,7 @@ const currentThemeLabel = computed(() => {
   height: 24px;
   padding: 0 9px;
   margin-right: 8px;
-  border-radius: 999px;
+  border-radius: 4px;
   border: 1px solid var(--color-border-control);
   background: var(--color-surface-1);
   color: var(--color-text-secondary);
@@ -161,9 +164,9 @@ const currentThemeLabel = computed(() => {
   color: var(--color-accent-primary-hover);
 }
 .container_app_window_header_tray[data-active='true'] {
-  border-color: rgba(89, 214, 160, 0.45);
-  background: rgba(89, 214, 160, 0.12);
-  color: #6ee7b7;
+  border-color: var(--color-accent-secondary-ring);
+  background: var(--color-accent-secondary-soft);
+  color: var(--color-accent-secondary);
 }
 .container_app_brand_header_theme-label,
 .container_app_window_header_tray-label {

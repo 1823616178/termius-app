@@ -74,7 +74,7 @@ const tunnelTypeOptions = [
   { value: 'R', label: '-R 远端转发' },
   { value: 'D', label: '-D SOCKS5' }
 ]
-const newGroupColor = ref('#a78bfa')
+const newGroupColor = ref('#d4af63')
 
 const distinctGroups = computed(() => {
   const names = new Set<string>()
@@ -173,7 +173,7 @@ async function handleCreateGroup(): Promise<void> {
   <section v-if="page === 'hosts'" class="container_hosts_page_body_base" @scroll.passive="onScroll">
     <header class="container_hosts_page_header_base">
       <div class="container_hosts_page_header_copy">
-        <span class="container_hosts_page_header_eyebrow">CONNECTION LIBRARY · HORIZONTAL LIST</span>
+        <span class="container_hosts_page_header_eyebrow">玄枢群岳 · 飞剑名录</span>
         <h2 class="container_hosts_page_header_title">
           主机库
           <span class="container_hosts_page_header_count">{{ hosts.length }}</span>
@@ -623,13 +623,15 @@ async function handleCreateGroup(): Promise<void> {
   flex-wrap: wrap;
 }
 .container_hosts_page_header_eyebrow {
-  font-size: 11px;
-  letter-spacing: 1.5px;
+  font-family: var(--font-display);
+  font-size: 12px;
+  letter-spacing: 2px;
   color: var(--color-accent-primary);
 }
 .container_hosts_page_header_title {
+  font-family: var(--font-display);
   font-size: 22px;
-  font-weight: 500;
+  font-weight: 600;
   margin: 6px 0;
 }
 .container_hosts_page_header_count {
@@ -785,7 +787,7 @@ async function handleCreateGroup(): Promise<void> {
 [class*='container_hosts_card_body_base'] {
   border: 1px solid var(--color-border-control);
   background: var(--surface-card-gradient);
-  border-radius: 10px;
+  border-radius: 6px;
   padding: 11px 14px;
   min-width: 0;
   transition:

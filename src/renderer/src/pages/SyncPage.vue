@@ -376,7 +376,7 @@ async function handleRestoreRevision(revision: string) {
   <section v-if="page === 'sync'" class="container_sync_page_body_base">
     <header class="container_sync_page_header_base">
       <div class="container_sync_page_header_info">
-        <span class="container_sync_page_header_eyebrow">E2EE CLOUD SYNC</span>
+        <span class="container_sync_page_header_eyebrow">万里传书 · 玄密归真</span>
         <h2 class="container_sync_page_header_title">
           端到端加密远程同步
           <span class="container_sync_page_header_badge" :data-phase="syncStatus?.phase ?? 'unconfigured'">
@@ -1100,8 +1100,8 @@ async function handleRestoreRevision(revision: string) {
 }
 .container_sync_recovery_body_banner {
   border: 1px solid var(--color-accent-primary-ring);
-  background: linear-gradient(155deg, rgba(167, 139, 250, 0.14), rgba(16, 20, 28, 0.92));
-  border-radius: 10px;
+  background: linear-gradient(155deg, var(--color-accent-primary-soft), var(--color-surface-1));
+  border-radius: 6px;
   padding: 16px 18px;
   margin-bottom: 20px;
   box-shadow: var(--shadow-3d-sm);

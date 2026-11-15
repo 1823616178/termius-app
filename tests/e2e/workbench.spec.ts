@@ -930,7 +930,7 @@ test('activated tunnels & identities pages, horizontal host actions, sync write 
 
     await page.getByRole('button', { name: '启用自定义配色', exact: true }).click()
     expect(await page.evaluate(() => document.documentElement.dataset.uiTheme)).toBe('custom')
-    await page.getByRole('button', { name: '恢复默认太极紫微', exact: true }).click()
+    await page.getByRole('button', { name: '恢复默认玄墨古剑', exact: true }).click()
     expect(await page.evaluate(() => document.documentElement.dataset.uiTheme)).toBe('bagua-taiji')
     await checkClasses(page)
 

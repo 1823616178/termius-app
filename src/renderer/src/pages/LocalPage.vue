@@ -18,7 +18,7 @@ const c = (base: string, token: string) => instanceClass(base, windowInstance(to
   <section v-if="page === 'local'" class="container_local_page_body_base">
     <header class="container_local_page_header_base">
       <div class="container_local_page_header_copy">
-        <span class="container_local_page_header_eyebrow">ON THIS DEVICE</span>
+        <span class="container_local_page_header_eyebrow">咫尺丹室 · 内景吐纳</span>
         <h2 class="container_local_page_header_title">本地终端</h2>
         <p class="container_local_page_header_description">
           在独立 ConPTY 进程中运行，保持熟悉的 Shell 体验。
@@ -112,7 +112,7 @@ const c = (base: string, token: string) => instanceClass(base, windowInstance(to
   padding: 24px;
   border: 1px solid var(--color-border-control);
   background: var(--surface-card-gradient);
-  border-radius: 10px;
+  border-radius: 6px;
   transform-style: preserve-3d;
   box-shadow: var(--shadow-3d-sm);
   transition:
@@ -123,7 +123,7 @@ const c = (base: string, token: string) => instanceClass(base, windowInstance(to
     transform: perspective(900px) rotateX(var(--card-rx, 0deg)) rotateY(var(--card-ry, 0deg)) translateY(-3px)
       translateZ(6px);
     box-shadow: var(--shadow-3d-card);
-    border-color: rgba(91, 220, 244, 0.42);
+    border-color: var(--color-accent-secondary-ring);
   }
 }
 .container_local_profile_header_icon {
@@ -132,9 +132,9 @@ const c = (base: string, token: string) => instanceClass(base, windowInstance(to
   height: 42px;
   display: grid;
   place-items: center;
-  border-radius: 10px;
-  background: linear-gradient(155deg, rgba(91, 220, 244, 0.16), rgba(91, 220, 244, 0.04));
-  border: 1px solid rgba(91, 220, 244, 0.22);
+  border-radius: 6px;
+  background: linear-gradient(155deg, var(--color-accent-secondary-soft), transparent);
+  border: 1px solid var(--color-accent-secondary-ring);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
   transform: translateZ(12px);
 }

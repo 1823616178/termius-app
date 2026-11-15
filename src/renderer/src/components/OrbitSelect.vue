@@ -501,10 +501,10 @@ onBeforeUnmount(() => {
 .container_common_select_option_hint {
   font-size: 10px;
   padding: 1px 6px;
-  border-radius: 999px;
+  border-radius: 3px;
   color: var(--color-accent-secondary);
-  background: rgba(91, 220, 244, 0.12);
-  border: 1px solid rgba(91, 220, 244, 0.24);
+  background: var(--color-accent-secondary-soft);
+  border: 1px solid var(--color-accent-secondary-ring);
   flex-shrink: 0;
 }
 .container_common_select_option_check {

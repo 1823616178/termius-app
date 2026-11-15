@@ -1276,6 +1276,35 @@ export class Repository {
     }
   }
 
+  syncRecordUploadedCheckpoint(input: {
+    accountId?: string
+    revision: string | null
+    etag: string | null
+    baseDocCipher: Uint8Array | null
+    docExtra?: Record<string, unknown>
+  }): void {
+    const accountId = input.accountId ?? 'primary'
+    const nowIso = new Date().toISOString()
+    this.db
+      .prepare(
+        `UPDATE sync_accounts
+         SET last_revision = ?,
+             last_etag = ?,
+             base_doc_cipher = ?,
+             doc_extra = ?,
+             updated_at = ?
+         WHERE id = ?`
+      )
+      .run(
+        input.revision,
+        input.etag,
+        input.baseDocCipher ? Buffer.from(input.baseDocCipher) : null,
+        input.docExtra ? JSON.stringify(input.docExtra) : null,
+        nowIso,
+        accountId
+      )
+  }
+
   close(): void {
     if (this.closed) return
     this.closed = true

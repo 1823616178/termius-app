@@ -53,7 +53,7 @@ onBeforeUnmount(() => {
   border: 1px solid var(--color-border-control);
   background: var(--surface-card-gradient);
   color: var(--color-text-primary);
-  border-radius: 12px;
+  border-radius: 6px;
   box-shadow: var(--shadow-3d-dialog);
   &::backdrop {
     background: var(--color-backdrop);
