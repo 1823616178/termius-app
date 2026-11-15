@@ -43,6 +43,7 @@
     "lucide-vue-next": "1.0.0",
     "node-pty": "1.1.0",
     "ssh2": "1.17.0",
+    "three": "0.187.0",
     "vue": "3.5.45",
     "zod": "4.6.7"
   },
@@ -52,6 +53,7 @@
     "@types/better-sqlite3": "9.6.0",
     "@types/node": "24.10.1",
     "@types/ssh2": "1.15.6",
+    "@types/three": "0.187.0",
     "@vitejs/plugin-vue": "6.0.11",
     "@vue/compiler-sfc": "3.5.45",
     "electron": "45.3.1",
