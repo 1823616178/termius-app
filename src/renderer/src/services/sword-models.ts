@@ -18,7 +18,7 @@ export interface WineBowlModel {
 
 function transformed(geometry: THREE.BufferGeometry, x: number, y: number, z: number): THREE.BufferGeometry {
   geometry.translate(x, y, z)
-  return geometry.toNonIndexed()
+  return geometry.index ? geometry.toNonIndexed() : geometry
 }
 
 export function createFlyingSwordGeometry(): THREE.BufferGeometry {
@@ -46,12 +46,7 @@ function createBladeGeometry(): THREE.BufferGeometry {
   ]
 
   for (const ring of rings) {
-    positions.push(
-      0, ring.y, ring.t,
-      ring.w, ring.y, 0,
-      0, ring.y, -ring.t,
-      -ring.w, ring.y, 0
-    )
+    positions.push(0, ring.y, ring.t, ring.w, ring.y, 0, 0, ring.y, -ring.t, -ring.w, ring.y, 0)
   }
   for (let row = 0; row < rings.length - 1; row++) {
     for (let side = 0; side < 4; side++) {
@@ -126,11 +121,11 @@ export function createGlyphSprite(glyph: string, color: string): THREE.Sprite {
 export function createMainSword(glowTexture: THREE.Texture): MainSwordModel {
   const group = new THREE.Group()
   const bladeMaterial = new THREE.MeshStandardMaterial({
-    color: '#c8d8d4',
-    metalness: 0.92,
-    roughness: 0.2,
+    color: '#dce5df',
+    metalness: 0.78,
+    roughness: 0.18,
     emissive: '#315f55',
-    emissiveIntensity: 0.22,
+    emissiveIntensity: 0.16,
     flatShading: true
   })
   const goldMaterial = new THREE.MeshStandardMaterial({
@@ -228,9 +223,19 @@ function createWineSeal(): THREE.CanvasTexture {
 export function createGourd(): THREE.Group {
   const group = new THREE.Group()
   const profile = [
-    [0, -0.9], [0.28, -0.86], [0.48, -0.63], [0.52, -0.35], [0.43, -0.08],
-    [0.25, 0.1], [0.29, 0.28], [0.39, 0.46], [0.37, 0.65], [0.24, 0.82],
-    [0.14, 0.9], [0.13, 1.02], [0, 1.04]
+    [0, -0.9],
+    [0.28, -0.86],
+    [0.48, -0.63],
+    [0.52, -0.35],
+    [0.43, -0.08],
+    [0.25, 0.1],
+    [0.29, 0.28],
+    [0.39, 0.46],
+    [0.37, 0.65],
+    [0.24, 0.82],
+    [0.14, 0.9],
+    [0.13, 1.02],
+    [0, 1.04]
   ].map(([x, y]) => new THREE.Vector2(x, y))
   const bodyMaterial = new THREE.MeshStandardMaterial({
     color: '#6b3d20',
@@ -271,7 +276,7 @@ export function createGourd(): THREE.Group {
     side: THREE.DoubleSide
   })
   const seal = new THREE.Mesh(new THREE.PlaneGeometry(0.48, 0.48), sealMaterial)
-  seal.position.set(0, -0.37, 0.48)
+  seal.position.set(0, -0.37, 0.535)
   group.add(seal)
   return group
 }
@@ -279,8 +284,15 @@ export function createGourd(): THREE.Group {
 export function createWineBowl(): WineBowlModel {
   const group = new THREE.Group()
   const profile = [
-    [0.16, -0.32], [0.31, -0.28], [0.47, -0.06], [0.58, 0.24], [0.58, 0.3],
-    [0.52, 0.3], [0.45, 0.02], [0.29, -0.2], [0.16, -0.24]
+    [0.16, -0.32],
+    [0.31, -0.28],
+    [0.47, -0.06],
+    [0.58, 0.24],
+    [0.58, 0.3],
+    [0.52, 0.3],
+    [0.45, 0.02],
+    [0.29, -0.2],
+    [0.16, -0.24]
   ].map(([x, y]) => new THREE.Vector2(x, y))
   const clayMaterial = new THREE.MeshStandardMaterial({
     color: '#28201a',

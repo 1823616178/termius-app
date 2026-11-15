@@ -115,6 +115,8 @@ test('secure empty workspace, semantic DOM and saved host persistence', async ({
   )
   expect(preferences).toMatchObject({ sandbox: true, contextIsolation: true, nodeIntegration: false })
   await checkClasses(page)
+  await expect(page.locator('[data-variant="welcome"][data-ready="true"]')).toBeVisible()
+  await page.waitForTimeout(600)
   await page.screenshot({ path: info.outputPath('welcome.png') })
   const password = `fixture-secret-${crypto.randomUUID()}`
   await createHost(page, '中文开发服务器', 2222, password)
@@ -174,6 +176,48 @@ test('secure empty workspace, semantic DOM and saved host persistence', async ({
   } finally {
     await stop(resumed.app)
   }
+})
+
+test('homepage sword realm, border flight, resize and motion tiers', async ({ orbit }, info) => {
+  const { page, app } = orbit
+  const stage = page.locator('[data-variant="welcome"]')
+  const flight = page.locator('[class*="container_workspace_borderfx_overlay_flight"]')
+  await expect(stage).toHaveAttribute('data-ready', 'true')
+  const initialDistance = await flight.evaluate((element) => getComputedStyle(element).offsetDistance)
+  await expect
+    .poll(() => flight.evaluate((element) => getComputedStyle(element).offsetDistance))
+    .not.toBe(initialDistance)
+
+  const initialPath = await flight.getAttribute('style')
+  await app.evaluate(({ BrowserWindow }) => {
+    BrowserWindow.getAllWindows()[0]!.setSize(1100, 700)
+  })
+  await expect.poll(() => flight.getAttribute('style')).not.toBe(initialPath)
+  await page.waitForTimeout(11_500)
+  await page.screenshot({ path: info.outputPath('sword-gathering.png') })
+
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByRole('combobox', { name: '动效与性能档' }).click()
+  await page.getByRole('option', { name: '轻量', exact: true }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-motion', 'light')
+  await page.getByRole('button', { name: '工作台', exact: true }).click()
+  await expect(stage).toHaveAttribute('data-ready', 'true')
+  await expect(stage.locator('canvas')).toBeVisible()
+
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByRole('combobox', { name: '动效与性能档' }).click()
+  await page.getByRole('option', { name: '关闭', exact: true }).click()
+  await page.getByRole('button', { name: '工作台', exact: true }).click()
+  await expect(stage.locator('img')).toBeVisible()
+  await expect(stage.locator('canvas')).toBeHidden()
+  await expect(flight).toBeHidden()
+
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByRole('combobox', { name: '动效与性能档' }).click()
+  await page.getByRole('option', { name: '完整', exact: true }).click()
+  await page.getByRole('button', { name: '工作台', exact: true }).click()
+  await expect(stage).toHaveAttribute('data-ready', 'true')
+  await expect(flight).toBeVisible()
 })
 
 test('real PowerShell and CMD, split resize, terminal input and lifecycle cleanup', async ({

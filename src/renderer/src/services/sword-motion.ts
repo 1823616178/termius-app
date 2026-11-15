@@ -57,7 +57,7 @@ function samplePosition(index: number, total: number, timeSeconds: number): Vec3
   const radius = 3.1 + seed(index, 2) * 3.3
   const gatheredRadius = 0.34 + seed(index, 3) * 0.5
   const r = radius + (gatheredRadius - radius) * gather
-  const depth = -2.8 + seed(index, 4) * 5.6
+  const depth = -4.6 + seed(index, 4) * 4.8
   const gatheredDepth = -1.65 + seed(index, 5) * 0.9
 
   return {
@@ -80,7 +80,7 @@ export function sampleSwordPose(index: number, total: number, timeSeconds: numbe
   return {
     position,
     direction: normalize({ x: next.x - position.x, y: next.y - position.y, z: next.z - position.z }),
-    scale: (0.3 + seed(index, 7) * 0.28) * (1 - gather * 0.58),
+    scale: (0.2 + seed(index, 7) * 0.2) * (1 - gather * 0.58),
     glow: clamp01(0.24 + seed(index, 8) * 0.5 + gather * 0.45)
   }
 }

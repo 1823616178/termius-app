@@ -16,6 +16,7 @@ import {
 import { instanceClass } from '../../../shared/classes'
 import OrbitSelect from '../components/OrbitSelect.vue'
 import OrbitStage3D from '../components/OrbitStage3D.vue'
+import BorderFlyingSword from '../components/BorderFlyingSword.vue'
 import TerminalPane from '../components/TerminalPane.vue'
 import { TERMINAL_THEMES, type TerminalThemeId } from '../services/terminal-themes'
 import {
@@ -669,60 +670,71 @@ function resizePanes(event: PointerEvent, tab: Tab) {
       </button>
     </header>
     <div v-if="!tabs.length && bootstrap" class="container_workspace_welcome_body_base">
-      <div class="container_workspace_orbit_body_grid" aria-hidden="true" />
-      <div class="container_workspace_welcome_header_kicker">
-        <span class="container_workspace_welcome_header_dot" />
-        御剑凌虚 · 万象归宗
+      <div class="container_workspace_welcome_body_atmosphere" aria-hidden="true">
+        <span class="container_workspace_welcome_body_moon" />
+        <span class="container_workspace_welcome_body_mountains-far" />
+        <span class="container_workspace_welcome_body_mountains-near" />
+        <span class="container_workspace_welcome_body_cloud" />
       </div>
       <OrbitStage3D
+        class="container_workspace_welcome_body_stage"
         :active="!tabs.length && page === 'workspace'"
         :boost="ctaHovered"
         :instance="windowInstance('welcome')"
       />
-      <h2 class="container_workspace_welcome_body_title">让连接，井然有序。</h2>
-      <p class="container_workspace_welcome_body_description">
-        远程主机与本地终端，一个专注的工作空间。
-        <br class="container_workspace_welcome_body_line-break" />
-        从一条真实连接开始。
-      </p>
-      <div
-        class="container_workspace_welcome_body_actions"
-        @mouseenter="ctaHovered = true"
-        @mouseleave="ctaHovered = false"
-      >
-        <button
-          class="container_workspace_welcome_body_create"
-          type="button"
-          data-primary
-          @click="openEditor()"
-        >
-          <Plus :size="16" />
-          新建 SSH 主机
-        </button>
-        <button
-          class="container_workspace_welcome_body_local"
-          type="button"
-          :disabled="!defaultShellProfile"
-          @click="defaultShellProfile && openLocal(defaultShellProfile)"
-        >
-          <SquareTerminal :size="16" />
-          打开本地终端
-        </button>
+      <div class="container_workspace_welcome_body_scene-note" aria-hidden="true">
+        <span class="container_workspace_welcome_body_scene-name">万剑归宗</span>
+        <span class="container_workspace_welcome_body_scene-state">群剑听令 · 一气归心</span>
       </div>
-      <div class="container_workspace_welcome_footer_base">
-        <span class="container_workspace_welcome_footer_hint">
-          <ShieldCheck :size="13" />
-          离线可用
-        </span>
-        <span class="container_workspace_welcome_footer_separator">·</span>
-        <span class="container_workspace_welcome_footer_keyboard">Ctrl + Shift + T 新建终端</span>
+      <div class="container_workspace_welcome_body_content">
+        <div class="container_workspace_welcome_header_kicker">
+          <span class="container_workspace_welcome_header_dot" />
+          御剑凌虚 · 万象归宗
+        </div>
+        <h2 class="container_workspace_welcome_body_title">让连接，井然有序。</h2>
+        <p class="container_workspace_welcome_body_description">
+          一剑连接山海，一方收束万象。
+          <br class="container_workspace_welcome_body_line-break" />
+          远程主机与本地终端，皆在此归位。
+        </p>
+        <div
+          class="container_workspace_welcome_body_actions"
+          @mouseenter="ctaHovered = true"
+          @mouseleave="ctaHovered = false"
+        >
+          <button
+            class="container_workspace_welcome_body_create"
+            type="button"
+            data-primary
+            @click="openEditor()"
+          >
+            <Plus :size="16" />
+            新建 SSH 主机
+          </button>
+          <button
+            class="container_workspace_welcome_body_local"
+            type="button"
+            :disabled="!defaultShellProfile"
+            @click="defaultShellProfile && openLocal(defaultShellProfile)"
+          >
+            <SquareTerminal :size="16" />
+            打开本地终端
+          </button>
+        </div>
+        <div class="container_workspace_welcome_footer_base">
+          <span class="container_workspace_welcome_footer_hint">
+            <ShieldCheck :size="13" />
+            离线可用
+          </span>
+          <span class="container_workspace_welcome_footer_separator">·</span>
+          <span class="container_workspace_welcome_footer_keyboard">Ctrl + Shift + T 新建终端</span>
+        </div>
       </div>
       <div class="container_workspace_welcome_footer_phase">
-        <span class="container_workspace_welcome_footer_phase-label">剑气藏锋 · 静水流深</span>
-        <span class="container_workspace_welcome_footer_phase-copy">
-          玄密秘钥护持 · 多端同步、分屏御令与周天经脉一应俱全
-        </span>
+        <span class="container_workspace_welcome_footer_phase-label">壶中日月长 · 剑外山海阔</span>
+        <span class="container_workspace_welcome_footer_phase-copy">真实连接 · 安全守护 · 静水流深</span>
       </div>
+      <BorderFlyingSword :instance="windowInstance('border')" />
     </div>
     <div
       v-for="tab in tabs"
@@ -1037,128 +1049,318 @@ function resizePanes(event: PointerEvent, tab: Tab) {
 .container_workspace_welcome_body_base {
   flex: 1;
   min-height: 0;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
+  overflow: hidden;
   position: relative;
+  isolation: isolate;
+  container-type: inline-size;
   background:
-    radial-gradient(ellipse at 50% 34%, var(--color-accent-primary-soft), transparent 58%),
-    radial-gradient(circle at 50% 62%, var(--color-accent-secondary-soft), transparent 64%);
-}
-.container_workspace_orbit_body_grid {
-  position: absolute;
-  left: 50%;
-  top: 44%;
-  width: 620px;
-  height: 440px;
-  transform: translate(-50%, -50%);
-  border-radius: 50%;
-  background:
-    repeating-radial-gradient(
-      circle at 50% 50%,
-      transparent 0,
-      transparent 52px,
-      var(--color-accent-primary-soft) 53px,
-      transparent 54px
+    radial-gradient(ellipse at 70% 40%, var(--color-accent-secondary-soft), transparent 38%),
+    radial-gradient(
+      ellipse at 24% 72%,
+      var(--color-scene-wine-soft, rgba(179, 107, 43, 0.1)),
+      transparent 40%
     ),
-    conic-gradient(
-      from 0deg,
-      transparent 0deg 43deg,
-      var(--color-accent-secondary-soft) 44deg 46deg,
-      transparent 47deg 88deg,
-      var(--color-accent-primary-soft) 89deg 91deg,
-      transparent 92deg 133deg,
-      var(--color-accent-secondary-soft) 134deg 136deg,
-      transparent 137deg 178deg,
-      var(--color-accent-primary-soft) 179deg 181deg,
-      transparent 182deg 223deg,
-      var(--color-accent-secondary-soft) 224deg 226deg,
-      transparent 227deg 268deg,
-      var(--color-accent-primary-soft) 269deg 271deg,
-      transparent 272deg 313deg,
-      var(--color-accent-secondary-soft) 314deg 316deg,
-      transparent 317deg 360deg
-    );
-  mask-image: radial-gradient(ellipse 68% 64% at 50% 50%, rgba(0, 0, 0, 0.72) 14%, transparent 74%);
+    linear-gradient(145deg, var(--color-surface-canvas), var(--color-app-bg) 56%, #050807);
+  &::before {
+    content: '';
+    position: absolute;
+    inset: 10px;
+    z-index: 2;
+    border: 1px solid var(--color-accent-primary-soft);
+    border-radius: 20px;
+    box-shadow:
+      inset 0 1px 0 var(--color-scene-metal-soft, rgba(244, 218, 166, 0.08)),
+      0 0 42px var(--color-accent-primary-soft);
+    pointer-events: none;
+  }
+}
+.container_workspace_welcome_body_atmosphere {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
   pointer-events: none;
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(90deg, color-mix(in srgb, var(--color-app-bg) 88%, transparent), transparent 52%),
+      radial-gradient(
+        ellipse at center,
+        transparent 40%,
+        color-mix(in srgb, var(--color-app-bg) 82%, transparent)
+      );
+  }
+}
+.container_workspace_welcome_body_moon {
+  position: absolute;
+  top: 11%;
+  right: 15%;
+  width: clamp(110px, 14vw, 190px);
+  aspect-ratio: 1;
+  border-radius: 50%;
+  border: 1px solid var(--color-accent-primary-ring);
+  background:
+    radial-gradient(circle at 38% 34%, var(--color-accent-primary-soft), transparent 45%),
+    radial-gradient(circle, var(--color-scene-metal-soft, rgba(239, 221, 180, 0.12)), transparent 70%);
+  box-shadow:
+    0 0 80px var(--color-accent-primary-soft),
+    inset 0 0 32px var(--color-accent-primary-soft);
+  opacity: 0.72;
+}
+.container_workspace_welcome_body_mountains-far,
+.container_workspace_welcome_body_mountains-near {
+  position: absolute;
+  left: -4%;
+  right: -4%;
+  bottom: -2%;
+  height: 47%;
+  transform-origin: bottom;
+  pointer-events: none;
+}
+.container_workspace_welcome_body_mountains-far {
+  clip-path: polygon(
+    0 76%,
+    8% 54%,
+    14% 66%,
+    24% 28%,
+    31% 58%,
+    41% 37%,
+    50% 65%,
+    60% 19%,
+    68% 51%,
+    78% 31%,
+    88% 61%,
+    95% 43%,
+    100% 69%,
+    100% 100%,
+    0 100%
+  );
+  background: linear-gradient(
+    180deg,
+    var(--color-accent-secondary-soft),
+    color-mix(in srgb, var(--color-surface-1) 88%, transparent)
+  );
+  filter: blur(3px);
+  opacity: 0.46;
+}
+.container_workspace_welcome_body_mountains-near {
+  height: 34%;
+  clip-path: polygon(
+    0 57%,
+    10% 34%,
+    20% 72%,
+    32% 40%,
+    43% 77%,
+    55% 46%,
+    67% 71%,
+    78% 34%,
+    88% 62%,
+    100% 39%,
+    100% 100%,
+    0 100%
+  );
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--color-surface-1) 90%, transparent),
+    var(--color-app-bg)
+  );
+  opacity: 0.86;
+}
+.container_workspace_welcome_body_cloud {
+  position: absolute;
+  left: 18%;
+  right: 4%;
+  bottom: 12%;
+  height: 28%;
+  background:
+    radial-gradient(ellipse at 20% 60%, var(--color-accent-secondary-soft), transparent 42%),
+    radial-gradient(ellipse at 58% 40%, var(--color-scene-mist, rgba(165, 193, 179, 0.09)), transparent 50%),
+    radial-gradient(ellipse at 85% 68%, var(--color-accent-primary-soft), transparent 40%);
+  filter: blur(18px);
+  opacity: 0.68;
+  animation: workspace-cloud-drift 18s ease-in-out infinite alternate;
+}
+.container_workspace_welcome_body_stage {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  min-height: 0;
+}
+.container_workspace_welcome_body_content {
+  position: absolute;
+  z-index: 4;
+  left: clamp(36px, 5.5vw, 82px);
+  top: 49%;
+  transform: translateY(-50%);
+  width: min(400px, 38%);
+  isolation: isolate;
+  pointer-events: none;
+  &::before {
+    content: '';
+    position: absolute;
+    z-index: -1;
+    inset: -64px -72px;
+    background: radial-gradient(
+      ellipse at 34% 46%,
+      color-mix(in srgb, var(--color-app-bg) 94%, transparent) 0%,
+      color-mix(in srgb, var(--color-app-bg) 68%, transparent) 46%,
+      transparent 74%
+    );
+    pointer-events: none;
+  }
+  button {
+    pointer-events: auto;
+  }
 }
 .container_workspace_welcome_header_kicker {
   font-family: var(--font-display);
   font-size: 13px;
-  letter-spacing: 3.5px;
+  letter-spacing: 4px;
   color: var(--color-accent-primary-hover);
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-top: 16px;
-  position: relative;
+  gap: 10px;
+  margin: 0 0 20px;
 }
 .container_workspace_welcome_header_dot {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 1px;
   transform: rotate(45deg);
   background: var(--color-seal);
-  box-shadow: 0 0 8px var(--color-seal-ring);
+  box-shadow: 0 0 12px var(--color-seal-ring);
 }
 .container_workspace_welcome_body_title {
   font-family: var(--font-display);
-  font-size: 32px;
+  font-size: clamp(30px, 3vw, 42px);
   font-weight: 600;
-  letter-spacing: 3px;
-  margin: 8px 0 14px;
+  line-height: 1.35;
+  letter-spacing: 2px;
+  white-space: nowrap;
+  margin: 0 0 20px;
   color: var(--color-text-primary);
-  text-shadow: 0 2px 18px var(--color-accent-primary-glow);
+  text-shadow: 0 3px 24px var(--color-accent-primary-glow);
 }
 .container_workspace_welcome_body_description {
-  font-size: 13px;
+  font-size: 14px;
   color: var(--color-text-secondary);
-  text-align: center;
   line-height: 2;
+  letter-spacing: 0.5px;
   margin: 0;
 }
 .container_workspace_welcome_body_actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
-  margin-top: 28px;
+  margin-top: 32px;
   button {
     font-size: 13px;
-    min-height: 36px;
-    padding: 9px 16px;
+    min-height: 38px;
+    padding: 9px 17px;
     border: 1px solid var(--color-border-control);
+    backdrop-filter: blur(12px);
   }
 }
 .container_workspace_welcome_footer_base {
   display: flex;
   align-items: center;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 10px;
   color: var(--color-text-muted);
-  font-size: 12px;
-  margin-top: 25px;
+  font-size: 11px;
+  margin-top: 24px;
 }
 .container_workspace_welcome_footer_hint {
   display: flex;
   align-items: center;
   gap: 5px;
 }
-.container_workspace_welcome_footer_phase {
-  margin: 56px 20px 24px;
+.container_workspace_welcome_body_scene-note {
+  position: absolute;
+  z-index: 3;
+  top: 34px;
+  right: 38px;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  align-items: center;
+  align-items: flex-end;
+  gap: 7px;
+  padding-right: 14px;
+  border-right: 2px solid var(--color-seal);
+  pointer-events: none;
+}
+.container_workspace_welcome_body_scene-name {
+  font-family: var(--font-display);
+  font-size: 23px;
+  letter-spacing: 6px;
+  color: var(--color-accent-primary-bright);
+}
+.container_workspace_welcome_body_scene-state {
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: var(--color-text-muted);
+}
+.container_workspace_welcome_footer_phase {
+  position: absolute;
+  z-index: 3;
+  bottom: 26px;
+  left: 50%;
+  transform: translateX(-10%);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+  pointer-events: none;
 }
 .container_workspace_welcome_footer_phase-label {
+  font-family: var(--font-display);
   font-size: 12px;
-  letter-spacing: 1.6px;
-  color: var(--color-text-muted);
+  letter-spacing: 2px;
+  color: var(--color-accent-primary-hover);
 }
 .container_workspace_welcome_footer_phase-copy {
-  font-size: 12px;
+  font-size: 10px;
+  letter-spacing: 1.2px;
   color: var(--color-text-muted);
-  text-align: center;
+}
+@keyframes workspace-cloud-drift {
+  from {
+    transform: translate3d(-2%, 0, 0) scaleX(0.96);
+    opacity: 0.48;
+  }
+  to {
+    transform: translate3d(3%, -3%, 0) scaleX(1.04);
+    opacity: 0.72;
+  }
+}
+@container (max-width: 820px) {
+  .container_workspace_welcome_body_stage {
+    height: 54%;
+    bottom: auto;
+  }
+  .container_workspace_welcome_body_content {
+    left: 28px;
+    right: 28px;
+    top: auto;
+    bottom: 58px;
+    width: auto;
+    transform: none;
+    text-align: center;
+  }
+  .container_workspace_welcome_header_kicker,
+  .container_workspace_welcome_footer_base,
+  .container_workspace_welcome_body_actions {
+    justify-content: center;
+  }
+  .container_workspace_welcome_body_title {
+    white-space: normal;
+    font-size: 30px;
+  }
+  .container_workspace_welcome_body_scene-note,
+  .container_workspace_welcome_footer_phase {
+    display: none;
+  }
 }
 .container_workspace_panes_body_base {
   position: relative;
@@ -1402,13 +1604,25 @@ function resizePanes(event: PointerEvent, tab: Tab) {
     inset: 2.5px 0;
   }
 }
-@media (max-height: 750px) {
-  .container_workspace_welcome_footer_phase {
-    margin-top: 28px;
+@media (max-height: 750px) and (min-width: 1181px) {
+  .container_workspace_welcome_body_content {
+    top: 48%;
   }
-  .container_workspace_orbit_body_stage {
-    margin-top: 12px;
-    height: 150px;
+  .container_workspace_welcome_body_title {
+    font-size: 32px;
+    margin-bottom: 12px;
+  }
+  .container_workspace_welcome_header_kicker {
+    margin-bottom: 12px;
+  }
+  .container_workspace_welcome_body_actions {
+    margin-top: 20px;
+  }
+  .container_workspace_welcome_footer_base {
+    margin-top: 16px;
+  }
+  .container_workspace_welcome_footer_phase {
+    display: none;
   }
 }
 </style>

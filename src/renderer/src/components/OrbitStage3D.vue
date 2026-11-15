@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { instanceClass } from '../../../shared/classes'
 import orbitIcon from '../assets/orbit-icon.svg'
 import type { SwordScene, SwordSceneOptions } from '../services/sword-scene'
@@ -29,7 +29,8 @@ const reducedMotion = ref(false)
 const motionTier = ref<'full' | 'light' | 'off'>('full')
 const ready = ref(false)
 const failed = ref(false)
-const fallbackVisible = computed(() => !ready.value || failed.value || reducedMotion.value || motionTier.value === 'off')
+const motionDisabled = computed(() => reducedMotion.value || motionTier.value === 'off')
+const fallbackVisible = computed(() => !ready.value || failed.value || motionDisabled.value)
 
 let scene: SwordScene | null = null
 let rafId = 0
@@ -65,7 +66,7 @@ function sceneOptions(): SwordSceneOptions {
 
 function resizeScene(): void {
   const element = canvas.value
-  if (!element || !scene) return
+  if (!element || !scene || !element.clientWidth || !element.clientHeight) return
   scene.resize(element.clientWidth, element.clientHeight, window.devicePixelRatio || 1)
 }
 
@@ -92,7 +93,7 @@ function tick(now: number): void {
 }
 
 function ensureRunning(): void {
-  if (disposed || fallbackVisible.value || !props.active || props.paused || !visible) {
+  if (disposed || failed.value || motionDisabled.value || !props.active || props.paused || !visible) {
     stopLoop()
     return
   }
@@ -112,13 +113,16 @@ async function initializeScene(): Promise<void> {
   loading = true
   try {
     const { createSwordScene } = await import('../services/sword-scene')
-    if (disposed || !canvas.value || fallbackVisible.value) return
+    if (disposed || !canvas.value || motionDisabled.value || failed.value) return
     scene = createSwordScene(canvas.value, sceneOptions())
     ready.value = true
+    await nextTick()
+    if (disposed || !scene) return
     syncScene()
     scene.render(elapsedSeconds)
     ensureRunning()
-  } catch {
+  } catch (error) {
+    console.warn('3D sword scene unavailable', error)
     failed.value = true
     ready.value = false
     stopLoop()

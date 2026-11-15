@@ -38,7 +38,12 @@ const GLYPHS = ['☰', '☱', '☲', '☳', '☴', '☵', '☶', '☷']
 
 export function createSwordScene(canvas: HTMLCanvasElement, initialOptions: SwordSceneOptions): SwordScene {
   let options = { ...initialOptions, palette: { ...initialOptions.palette } }
-  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true, powerPreference: 'high-performance' })
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    alpha: true,
+    antialias: true,
+    powerPreference: 'high-performance'
+  })
   renderer.outputColorSpace = THREE.SRGBColorSpace
   renderer.toneMapping = THREE.ACESFilmicToneMapping
   renderer.toneMappingExposure = 1.18
@@ -51,7 +56,7 @@ export function createSwordScene(canvas: HTMLCanvasElement, initialOptions: Swor
 
   const ambient = new THREE.HemisphereLight('#d9e7df', '#17100b', 1.45)
   scene.add(ambient)
-  const keyLight = new THREE.DirectionalLight('#ffe4ae', 3.6)
+  const keyLight = new THREE.DirectionalLight('#f4f0df', 4.2)
   keyLight.position.set(-3, 5, 6)
   scene.add(keyLight)
   const rimLight = new THREE.PointLight('#5ec4a6', 24, 15, 1.5)
@@ -97,7 +102,10 @@ export function createSwordScene(canvas: HTMLCanvasElement, initialOptions: Swor
   for (let index = 0; index < 16; index++) {
     const positions = new Float32Array(10 * 3)
     const geometry = new THREE.BufferGeometry()
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3).setUsage(THREE.DynamicDrawUsage))
+    geometry.setAttribute(
+      'position',
+      new THREE.BufferAttribute(positions, 3).setUsage(THREE.DynamicDrawUsage)
+    )
     const material = new THREE.LineBasicMaterial({
       color: '#5ec4a6',
       transparent: true,
@@ -135,8 +143,12 @@ export function createSwordScene(canvas: HTMLCanvasElement, initialOptions: Swor
   for (let index = 0; index < 16; index++) {
     const angle = (index / 16) * Math.PI * 2
     spokePositions.push(
-      Math.cos(angle) * 1.2, Math.sin(angle) * 1.2, 0,
-      Math.cos(angle) * 2.52, Math.sin(angle) * 2.52, 0
+      Math.cos(angle) * 1.2,
+      Math.sin(angle) * 1.2,
+      0,
+      Math.cos(angle) * 2.52,
+      Math.sin(angle) * 2.52,
+      0
     )
   }
   spokesGeometry.setAttribute('position', new THREE.Float32BufferAttribute(spokePositions, 3))
@@ -154,12 +166,12 @@ export function createSwordScene(canvas: HTMLCanvasElement, initialOptions: Swor
   scene.add(ringGroup)
 
   const gourd = createGourd()
-  gourd.position.set(-2.35, -0.9, 1.25)
-  gourd.scale.setScalar(0.72)
+  gourd.position.set(-1.25, -0.7, 0.9)
+  gourd.scale.setScalar(0.54)
   scene.add(gourd)
   const wine: WineBowlModel = createWineBowl()
-  wine.group.position.set(2.65, -1.5, 1.15)
-  wine.group.scale.setScalar(0.88)
+  wine.group.position.set(2.65, -0.95, 0.8)
+  wine.group.scale.setScalar(0.76)
   scene.add(wine.group)
 
   const particlePositions = new Float32Array(420 * 3)
@@ -192,6 +204,7 @@ export function createSwordScene(canvas: HTMLCanvasElement, initialOptions: Swor
   const gold = new THREE.Color(options.palette.accentA)
   const jade = new THREE.Color(options.palette.accentB)
   const seal = new THREE.Color(options.palette.seal)
+  const steel = new THREE.Color(options.palette.text)
   const pointerTarget = new THREE.Vector2()
   const pointer = new THREE.Vector2()
   let disposed = false
@@ -201,11 +214,13 @@ export function createSwordScene(canvas: HTMLCanvasElement, initialOptions: Swor
     gold.set(options.palette.accentA)
     jade.set(options.palette.accentB)
     seal.set(options.palette.seal)
+    steel.set(options.palette.text).lerp(jade, 0.16)
     const isError = options.state === 'error'
     const accent = isError ? seal : jade
-    flyingMaterial.emissive.copy(accent).multiplyScalar(0.3)
+    flyingMaterial.emissive.copy(accent).multiplyScalar(0.22)
     foregroundMaterial.emissive.copy(isError ? seal : gold).multiplyScalar(0.42)
-    mainSword.bladeMaterial.emissive.copy(accent).multiplyScalar(0.28)
+    mainSword.bladeMaterial.color.copy(steel)
+    mainSword.bladeMaterial.emissive.copy(accent).multiplyScalar(0.2)
     mainSword.goldMaterial.color.copy(gold)
     mainSword.tasselMaterial.color.copy(seal)
     mainSword.glow.material.color.copy(accent)
@@ -220,13 +235,17 @@ export function createSwordScene(canvas: HTMLCanvasElement, initialOptions: Swor
     formation.scale.setScalar(compact ? 0.48 : 1)
     formation.position.x = compact ? -0.9 * 0.48 : 0
     ringGroup.position.x = compact ? 0 : 0.9
-    ringGroup.scale.setScalar(compact ? 0.52 : 1)
+    ringGroup.scale.setScalar(compact ? 0.52 : 0.86)
     gourd.visible = !compact
     wine.group.visible = !compact
     particles.visible = !compact
-    foreground.forEach((sword) => { sword.visible = !compact && options.tier === 'full' })
+    foreground.forEach((sword) => {
+      sword.visible = !compact && options.tier === 'full'
+    })
     trailGroup.visible = !compact && options.tier === 'full'
-    glyphs.forEach((sprite) => { sprite.visible = !compact })
+    glyphs.forEach((sprite) => {
+      sprite.visible = !compact
+    })
   }
 
   function resize(width: number, height: number, dpr: number): void {
@@ -257,7 +276,10 @@ export function createSwordScene(canvas: HTMLCanvasElement, initialOptions: Swor
       scale.set(size, size, size)
       matrix.compose(position, quaternion, scale)
       swords.setMatrixAt(index, matrix)
-      instanceColor.copy(jade).lerp(gold, pose.glow)
+      instanceColor
+        .copy(steel)
+        .lerp(jade, 0.28)
+        .lerp(gold, pose.glow * 0.38)
       if (options.state === 'error') instanceColor.lerp(seal, 0.7)
       swords.setColorAt(index, instanceColor)
     }
@@ -280,15 +302,19 @@ export function createSwordScene(canvas: HTMLCanvasElement, initialOptions: Swor
     foreground.forEach((sword, index) => {
       if (!sword.visible) return
       const angle = cycle + (index / foreground.length) * Math.PI * 2
-      sword.position.set(0.9 + Math.cos(angle) * 4.6, Math.sin(angle) * 1.85, 2.3 + Math.sin(angle) * 1.1)
-      direction.set(-Math.sin(angle) * 4.6, Math.cos(angle) * 1.85, Math.cos(angle) * 1.1).normalize()
+      sword.position.set(2 + Math.cos(angle) * 3.2, Math.sin(angle) * 1.85, 1.8 + Math.sin(angle) * 0.8)
+      direction.set(-Math.sin(angle) * 3.2, Math.cos(angle) * 1.85, Math.cos(angle) * 0.8).normalize()
       sword.quaternion.setFromUnitVectors(UP, direction)
-      sword.scale.setScalar(0.68 + index * 0.07)
+      sword.scale.setScalar(0.48 + index * 0.045)
     })
 
-    mainSword.group.position.set(compact ? 0 : 0.9, 0.12 + Math.sin(cycle * 2) * 0.09, 0)
-    mainSword.group.rotation.set(0.08 + pointer.y * 0.08, cycle + pointer.x * 0.25, -0.16 + Math.sin(cycle * 2) * 0.045)
-    const mainScale = (compact ? 0.5 : 0.86) * (1 + gather * 0.035)
+    mainSword.group.position.set(compact ? 0 : 0.9, 0.28 + Math.sin(cycle * 2) * 0.08, 0)
+    mainSword.group.rotation.set(
+      0.08 + pointer.y * 0.08,
+      -0.18 + Math.sin(cycle) * 0.42 + pointer.x * 0.2,
+      -0.12 + Math.sin(cycle * 2) * 0.04
+    )
+    const mainScale = (compact ? 0.5 : 0.68) * (1 + gather * 0.035)
     mainSword.group.scale.setScalar(mainScale)
     mainSword.bladeMaterial.emissiveIntensity = 0.22 + gather * 0.8 + (options.boost ? 0.2 : 0)
     mainSword.glow.material.opacity = 0.2 + gather * 0.42 + (options.boost ? 0.12 : 0)
@@ -301,7 +327,7 @@ export function createSwordScene(canvas: HTMLCanvasElement, initialOptions: Swor
     })
     spokeMaterial.opacity = 0.07 + gather * 0.2
 
-    gourd.position.y = -0.9 + Math.sin(cycle * 2) * 0.08
+    gourd.position.y = -0.7 + Math.sin(cycle * 2) * 0.07
     gourd.rotation.set(0.06, -0.24 + Math.sin(cycle) * 0.16, 0.08 + Math.sin(cycle * 2) * 0.035)
     wine.liquid.material.emissiveIntensity = 0.38 + gather * 0.5
     wine.ripples.forEach((ripple, index) => {
@@ -313,7 +339,11 @@ export function createSwordScene(canvas: HTMLCanvasElement, initialOptions: Swor
     wine.droplets.forEach((droplet, index) => {
       const angle = cycle * 2 + (index / wine.droplets.length) * Math.PI * 2
       const lift = (Math.sin(angle) + 1) * 0.5
-      droplet.position.set(Math.cos(angle) * 0.26, 0.28 + lift * (0.18 + gather * 0.28), Math.sin(angle) * 0.26)
+      droplet.position.set(
+        Math.cos(angle) * 0.26,
+        0.28 + lift * (0.18 + gather * 0.28),
+        Math.sin(angle) * 0.26
+      )
       droplet.scale.setScalar(0.55 + gather * 0.75)
     })
 
@@ -349,7 +379,9 @@ export function createSwordScene(canvas: HTMLCanvasElement, initialOptions: Swor
         }
         if (renderable.geometry) geometries.add(renderable.geometry)
         if (renderable.material) {
-          for (const material of Array.isArray(renderable.material) ? renderable.material : [renderable.material]) {
+          for (const material of Array.isArray(renderable.material)
+            ? renderable.material
+            : [renderable.material]) {
             materials.add(material)
           }
         }
