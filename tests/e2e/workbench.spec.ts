@@ -188,6 +188,19 @@ test('homepage sword realm, border flight, resize and motion tiers', async ({ or
     .poll(() => flight.evaluate((element) => getComputedStyle(element).offsetDistance))
     .not.toBe(initialDistance)
 
+  const sceneState = page.locator('.container_workspace_welcome_body_scene-state')
+  await page.getByRole('button', { name: '即刻归宗', exact: true }).click()
+  await expect(sceneState).toContainText(/旋涡聚势|万剑归宗/)
+  await page.waitForTimeout(1000)
+  await page.screenshot({ path: info.outputPath('sword-climax.png') })
+
+  await page.getByRole('button', { name: '重展剑境', exact: true }).click()
+  await expect(sceneState).toContainText('开阵启封')
+  await page.waitForTimeout(720)
+  await page.screenshot({ path: info.outputPath('sword-intro.png') })
+  await expect(sceneState).toContainText(/万剑分身|凌虚归阵/)
+  await page.screenshot({ path: info.outputPath('sword-intro-clones.png') })
+
   const initialPath = await flight.getAttribute('style')
   await app.evaluate(({ BrowserWindow }) => {
     BrowserWindow.getAllWindows()[0]!.setSize(1100, 700)
@@ -211,6 +224,7 @@ test('homepage sword realm, border flight, resize and motion tiers', async ({ or
   await expect(stage.locator('img')).toBeVisible()
   await expect(stage.locator('canvas')).toBeHidden()
   await expect(flight).toBeHidden()
+  await expect(page.getByRole('button', { name: '即刻归宗', exact: true })).toBeHidden()
 
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await page.getByRole('combobox', { name: '动效与性能档' }).click()
@@ -218,6 +232,7 @@ test('homepage sword realm, border flight, resize and motion tiers', async ({ or
   await page.getByRole('button', { name: '工作台', exact: true }).click()
   await expect(stage).toHaveAttribute('data-ready', 'true')
   await expect(flight).toBeVisible()
+  await expect(page.getByRole('button', { name: '即刻归宗', exact: true })).toBeVisible()
 })
 
 test('real PowerShell and CMD, split resize, terminal input and lifecycle cleanup', async ({

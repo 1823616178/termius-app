@@ -74,8 +74,21 @@ const targetPaneToken = ref('')
 const previewInsets = ref<PreviewInsets | null>(null)
 const dragPointerBlock = ref(false)
 const ctaHovered = ref(false)
+const stageRef = ref<InstanceType<typeof OrbitStage3D> | null>(null)
+const swordPhaseNote = ref('开阵启封 · 万锋初现')
+const welcomeIntroKey = ref(0)
 let dragBlockRaf = 0
 let tabHoverSwitchTimer = 0
+
+function replaySwordIntro() {
+  welcomeIntroKey.value += 1
+  swordPhaseNote.value = '开阵启封 · 万锋初现'
+  stageRef.value?.replayIntro()
+}
+
+function triggerSwordClimax() {
+  stageRef.value?.jumpToClimax()
+}
 
 const shellOptions = computed(() =>
   (bootstrap.value?.shells ?? []).map((shell) => ({
@@ -670,21 +683,41 @@ function resizePanes(event: PointerEvent, tab: Tab) {
       </button>
     </header>
     <div v-if="!tabs.length && bootstrap" class="container_workspace_welcome_body_base">
-      <div class="container_workspace_welcome_body_atmosphere" aria-hidden="true">
+      <div :key="welcomeIntroKey" class="container_workspace_welcome_body_atmosphere" aria-hidden="true">
         <span class="container_workspace_welcome_body_moon" />
         <span class="container_workspace_welcome_body_mountains-far" />
         <span class="container_workspace_welcome_body_mountains-near" />
         <span class="container_workspace_welcome_body_cloud" />
       </div>
       <OrbitStage3D
+        ref="stageRef"
         class="container_workspace_welcome_body_stage"
         :active="!tabs.length && page === 'workspace'"
         :boost="ctaHovered"
         :instance="windowInstance('welcome')"
+        @phase="swordPhaseNote = $event"
       />
       <div class="container_workspace_welcome_body_scene-note" aria-hidden="true">
         <span class="container_workspace_welcome_body_scene-name">万剑归宗</span>
-        <span class="container_workspace_welcome_body_scene-state">群剑听令 · 一气归心</span>
+        <span class="container_workspace_welcome_body_scene-state">{{ swordPhaseNote }}</span>
+      </div>
+      <div class="container_workspace_welcome_body_controls">
+        <button
+          class="container_workspace_welcome_body_replay"
+          type="button"
+          title="重新播放开场展开与剑阵演武"
+          @click="replaySwordIntro"
+        >
+          重展剑境
+        </button>
+        <button
+          class="container_workspace_welcome_body_climax"
+          type="button"
+          title="立即催动万剑归宗高潮剑雨"
+          @click="triggerSwordClimax"
+        >
+          即刻归宗
+        </button>
       </div>
       <div class="container_workspace_welcome_body_content">
         <div class="container_workspace_welcome_header_kicker">
@@ -1072,6 +1105,7 @@ function resizePanes(event: PointerEvent, tab: Tab) {
       inset 0 1px 0 var(--color-scene-metal-soft, rgba(244, 218, 166, 0.08)),
       0 0 42px var(--color-accent-primary-soft);
     pointer-events: none;
+    animation: workspace-frame-unfold 760ms cubic-bezier(0.22, 1, 0.36, 1) both;
   }
 }
 .container_workspace_welcome_body_atmosphere {
@@ -1108,6 +1142,7 @@ function resizePanes(event: PointerEvent, tab: Tab) {
     0 0 80px var(--color-accent-primary-soft),
     inset 0 0 32px var(--color-accent-primary-soft);
   opacity: 0.72;
+  animation: workspace-moon-unfold 920ms cubic-bezier(0.22, 1, 0.36, 1) 80ms both;
 }
 .container_workspace_welcome_body_mountains-far,
 .container_workspace_welcome_body_mountains-near {
@@ -1144,6 +1179,7 @@ function resizePanes(event: PointerEvent, tab: Tab) {
   );
   filter: blur(3px);
   opacity: 0.46;
+  animation: workspace-mountain-far-unfold 960ms cubic-bezier(0.22, 1, 0.36, 1) 60ms both;
 }
 .container_workspace_welcome_body_mountains-near {
   height: 34%;
@@ -1167,6 +1203,7 @@ function resizePanes(event: PointerEvent, tab: Tab) {
     var(--color-app-bg)
   );
   opacity: 0.86;
+  animation: workspace-mountain-near-unfold 860ms cubic-bezier(0.22, 1, 0.36, 1) 140ms both;
 }
 .container_workspace_welcome_body_cloud {
   position: absolute;
@@ -1180,7 +1217,9 @@ function resizePanes(event: PointerEvent, tab: Tab) {
     radial-gradient(ellipse at 85% 68%, var(--color-accent-primary-soft), transparent 40%);
   filter: blur(18px);
   opacity: 0.68;
-  animation: workspace-cloud-drift 18s ease-in-out infinite alternate;
+  animation:
+    workspace-cloud-unfold 950ms ease-out 180ms both,
+    workspace-cloud-drift 18s ease-in-out 1130ms infinite alternate;
 }
 .container_workspace_welcome_body_stage {
   position: absolute;
@@ -1223,6 +1262,7 @@ function resizePanes(event: PointerEvent, tab: Tab) {
   align-items: center;
   gap: 10px;
   margin: 0 0 20px;
+  animation: workspace-hero-rise 460ms cubic-bezier(0.22, 1, 0.36, 1) 40ms both;
 }
 .container_workspace_welcome_header_dot {
   width: 7px;
@@ -1242,6 +1282,7 @@ function resizePanes(event: PointerEvent, tab: Tab) {
   margin: 0 0 20px;
   color: var(--color-text-primary);
   text-shadow: 0 3px 24px var(--color-accent-primary-glow);
+  animation: workspace-hero-rise 500ms cubic-bezier(0.22, 1, 0.36, 1) 90ms both;
 }
 .container_workspace_welcome_body_description {
   font-size: 14px;
@@ -1249,12 +1290,14 @@ function resizePanes(event: PointerEvent, tab: Tab) {
   line-height: 2;
   letter-spacing: 0.5px;
   margin: 0;
+  animation: workspace-hero-rise 480ms cubic-bezier(0.22, 1, 0.36, 1) 130ms both;
 }
 .container_workspace_welcome_body_actions {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
   margin-top: 32px;
+  animation: workspace-hero-rise 420ms cubic-bezier(0.22, 1, 0.36, 1) 160ms both;
   button {
     font-size: 13px;
     min-height: 38px;
@@ -1271,6 +1314,7 @@ function resizePanes(event: PointerEvent, tab: Tab) {
   color: var(--color-text-muted);
   font-size: 11px;
   margin-top: 24px;
+  animation: workspace-hero-rise 460ms cubic-bezier(0.22, 1, 0.36, 1) 220ms both;
 }
 .container_workspace_welcome_footer_hint {
   display: flex;
@@ -1289,6 +1333,7 @@ function resizePanes(event: PointerEvent, tab: Tab) {
   padding-right: 14px;
   border-right: 2px solid var(--color-seal);
   pointer-events: none;
+  animation: workspace-seal-unfold 620ms cubic-bezier(0.22, 1, 0.36, 1) 240ms both;
 }
 .container_workspace_welcome_body_scene-name {
   font-family: var(--font-display);
@@ -1301,6 +1346,41 @@ function resizePanes(event: PointerEvent, tab: Tab) {
   letter-spacing: 2px;
   color: var(--color-text-muted);
 }
+.container_workspace_welcome_body_controls {
+  position: absolute;
+  z-index: 4;
+  top: 100px;
+  right: 38px;
+  display: flex;
+  gap: 8px;
+  animation: workspace-seal-unfold 620ms cubic-bezier(0.22, 1, 0.36, 1) 320ms both;
+}
+.container_workspace_welcome_body_replay,
+.container_workspace_welcome_body_climax {
+  min-height: 32px;
+  padding: 4px 12px;
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  color: var(--color-text-secondary);
+  background: color-mix(in srgb, var(--color-surface-1) 76%, transparent);
+  border: 1px solid var(--color-accent-primary-soft);
+  border-radius: var(--radius-control);
+  backdrop-filter: blur(8px);
+  &:hover:not(:disabled) {
+    color: var(--color-accent-primary-bright);
+    border-color: var(--color-accent-primary-ring);
+    background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+    box-shadow: 0 0 18px var(--color-accent-primary-soft);
+  }
+}
+:global(:root[data-motion='off'] .container_workspace_welcome_body_controls) {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .container_workspace_welcome_body_controls {
+    display: none;
+  }
+}
 .container_workspace_welcome_footer_phase {
   position: absolute;
   z-index: 3;
@@ -1312,6 +1392,7 @@ function resizePanes(event: PointerEvent, tab: Tab) {
   gap: 6px;
   align-items: flex-end;
   pointer-events: none;
+  animation: workspace-seal-unfold 620ms cubic-bezier(0.22, 1, 0.36, 1) 300ms both;
 }
 .container_workspace_welcome_footer_phase-label {
   font-family: var(--font-display);
@@ -1323,6 +1404,76 @@ function resizePanes(event: PointerEvent, tab: Tab) {
   font-size: 10px;
   letter-spacing: 1.2px;
   color: var(--color-text-muted);
+}
+@keyframes workspace-frame-unfold {
+  from {
+    opacity: 0;
+    transform: scale(0.972);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes workspace-moon-unfold {
+  from {
+    opacity: 0;
+    transform: scale(0.74) translateY(14px);
+  }
+  to {
+    opacity: 0.72;
+    transform: scale(1) translateY(0);
+  }
+}
+@keyframes workspace-mountain-far-unfold {
+  from {
+    opacity: 0;
+    transform: translateY(34px) scaleY(0.88);
+  }
+  to {
+    opacity: 0.46;
+    transform: translateY(0) scaleY(1);
+  }
+}
+@keyframes workspace-mountain-near-unfold {
+  from {
+    opacity: 0;
+    transform: translateY(28px) scaleY(0.9);
+  }
+  to {
+    opacity: 0.86;
+    transform: translateY(0) scaleY(1);
+  }
+}
+@keyframes workspace-cloud-unfold {
+  from {
+    opacity: 0;
+    transform: translate3d(-4%, 12px, 0) scaleX(0.92);
+  }
+  to {
+    opacity: 0.68;
+    transform: translate3d(-2%, 0, 0) scaleX(0.96);
+  }
+}
+@keyframes workspace-hero-rise {
+  from {
+    opacity: 0;
+    transform: translateY(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes workspace-seal-unfold {
+  from {
+    opacity: 0;
+    transform: translateX(14px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 @keyframes workspace-cloud-drift {
   from {
@@ -1357,8 +1508,13 @@ function resizePanes(event: PointerEvent, tab: Tab) {
     white-space: normal;
     font-size: 30px;
   }
-  .container_workspace_welcome_body_scene-note,
   .container_workspace_welcome_footer_phase {
+    display: none;
+  }
+}
+@container (max-width: 580px) {
+  .container_workspace_welcome_body_scene-note,
+  .container_workspace_welcome_body_controls {
     display: none;
   }
 }

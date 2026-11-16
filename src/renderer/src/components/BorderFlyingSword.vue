@@ -56,24 +56,27 @@ onBeforeUnmount(() => resizeObserver?.disconnect())
   height: 44px;
   offset-anchor: 50% 50%;
   offset-rotate: auto;
-  animation: workspace-border-flight 16s linear infinite;
-  filter: drop-shadow(0 0 7px var(--color-accent-secondary-glow));
+  animation:
+    workspace-border-flight 16s linear infinite,
+    workspace-border-enter 680ms cubic-bezier(0.22, 1, 0.36, 1) 420ms both;
+  filter: drop-shadow(0 0 8px var(--color-accent-secondary-glow));
   &::before {
     content: '';
     position: absolute;
-    top: 20px;
+    top: 19px;
     right: 76px;
-    width: 118px;
-    height: 5px;
+    width: 132px;
+    height: 7px;
     background: linear-gradient(
       90deg,
       transparent,
-      var(--color-accent-secondary-soft) 48%,
+      var(--color-accent-primary-soft) 35%,
+      var(--color-accent-secondary-soft) 62%,
       var(--color-accent-secondary)
     );
     border-radius: 50%;
     filter: blur(1px);
-    opacity: 0.62;
+    opacity: 0.72;
     transform: perspective(100px) rotateX(12deg);
   }
 }
@@ -168,6 +171,14 @@ onBeforeUnmount(() => resizeObserver?.disconnect())
   }
   to {
     offset-distance: 100%;
+  }
+}
+@keyframes workspace-border-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
   }
 }
 @keyframes workspace-border-bank {
