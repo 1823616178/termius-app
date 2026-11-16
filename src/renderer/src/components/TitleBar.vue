@@ -75,7 +75,11 @@ const updateBadgeText = computed(() => {
         class="container_app_window_header_tray"
         type="button"
         :data-active="trayState.trayCreated"
-        title="收起到 Windows 右侧系统托盘后台运行"
+        :title="
+          bootstrap?.platform === 'linux'
+            ? '收起到系统托盘后台运行（需桌面支持 StatusNotifier / AppIndicator）'
+            : '收起到 Windows 右侧系统托盘后台运行'
+        "
         aria-label="后台托盘"
         @click="windowControls.hideToTray()"
       >

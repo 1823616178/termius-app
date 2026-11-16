@@ -343,8 +343,13 @@ export function createTerminal(
             return
           }
           connected = true
+          const isWinPlatform = typeof navigator !== 'undefined' && /windows/i.test(navigator.userAgent)
           const banner = `\x1b[38;2;167;139;250m╭─\x1b[0m \x1b[1;38;2;91;220;244m● ${opened.title}\x1b[0m \x1b[90m·\x1b[0m \x1b[38;2;89;214;160m${
-            connectInput.kind === 'ssh' ? 'SSH 256-Color / TrueColor' : 'ConPTY 256-Color / TrueColor'
+            connectInput.kind === 'ssh'
+              ? 'SSH 256-Color / TrueColor'
+              : isWinPlatform
+                ? 'ConPTY 256-Color / TrueColor'
+                : 'PTY 256-Color / TrueColor'
           }\x1b[0m  \x1b[31m━━\x1b[33m━━\x1b[32m━━\x1b[36m━━\x1b[34m━━\x1b[35m━━\x1b[0m`
           terminal.writeln(banner)
           port.onmessage = ({ data }: MessageEvent<TerminalEvent>) => {

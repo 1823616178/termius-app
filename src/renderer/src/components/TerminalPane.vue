@@ -191,7 +191,12 @@ const badgeInfo = computed(() => {
   if (props.profileId === 'pwsh') return { text: 'PS7', tone: 'pwsh' }
   if (props.profileId === 'powershell') return { text: 'PS', tone: 'ps' }
   if (props.profileId === 'cmd') return { text: 'CMD', tone: 'cmd' }
-  return { text: 'WSL', tone: 'wsl' }
+  if (props.profileId?.startsWith('wsl-')) return { text: 'WSL', tone: 'wsl' }
+  if (props.profileId === 'zsh' || props.profileId?.startsWith('zsh-')) return { text: 'ZSH', tone: 'wsl' }
+  if (props.profileId === 'fish' || props.profileId?.startsWith('fish-')) return { text: 'FISH', tone: 'wsl' }
+  if (props.profileId === 'sh' || props.profileId?.startsWith('sh-')) return { text: 'SH', tone: 'wsl' }
+  if (props.profileId === 'bash' || props.profileId?.startsWith('bash-')) return { text: 'BASH', tone: 'wsl' }
+  return { text: 'PTY', tone: 'wsl' }
 })
 
 const searchResultText = computed(() => {

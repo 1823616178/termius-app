@@ -145,24 +145,34 @@ export class OrbitTrayManager {
     this.callbacks.onStateChanged(this.getState())
   }
 
-  private ensureTray(): Tray {
+  private ensureTray(): Tray | undefined {
     if (this.tray && !this.tray.isDestroyed()) return this.tray
-    const tray = new Tray(resolveTrayIconAsset())
-    tray.on('click', () => {
-      const win = this.callbacks.getMainWindow()
-      if (!win || win.isDestroyed()) return
-      if (this.hiddenWindowIds.has(win.id) || win.isMinimized() || !win.isVisible()) {
-        this.restoreFromTray(win)
-      } else {
-        win.focus()
-      }
-    })
-    tray.on('double-click', () => {
-      this.restoreFromTray()
-    })
-    this.tray = tray
-    this.refresh()
-    return tray
+    try {
+      const icon = resolveTrayIconAsset()
+      const finalIcon =
+        process.platform === 'linux' && typeof icon !== 'string' && !icon.isEmpty()
+          ? icon.resize({ width: 22, height: 22 })
+          : icon
+      const tray = new Tray(finalIcon)
+      tray.on('click', () => {
+        const win = this.callbacks.getMainWindow()
+        if (!win || win.isDestroyed()) return
+        if (this.hiddenWindowIds.has(win.id) || win.isMinimized() || !win.isVisible()) {
+          this.restoreFromTray(win)
+        } else {
+          win.focus()
+        }
+      })
+      tray.on('double-click', () => {
+        this.restoreFromTray()
+      })
+      this.tray = tray
+      this.refresh()
+      return tray
+    } catch {
+      this.tray = undefined
+      return undefined
+    }
   }
 
   reconcileTrayVisibility(): void {
@@ -259,12 +269,19 @@ export class OrbitTrayManager {
     if (win.isDestroyed()) return
     this.hiddenWindowIds.add(win.id)
     const tray = this.ensureTray()
+    if (!tray && process.platform === 'linux') {
+      this.hiddenWindowIds.delete(win.id)
+      if (!win.isMinimized()) win.minimize()
+      this.emitState()
+      return
+    }
     this.refresh()
     win.setSkipTaskbar(true)
     win.hide()
     this.emitState()
 
     if (
+      tray &&
       process.platform === 'win32' &&
       !this.balloonShown &&
       options?.notifyBalloon !== false &&

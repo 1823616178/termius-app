@@ -14,15 +14,20 @@
 - MessagePort 二进制终端输出、递增序号、xterm 解析完成后 ACK、高/低水位暂停与恢复、16 MiB 上限、停滞与故障提示；不静默丢弃输出。
 - 石墨轨道工作台、本机空状态、主机库与详情、原生对话框焦点管理；终端标签、标签排序、最多四窗格、两窗格比例调整、搜索、多行粘贴预览、复制粘贴、字号与屏幕阅读器开关。
 - 自有 DOM 的五段语义 class、窗口与内部 UUID 实例类、模板 AST/SCSS 检查及第三方例外清单。
-- 青冥剑境首页：Three.js 真实 3D 主剑、144/32 把实例飞剑、20 秒万剑归宗周期、动态尾迹、酒葫芦与酒盏涟漪；一把 DOM/CSS 3D 飞剑沿首页边框巡航。支持五行及自定义主题联动、窄窗口布局、完整/轻量/关闭动效档、WebGL 静态降级与场景资源释放。
+- 青冥剑境首页：Three.js 真实 3D 轩辕主剑，加长黄金八面宽刃（刃长 4.37，长宽比约 8.4:1）、双面日月星辰与山川浮雕、轩辕铭文、云纹兽面剑格、碧玉剑心和多层红穗；144/32 把实例飞剑、20 秒万剑归宗周期、动态尾迹、酒葫芦与酒盏涟漪；一把 DOM/CSS 3D 飞剑沿首页边框巡航。支持五行及自定义主题联动、窄窗口布局、完整/轻量/关闭动效档、WebGL 静态降级与场景资源释放。默认自动档检测 WebGL2、软件渲染器、处理器和设备内存，并根据持续真实帧率逐级降级；设置页提供自动、强制开启、轻量和关闭，支持偏好持久化、强制覆盖系统减少动态效果和自动模式原地重新检测。
 
 ## 已执行的验证
 
 验证机器：Windows 11 专业版 x64，系统 `10.0.26300`；开发 Node `24.15.0`。依赖精确版本记录在 `package.json`、`yarn.lock`，运行时 Electron/Node/ABI 可从设置与测试 bootstrap 获取。
 
+- 2026-11-16 动效性能控制：新增默认自动检测、持续真实帧率逐级降级、强制开启及偏好持久化，保留手动轻量和关闭；强制档覆盖系统减少动态效果，关闭时停止 RAF 并释放 Three.js 资源。独立审查后修复偏好初始化前默认完整、FPS 上报导致重复画布重设、自动档原地重检和采样代次问题，并保护临时 WebGL context 清理异常。`yarn typecheck`、`yarn test`（13 文件、96 项）、`yarn build`（844 个模板角色）通过；完整桌面 16 项通过 15 项，新增启动顺序、健康采样 canvas 写入、真实 draw/delete 调用、恢复后连续像素、原地重检和手动档位测试全部通过。唯一失败为既有托盘测试期待“托盘图标已在右侧工具栏显示”，而工作区原有实现显示“托盘图标已显示”，本次未改动该业务文案或测试。最新证据位于 `test-results/motion-performance-review-full/`，已读取自动与强制设置截图。动效相关文件定向 Prettier 检查通过；全量 `yarn format:check` 因用户并行修改的 `WorkspacePage.vue`、`sword-motion.ts`、`sword-scene.ts`、`tests/unit/sword-motion.test.ts` 存在格式问题而未通过，本次未覆盖这些改动。未重新打包或执行安装器安装/卸载；本轮改动未提交。
+
+- 2026-11-16 轩辕剑主剑升级：`yarn typecheck`、`yarn format:check`、`yarn test`（12 文件、73 项）与 `yarn build` 通过，838 个模板角色检查通过。首页剑阵与动效档、WebGL 上下文恢复、初始化失败重试、真实 PowerShell/CMD 与分屏生命周期四项桌面用例全部通过。单测验证八面宽刃尺寸、UV 浮点边界、立体护手、双面贴合浮雕、材质纹理、剑穗和主剑三角形预算。已实际读取归宗、插剑与窄窗口截图及主剑放大区域，证据位于 `test-results/xuanyuan-sword-final/`。本次仅升级主剑，未修改飞剑数量、阵形或插剑时序。已验证 `release/Graphite-Orbit-Setup-0.1.0.exe`（133,281,253 字节，未签名）与 `latest.yml` 的 SHA512 一致，block map 的 6,401 个数据块逐块匹配，ASAR 包含轩辕剑模型、浮雕与铭文；`release/SHA256SUMS.txt` 已更新并复核。打包目录程序、真实 PowerShell、剑境归宗和插剑画面验证通过，截图位于 `test-results/xuanyuan-packaged/`；未执行安装器系统安装或卸载测试。
+
+- 2026-11-16 轩辕剑加长与打包：刃长由 3.14 增至 4.37（约 39%），护手、剑柄与场景缩放不变，纹饰重新定位且保持自身比例。类型、格式、73 项单测、生产构建、首页剑境、WebGL 恢复、初始化重试和真实终端回归均通过。因正在运行的旧安装器锁定同名输出，新包使用 `release/Graphite-Orbit-Setup-0.1.0-xuanyuan-long.exe`，保留旧文件且不强制关闭用户安装器。新包为 133,282,773 字节，SHA256 为 `f7aca3aed99e21ef5c38e82f5048769f5242fe9d580beaa52d344cb53c923da3`；SHA512、`latest.yml`、6,398 个 block map 数据块、ASAR 与生产构建一致性及 6 项 SHA256 均验证通过。打包目录的真实 SQLite/preload/PowerShell 与轩辕剑画面验证通过，截图位于 `test-results/xuanyuan-long/` 和 `test-results/xuanyuan-long-packaged/`。未执行安装器系统安装或卸载测试。
 - 2026-11-15 剑境升级：`yarn typecheck`、`yarn format:check`、`yarn test`（11 文件、65 项）与 `yarn build` 通过。`yarn test:e2e` 的 10 项中 9 项通过，新增用例实际验证 Three.js 就绪、边框位移、窗口缩放路径、缩放后场景截图，以及完整/轻量/关闭动效切换；纯函数单测验证 20 秒周期和归宗汇聚曲线，真实 ConPTY、SSH、分屏和主题用例通过。唯一失败为既有托盘测试仍期待旧文案“托盘图标已在右侧工具栏显示”，而工作区既有 Linux 适配已改为“托盘图标已显示”，本视觉提交不修改该业务文案或测试。可视证据位于 `test-results/desktop/` 与 `test-results/sword-realm-final/`。
 - `yarn typecheck`：main、preload、worker、shared、Vue 与测试代码严格类型检查通过。
-- `yarn format:check`：源代码格式检查通过。
+- `yarn format:check`：此前通过；本次动效审查后的全量检查受四个并行修改文件影响未通过，详见上述动效性能控制记录。
 - `yarn install --immutable`：固定依赖可安装，锁文件未被改写；仓库仅保留 `yarn.lock`。
 - `yarn test`：14 项单元用例通过；包括非法主机/IPC 数据、终端尺寸/输入限制、顺序 ACK、伪造 ACK 和输出上限。
 - `yarn build`：三个进程层和工作进程生产构建通过，258 个模板角色命名检查通过。

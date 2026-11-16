@@ -232,9 +232,9 @@ dialog[open] {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  :root:not([data-motion-preference='full']) *,
+  :root:not([data-motion-preference='full']) *::before,
+  :root:not([data-motion-preference='full']) *::after {
     transition: none !important;
     animation: none !important;
     scroll-behavior: auto !important;

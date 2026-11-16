@@ -2,6 +2,15 @@ import { createHash } from 'node:crypto'
 import { Client, type ClientChannel } from 'ssh2'
 import { terminalChannel } from '../terminal-channel'
 
+export function resolveSshAgentSocket(
+  platform: NodeJS.Platform = process.platform,
+  env: Record<string, string | undefined> = process.env
+): string | undefined {
+  if (platform === 'win32') return '\\\\.\\pipe\\openssh-ssh-agent'
+  const sock = env.SSH_AUTH_SOCK?.trim()
+  return sock ? sock : undefined
+}
+
 export function parseHostKeyAlgorithm(key: Buffer): string {
   if (key.length < 4) return 'unknown'
   const size = key.readUInt32BE(0)
@@ -145,6 +154,20 @@ process.parentPort?.on('message', ({ data, ports }) => {
     }
   })
   try {
+    const agentSocket =
+      data.host.auth === 'agent' && secretPassword === undefined ? resolveSshAgentSocket() : undefined
+    if (data.host.auth === 'agent' && secretPassword === undefined && !agentSocket) {
+      ended = true
+      channel.finish({
+        type: 'state',
+        state: 'error',
+        message:
+          process.platform === 'win32'
+            ? 'OpenSSH Agent 管道不可用。'
+            : '未检测到 SSH_AUTH_SOCK，请先启动 ssh-agent / gnome-keyring-daemon 并添加私钥。'
+      })
+      return
+    }
     armDeadline()
     client.connect({
       host: normalizeSshHost(data.host.address),
@@ -152,10 +175,7 @@ process.parentPort?.on('message', ({ data, ports }) => {
       username: data.host.username,
       password: secretPassword,
       tryKeyboard: secretPassword !== undefined,
-      agent:
-        data.host.auth === 'agent' && secretPassword === undefined
-          ? '\\\\.\\pipe\\openssh-ssh-agent'
-          : undefined,
+      agent: agentSocket,
       readyTimeout: 0,
       keepaliveInterval: 30_000,
       keepaliveCountMax: 3,

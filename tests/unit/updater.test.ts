@@ -2,11 +2,15 @@ import { describe, expect, it } from 'vitest'
 import {
   compareSemver,
   extractSha256FromDigest,
+  getLatestManifestFilename,
   isUpdateNewer,
   parseLatestYml,
+  parseLatestYmlFiles,
   parseSemver,
   parseSha256Sums,
+  resolveUpdatePackageKind,
   sanitizeInstallerFilename,
+  selectLinuxInstallerAsset,
   selectWindowsInstallerAsset,
   updatePreferencesPatchSchema,
   updatePreferencesSchema,
@@ -120,5 +124,64 @@ describe('updater semver, manifest parsing and URL security', () => {
     })
     expect(updatePreferencesPatchSchema.safeParse({ allowPrerelease: true }).success).toBe(true)
     expect(updatePreferencesPatchSchema.safeParse({ customFeedUrl: 'https://bad.test' }).success).toBe(false)
+  })
+
+  it('selects Linux AppImage / deb assets and parses latest-linux.yml multi-file entries', () => {
+    expect(getLatestManifestFilename('win32')).toBe('latest.yml')
+    expect(getLatestManifestFilename('linux')).toBe('latest-linux.yml')
+
+    const linuxYml = [
+      'version: 0.2.0',
+      'files:',
+      '  - url: Graphite-Orbit-0.2.0-linux-x64.AppImage',
+      '    sha512: appimageSha512==',
+      '    size: 105000000',
+      '  - url: Graphite-Orbit-0.2.0-linux-x64.deb',
+      '    sha512: debSha512==',
+      '    size: 89000000',
+      'path: Graphite-Orbit-0.2.0-linux-x64.AppImage',
+      'sha512: appimageSha512==',
+      "releaseDate: '2026-11-15T10:00:00.000Z'"
+    ].join('\n')
+
+    expect(parseLatestYml(linuxYml)?.version).toBe('0.2.0')
+    expect(parseLatestYmlFiles(linuxYml)).toEqual([
+      { url: 'Graphite-Orbit-0.2.0-linux-x64.AppImage', sha512: 'appimageSha512==', size: 105000000 },
+      { url: 'Graphite-Orbit-0.2.0-linux-x64.deb', sha512: 'debSha512==', size: 89000000 }
+    ])
+
+    const linuxAssets = [
+      {
+        name: 'Graphite-Orbit-0.2.0-linux-arm64.AppImage',
+        size: 100,
+        browser_download_url: 'https://github.com/arm64.AppImage'
+      },
+      {
+        name: 'Graphite-Orbit-0.2.0-linux-x64.AppImage',
+        size: 200,
+        browser_download_url: 'https://github.com/x64.AppImage'
+      },
+      {
+        name: 'Graphite-Orbit-0.2.0-linux-x64.deb',
+        size: 180,
+        browser_download_url: 'https://github.com/x64.deb'
+      }
+    ]
+
+    expect(selectLinuxInstallerAsset(linuxAssets, { arch: 'x64', preferredFormat: 'appimage' })?.name).toBe(
+      'Graphite-Orbit-0.2.0-linux-x64.AppImage'
+    )
+    expect(selectLinuxInstallerAsset(linuxAssets, { arch: 'x64', preferredFormat: 'deb' })?.name).toBe(
+      'Graphite-Orbit-0.2.0-linux-x64.deb'
+    )
+    expect(
+      sanitizeInstallerFilename('../evil/Graphite-Orbit-0.2.0-linux-x64.AppImage', '0.2.0', 'linux')
+    ).toBe('Graphite-Orbit-0.2.0-linux-x64.AppImage')
+    expect(sanitizeInstallerFilename('invalid.bin', '0.2.0', 'linux')).toBe(
+      'Graphite-Orbit-0.2.0-linux-x64.AppImage'
+    )
+    expect(resolveUpdatePackageKind('Graphite-Orbit-0.2.0-linux-x64.AppImage')).toBe('appimage')
+    expect(resolveUpdatePackageKind('Graphite-Orbit-0.2.0-linux-x64.deb')).toBe('deb')
+    expect(resolveUpdatePackageKind('Graphite-Orbit-Setup-0.2.0.exe')).toBe('nsis-exe')
   })
 })

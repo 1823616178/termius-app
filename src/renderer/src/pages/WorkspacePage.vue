@@ -16,6 +16,7 @@ import {
 import { instanceClass } from '../../../shared/classes'
 import OrbitSelect from '../components/OrbitSelect.vue'
 import OrbitStage3D from '../components/OrbitStage3D.vue'
+import { FORMATIONS } from '../services/sword-motion'
 import BorderFlyingSword from '../components/BorderFlyingSword.vue'
 import TerminalPane from '../components/TerminalPane.vue'
 import { TERMINAL_THEMES, type TerminalThemeId } from '../services/terminal-themes'
@@ -35,6 +36,7 @@ import {
   openLocal,
   page,
   registerPaneContainer,
+  recordMotionFrameRate,
   reorderTab,
   requestPanePassword,
   resolveSplitDropZone,
@@ -76,6 +78,7 @@ const dragPointerBlock = ref(false)
 const ctaHovered = ref(false)
 const stageRef = ref<InstanceType<typeof OrbitStage3D> | null>(null)
 const swordPhaseNote = ref('开阵启封 · 万锋初现')
+const swordFormationIndex = ref(0)
 const welcomeIntroKey = ref(0)
 let dragBlockRaf = 0
 let tabHoverSwitchTimer = 0
@@ -88,6 +91,11 @@ function replaySwordIntro() {
 
 function triggerSwordClimax() {
   stageRef.value?.jumpToClimax()
+}
+
+function jumpSwordFormation(index: number) {
+  swordFormationIndex.value = index
+  stageRef.value?.jumpToFormation(index)
 }
 
 const shellOptions = computed(() =>
@@ -695,10 +703,14 @@ function resizePanes(event: PointerEvent, tab: Tab) {
         :active="!tabs.length && page === 'workspace'"
         :boost="ctaHovered"
         :instance="windowInstance('welcome')"
+        :on-frame-rate="recordMotionFrameRate"
         @phase="swordPhaseNote = $event"
+        @formation="swordFormationIndex = $event"
       />
       <div class="container_workspace_welcome_body_scene-note" aria-hidden="true">
-        <span class="container_workspace_welcome_body_scene-name">万剑归宗</span>
+        <span class="container_workspace_welcome_body_scene-name">{{
+          FORMATIONS[swordFormationIndex]?.name ?? '万剑归宗'
+        }}</span>
         <span class="container_workspace_welcome_body_scene-state">{{ swordPhaseNote }}</span>
       </div>
       <div class="container_workspace_welcome_body_controls">
@@ -713,12 +725,28 @@ function resizePanes(event: PointerEvent, tab: Tab) {
         <button
           class="container_workspace_welcome_body_climax"
           type="button"
-          title="立即催动万剑归宗高潮剑雨"
+          title="立即催动诛仙剑阵四门杀劫"
           @click="triggerSwordClimax"
         >
           即刻归宗
         </button>
       </div>
+      <nav class="container_workspace_welcome_body_formrail" aria-label="十二剑阵巡览">
+        <button
+          v-for="(formation, index) in FORMATIONS"
+          :key="formation.name"
+          :class="c('container_workspace_welcome_body_formseal', `rail-${index}`)"
+          :data-active="index === swordFormationIndex"
+          :data-name="formation.name"
+          type="button"
+          :title="`${formation.name} · ${formation.sub}`"
+          :aria-label="`切换至${formation.name}`"
+          :aria-current="index === swordFormationIndex ? 'true' : undefined"
+          @click="jumpSwordFormation(index)"
+        >
+          {{ index + 1 }}
+        </button>
+      </nav>
       <div class="container_workspace_welcome_body_content">
         <div class="container_workspace_welcome_header_kicker">
           <span class="container_workspace_welcome_header_dot" />
@@ -1377,7 +1405,85 @@ function resizePanes(event: PointerEvent, tab: Tab) {
   display: none;
 }
 @media (prefers-reduced-motion: reduce) {
-  .container_workspace_welcome_body_controls {
+  :global(:root:not([data-motion-preference='full']) .container_workspace_welcome_body_controls) {
+    display: none;
+  }
+}
+.container_workspace_welcome_body_formrail {
+  position: absolute;
+  z-index: 4;
+  top: 148px;
+  right: 38px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  animation: workspace-seal-unfold 620ms cubic-bezier(0.22, 1, 0.36, 1) 400ms both;
+}
+.container_workspace_welcome_body_formseal {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 10px;
+  font-family: var(--font-display);
+  color: var(--color-text-muted);
+  background: color-mix(in srgb, var(--color-surface-1) 70%, transparent);
+  border: 1px solid var(--color-accent-primary-soft);
+  border-radius: 5px;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  transition:
+    color 0.2s,
+    border-color 0.2s,
+    box-shadow 0.2s,
+    background 0.2s;
+  &::after {
+    content: attr(data-name);
+    position: absolute;
+    right: calc(100% + 8px);
+    top: 50%;
+    translate: 0 -50%;
+    max-width: 0;
+    opacity: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    font-size: 10px;
+    letter-spacing: 2px;
+    color: var(--color-accent-primary-bright);
+    text-shadow: 0 0 12px var(--color-accent-primary-soft);
+    transition:
+      max-width 0.3s cubic-bezier(0.22, 1, 0.36, 1),
+      opacity 0.2s;
+    pointer-events: none;
+  }
+  &:hover,
+  &[data-active='true'] {
+    color: var(--color-accent-primary-bright);
+    border-color: var(--color-accent-primary-ring);
+    background: color-mix(in srgb, var(--color-surface-2) 86%, transparent);
+    box-shadow: 0 0 14px var(--color-accent-primary-soft);
+    &::after {
+      max-width: 180px;
+      opacity: 1;
+    }
+  }
+  &[data-active='true'] {
+    border-color: var(--color-seal);
+  }
+}
+:global(:root[data-motion='off'] .container_workspace_welcome_body_formrail) {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  :global(:root:not([data-motion-preference='full']) .container_workspace_welcome_body_formrail) {
+    display: none;
+  }
+}
+@media (max-width: 900px), (max-height: 560px) {
+  .container_workspace_welcome_body_formrail {
     display: none;
   }
 }

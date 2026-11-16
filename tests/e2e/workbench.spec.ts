@@ -14,6 +14,14 @@ import {
 } from '../../src/workers/data-crypto/sync-crypto'
 import { normalizeRemoteDocument } from '../../src/workers/data-crypto/sync-merge'
 
+type MotionTestWindow = Window & {
+  __motionSceneContexts?: number
+  __motionCanvasWrites?: number
+  __motionDrawCalls?: number
+  __motionDeleteCalls?: number
+  __motionSampleReports?: number
+}
+
 interface Orbit {
   app: ElectronApplication
   page: Page
@@ -101,6 +109,56 @@ async function checkClasses(page: Page) {
   expect(result).toEqual({ missing: [], duplicates: [] })
 }
 
+async function instrumentMotionCanvas(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const testWindow = window as MotionTestWindow
+    testWindow.__motionCanvasWrites = 0
+    testWindow.__motionDrawCalls = 0
+    testWindow.__motionDeleteCalls = 0
+    for (const key of ['width', 'height'] as const) {
+      const descriptor = Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype, key)
+      if (!descriptor?.get || !descriptor.set) continue
+      Object.defineProperty(HTMLCanvasElement.prototype, key, {
+        configurable: descriptor.configurable,
+        enumerable: descriptor.enumerable,
+        get: function (this: HTMLCanvasElement) {
+          return descriptor.get!.call(this)
+        },
+        set: function (this: HTMLCanvasElement, value: number) {
+          testWindow.__motionCanvasWrites = (testWindow.__motionCanvasWrites ?? 0) + 1
+          descriptor.set!.call(this, value)
+        }
+      })
+    }
+    const getContext = HTMLCanvasElement.prototype.getContext
+    HTMLCanvasElement.prototype.getContext = function (
+      this: HTMLCanvasElement,
+      ...args: Parameters<typeof getContext>
+    ) {
+      const context = getContext.apply(this, args)
+      if (args[0] !== 'webgl2' || !context) return context
+      const gl = context as unknown as Record<string, unknown>
+      for (const method of ['drawArrays', 'drawElements', 'drawArraysInstanced', 'drawElementsInstanced']) {
+        const original = gl[method]
+        if (typeof original !== 'function') continue
+        gl[method] = function (this: unknown, ...args: unknown[]) {
+          testWindow.__motionDrawCalls = (testWindow.__motionDrawCalls ?? 0) + 1
+          return original.apply(this, args)
+        }
+      }
+      for (const method of ['deleteBuffer', 'deleteTexture', 'deleteProgram']) {
+        const original = gl[method]
+        if (typeof original !== 'function') continue
+        gl[method] = function (this: unknown, ...args: unknown[]) {
+          testWindow.__motionDeleteCalls = (testWindow.__motionDeleteCalls ?? 0) + 1
+          return original.apply(this, args)
+        }
+      }
+      return context
+    } as typeof getContext
+  })
+}
+
 test('secure empty workspace, semantic DOM and saved host persistence', async ({ orbit }, info) => {
   const { page, app, directory } = orbit
   await expect(page.getByRole('button', { name: '打开本地终端', exact: true })).toBeEnabled()
@@ -180,6 +238,8 @@ test('secure empty workspace, semantic DOM and saved host persistence', async ({
 
 test('homepage sword realm, border flight, resize and motion tiers', async ({ orbit }, info) => {
   const { page, app } = orbit
+  await instrumentMotionCanvas(page)
+  await page.reload()
   const stage = page.locator('[data-variant="welcome"]')
   const flight = page.locator('[class*="container_workspace_borderfx_overlay_flight"]')
   await expect(stage).toHaveAttribute('data-ready', 'true')
@@ -190,9 +250,20 @@ test('homepage sword realm, border flight, resize and motion tiers', async ({ or
 
   const sceneState = page.locator('.container_workspace_welcome_body_scene-state')
   await page.getByRole('button', { name: '即刻归宗', exact: true }).click()
-  await expect(sceneState).toContainText(/旋涡聚势|万剑归宗/)
+  await expect(sceneState).toContainText(/诛仙剑阵/)
   await page.waitForTimeout(1000)
   await page.screenshot({ path: info.outputPath('sword-climax.png') })
+
+  const rail = page.locator('.container_workspace_welcome_body_formrail')
+  await expect(rail).toBeVisible()
+  await expect(rail.locator('button')).toHaveCount(12)
+  await rail.locator('button').nth(9).click()
+  await expect(sceneState).toContainText('九宫八卦剑阵')
+  await expect(rail.locator('button').nth(9)).toHaveAttribute('data-active', 'true')
+  await page.waitForTimeout(600)
+  await page.screenshot({ path: info.outputPath('sword-jiugong.png') })
+  await rail.locator('button').nth(0).click()
+  await expect(sceneState).toContainText('诛仙剑阵')
 
   await page.getByRole('button', { name: '重展剑境', exact: true }).click()
   await expect(sceneState).toContainText('开阵启封')
@@ -210,12 +281,20 @@ test('homepage sword realm, border flight, resize and motion tiers', async ({ or
   await page.screenshot({ path: info.outputPath('sword-resized.png') })
 
   await page.getByRole('button', { name: '设置', exact: true }).click()
+  await expect(page.getByRole('combobox', { name: '动效与性能档' })).toContainText('自动（推荐）')
+  await expect(page.locator('.container_settings_motion_body_status')).toContainText('当前：完整动效')
+  await page.getByRole('combobox', { name: '动效与性能档' }).scrollIntoViewIfNeeded()
+  await page.screenshot({ path: info.outputPath('motion-auto-settings.png') })
   await page.getByRole('combobox', { name: '动效与性能档' }).click()
   await page.getByRole('option', { name: '轻量', exact: true }).click()
   await expect(page.locator('html')).toHaveAttribute('data-motion', 'light')
   await page.getByRole('button', { name: '工作台', exact: true }).click()
   await expect(stage).toHaveAttribute('data-ready', 'true')
   await expect(stage.locator('canvas')).toBeVisible()
+  await expect
+    .poll(() => page.evaluate(() => (window as MotionTestWindow).__motionDrawCalls))
+    .toBeGreaterThan(0)
+  const deletedBeforeOff = await page.evaluate(() => (window as MotionTestWindow).__motionDeleteCalls ?? 0)
 
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await page.getByRole('combobox', { name: '动效与性能档' }).click()
@@ -225,14 +304,309 @@ test('homepage sword realm, border flight, resize and motion tiers', async ({ or
   await expect(stage.locator('canvas')).toBeHidden()
   await expect(flight).toBeHidden()
   await expect(page.getByRole('button', { name: '即刻归宗', exact: true })).toBeHidden()
+  await expect
+    .poll(() => page.evaluate(() => (window as MotionTestWindow).__motionDeleteCalls))
+    .toBeGreaterThan(deletedBeforeOff)
+  const stoppedDrawCalls = await page.evaluate(() => (window as MotionTestWindow).__motionDrawCalls)
+  await page.waitForTimeout(350)
+  expect(await page.evaluate(() => (window as MotionTestWindow).__motionDrawCalls)).toBe(stoppedDrawCalls)
+  expect(
+    await stage.locator('canvas').evaluate((canvas) => {
+      const gl = (canvas as HTMLCanvasElement).getContext('webgl2')
+      return gl?.isContextLost() ?? true
+    })
+  ).toBe(false)
 
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await page.getByRole('combobox', { name: '动效与性能档' }).click()
-  await page.getByRole('option', { name: '完整', exact: true }).click()
+  await page.getByRole('option', { name: '强制开启', exact: true }).click()
+  await expect(page.locator('.container_settings_motion_body_status')).toContainText('强制开启')
+  await expect(page.locator('.container_settings_motion_body_warning')).toBeVisible()
+  await page.screenshot({ path: info.outputPath('motion-forced-settings.png') })
   await page.getByRole('button', { name: '工作台', exact: true }).click()
   await expect(stage).toHaveAttribute('data-ready', 'true')
   await expect(flight).toBeVisible()
   await expect(page.getByRole('button', { name: '即刻归宗', exact: true })).toBeVisible()
+  await expect
+    .poll(() => page.evaluate(() => (window as MotionTestWindow).__motionDrawCalls))
+    .toBeGreaterThan(stoppedDrawCalls!)
+})
+
+test('motion performance healthy samples do not reset drawing buffers', async ({ orbit }) => {
+  const { page } = orbit
+  await page.addInitScript(() => {
+    // Isolate sampling side effects from the test machine's actual GPU speed.
+    let timestamp = performance.now()
+    window.requestAnimationFrame = (callback: FrameRequestCallback): number =>
+      window.setTimeout(() => callback((timestamp += 1000 / 60)), 0)
+    window.cancelAnimationFrame = (handle: number) => window.clearTimeout(handle)
+  })
+  await instrumentMotionCanvas(page)
+  await page.reload()
+  await expect(page.locator('[data-variant="welcome"]')).toHaveAttribute('data-ready', 'true')
+  await page.evaluate(() => {
+    ;(window as MotionTestWindow).__motionSampleReports = 0
+    new MutationObserver(() => {
+      ;(window as MotionTestWindow).__motionSampleReports =
+        ((window as MotionTestWindow).__motionSampleReports ?? 0) + 1
+    }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-motion-reason'] })
+  })
+  await expect
+    .poll(() => page.evaluate(() => (window as MotionTestWindow).__motionSampleReports), { timeout: 20_000 })
+    .toBeGreaterThan(0)
+  await expect(page.locator('html')).toHaveAttribute('data-motion', 'full')
+  const readCanvasState = () =>
+    page.locator('[data-variant="welcome"] canvas').evaluate((canvas) => ({
+      width: (canvas as HTMLCanvasElement).width,
+      height: (canvas as HTMLCanvasElement).height,
+      writes: (window as MotionTestWindow).__motionCanvasWrites
+    }))
+  const before = await readCanvasState()
+  const samples = await page.evaluate(() => (window as MotionTestWindow).__motionSampleReports)
+  await expect
+    .poll(() => page.evaluate(() => (window as MotionTestWindow).__motionSampleReports), { timeout: 20_000 })
+    .toBeGreaterThan(samples!)
+  await expect(page.locator('html')).toHaveAttribute('data-motion', 'full')
+  expect(await readCanvasState()).toEqual(before)
+})
+
+test('motion performance saved off never creates a WebGL scene during startup', async ({ orbit }) => {
+  const { page } = orbit
+  await page.addInitScript(() => {
+    localStorage.setItem('orbit:motion-tier', 'off')
+    ;(window as MotionTestWindow).__motionSceneContexts = 0
+    const getContext = HTMLCanvasElement.prototype.getContext
+    HTMLCanvasElement.prototype.getContext = function (
+      this: HTMLCanvasElement,
+      ...args: Parameters<typeof getContext>
+    ) {
+      if (args[0] === 'webgl2' && this.isConnected) {
+        ;(window as MotionTestWindow).__motionSceneContexts =
+          ((window as MotionTestWindow).__motionSceneContexts ?? 0) + 1
+      }
+      return getContext.apply(this, args)
+    } as typeof getContext
+  })
+  await page.reload()
+  await expect(page.locator('html')).toHaveAttribute('data-motion', 'off')
+  await page.waitForLoadState('networkidle')
+  expect(
+    await page.evaluate(() => ({
+      sceneContexts: (window as MotionTestWindow).__motionSceneContexts
+    }))
+  ).toEqual({ sceneContexts: 0 })
+})
+
+test('motion performance detects weak graphics and persists force override', async ({ orbit }) => {
+  const { page } = orbit
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'hardwareConcurrency', {
+      configurable: true,
+      get: () => Number(localStorage.getItem('orbit:test-motion-cores') ?? 16)
+    })
+    ;(window as MotionTestWindow).__motionSceneContexts = 0
+    const getContext = HTMLCanvasElement.prototype.getContext
+    HTMLCanvasElement.prototype.getContext = function (
+      this: HTMLCanvasElement,
+      ...args: Parameters<typeof getContext>
+    ) {
+      if (args[0] === 'webgl2' && this.isConnected) {
+        ;(window as MotionTestWindow).__motionSceneContexts =
+          ((window as MotionTestWindow).__motionSceneContexts ?? 0) + 1
+      }
+      const context = getContext.apply(this, args)
+      if (args[0] === 'webgl2' && context) {
+        const gl = context as WebGL2RenderingContext
+        const getParameter = gl.getParameter.bind(gl)
+        const debugInfo = gl.getExtension('WEBGL_debug_renderer_info')
+        gl.getParameter = (parameter: number) =>
+          debugInfo && parameter === debugInfo.UNMASKED_RENDERER_WEBGL
+            ? localStorage.getItem('orbit:test-motion-software') === 'hardware'
+              ? 'ANGLE (NVIDIA, GeForce RTX Test GPU)'
+              : 'ANGLE (Google, SwiftShader Device (Subzero))'
+            : getParameter(parameter)
+      }
+      return context
+    } as typeof getContext
+  })
+  await page.reload()
+  const stage = page.locator('[data-variant="welcome"]')
+  await expect(page.locator('html')).toHaveAttribute('data-motion', 'off')
+  await expect(stage.locator('img')).toBeVisible()
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await expect(page.locator('.container_settings_motion_body_status')).toContainText('软件渲染器')
+  await page.waitForLoadState('networkidle')
+  expect(
+    await page.evaluate(() => ({
+      sceneContexts: (window as MotionTestWindow).__motionSceneContexts
+    }))
+  ).toEqual({ sceneContexts: 0 })
+  await page.getByRole('combobox', { name: '动效与性能档' }).click()
+  await page.getByRole('option', { name: '强制开启', exact: true }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-motion', 'full')
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await page.reload()
+  await expect(page.locator('html')).toHaveAttribute('data-motion', 'full')
+  await expect(stage).toHaveAttribute('data-ready', 'true')
+  await expect(stage.locator('canvas')).toBeVisible()
+  const forcedFlight = page.locator('[class*="container_workspace_borderfx_overlay_flight"]')
+  await expect(forcedFlight).toBeVisible()
+  const forcedDistance = await forcedFlight.evaluate((element) => getComputedStyle(element).offsetDistance)
+  await expect
+    .poll(() => forcedFlight.evaluate((element) => getComputedStyle(element).offsetDistance))
+    .not.toBe(forcedDistance)
+  await expect(page.getByRole('button', { name: '即刻归宗', exact: true })).toBeVisible()
+
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByRole('combobox', { name: '动效与性能档' }).click()
+  await page.getByRole('option', { name: '自动（推荐）', exact: true }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-motion', 'off')
+  await expect(page.locator('.container_settings_motion_body_status')).toContainText('减少动态效果')
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  await page.evaluate(() => {
+    localStorage.setItem('orbit:test-motion-cores', '2')
+    localStorage.setItem('orbit:test-motion-software', 'hardware')
+  })
+  await page.reload()
+  await expect(page.locator('html')).toHaveAttribute('data-motion', 'off')
+  await expect(page.locator('html')).toHaveAttribute('data-motion-preference', 'auto')
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await expect(page.locator('.container_settings_motion_body_status')).toContainText('资源不足')
+  await page.evaluate(() => localStorage.setItem('orbit:test-motion-cores', '16'))
+  await page.getByRole('button', { name: '重新检测动效性能', exact: true }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-motion', 'full')
+  await expect(page.locator('html')).toHaveAttribute('data-motion-preference', 'auto')
+  await page.getByRole('button', { name: '工作台', exact: true }).click()
+  await expect(stage).toHaveAttribute('data-ready', 'true')
+  expect(await page.evaluate(() => (window as MotionTestWindow).__motionSceneContexts)).toBeGreaterThan(0)
+})
+
+test('motion performance uses sustained real frame rate but never overrides force', async ({ orbit }) => {
+  const { page } = orbit
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'hardwareConcurrency', { configurable: true, get: () => 16 })
+    window.requestAnimationFrame = (callback: FrameRequestCallback): number =>
+      window.setTimeout(() => callback(performance.now()), 70)
+    window.cancelAnimationFrame = (handle: number) => window.clearTimeout(handle)
+    const getContext = HTMLCanvasElement.prototype.getContext
+    HTMLCanvasElement.prototype.getContext = function (
+      this: HTMLCanvasElement,
+      ...args: Parameters<typeof getContext>
+    ) {
+      const context = getContext.apply(this, args)
+      if (args[0] === 'webgl2' && context) {
+        const gl = context as WebGL2RenderingContext
+        const getParameter = gl.getParameter.bind(gl)
+        const debugInfo = gl.getExtension('WEBGL_debug_renderer_info')
+        gl.getParameter = (parameter: number) =>
+          debugInfo && parameter === debugInfo.UNMASKED_RENDERER_WEBGL
+            ? 'ANGLE (NVIDIA, GeForce RTX Test GPU)'
+            : getParameter(parameter)
+      }
+      return context
+    } as typeof getContext
+  })
+  await page.reload()
+  await expect(page.locator('[data-variant="welcome"]')).toHaveAttribute('data-ready', 'true')
+  await expect(page.locator('html')).toHaveAttribute('data-motion', 'light', { timeout: 15_000 })
+  await expect(page.locator('html')).toHaveAttribute('data-motion', 'off', { timeout: 15_000 })
+  await expect(page.locator('[data-variant="welcome"] img')).toBeVisible()
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await expect(page.locator('.container_settings_motion_body_status')).toContainText('帧率持续偏低')
+  await page.getByRole('combobox', { name: '动效与性能档' }).click()
+  await page.getByRole('option', { name: '轻量', exact: true }).click()
+  await page.getByRole('button', { name: '工作台', exact: true }).click()
+  await expect(page.locator('[data-variant="welcome"]')).toHaveAttribute('data-ready', 'true')
+  await page.waitForTimeout(6800)
+  await expect(page.locator('html')).toHaveAttribute('data-motion', 'light')
+
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByRole('combobox', { name: '动效与性能档' }).click()
+  await page.getByRole('option', { name: '强制开启', exact: true }).click()
+  await page.getByRole('button', { name: '工作台', exact: true }).click()
+  await expect(page.locator('[data-variant="welcome"]')).toHaveAttribute('data-ready', 'true')
+  await page.waitForTimeout(6800)
+  await expect(page.locator('html')).toHaveAttribute('data-motion', 'full')
+
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  const previousGeneration = Number(await page.locator('html').getAttribute('data-motion-generation'))
+  await page.getByRole('combobox', { name: '动效与性能档' }).click()
+  await page.getByRole('option', { name: '自动（推荐）', exact: true }).click()
+  await expect(page.locator('html')).toHaveAttribute('data-motion', 'full')
+  const nextGeneration = Number(await page.locator('html').getAttribute('data-motion-generation'))
+  expect(nextGeneration).toBeGreaterThan(previousGeneration)
+  await page.getByRole('button', { name: '工作台', exact: true }).click()
+  await page.waitForTimeout(500)
+  await expect(page.locator('html')).toHaveAttribute('data-motion-reason', /初检通过/)
+  await expect(page.locator('html')).toHaveAttribute('data-motion', 'light', { timeout: 15_000 })
+})
+
+test('sword animation resumes after context loss and motion preference changes', async ({ orbit }) => {
+  const { page } = orbit
+  const stage = page.locator('[data-variant="welcome"]')
+  const phase = page.locator('.container_workspace_welcome_body_scene-state')
+  await expect(stage).toHaveAttribute('data-ready', 'true')
+  // Check real rendered pixels, not only the ready flag or button-driven phase changes.
+  const firstFrame = await stage.locator('canvas').screenshot()
+  await expect.poll(async () => (await stage.locator('canvas').screenshot()).equals(firstFrame)).toBe(false)
+
+  await stage.locator('canvas').evaluate((element) => {
+    const canvas = element as HTMLCanvasElement & { restoreTestContext?: () => void }
+    const gl = canvas.getContext('webgl2')!
+    const extension = gl.getExtension('WEBGL_lose_context')!
+    canvas.restoreTestContext = () => extension.restoreContext()
+    extension.loseContext()
+  })
+  await expect(stage).toHaveAttribute('data-ready', 'false')
+  await expect(phase).toContainText('图形连接中断')
+  await stage.locator('canvas').evaluate((element) => {
+    ;(element as HTMLCanvasElement & { restoreTestContext: () => void }).restoreTestContext()
+  })
+  await expect(stage).toHaveAttribute('data-ready', 'true')
+  const restoredFrame = await stage.locator('canvas').screenshot()
+  await expect
+    .poll(async () => (await stage.locator('canvas').screenshot()).equals(restoredFrame))
+    .toBe(false)
+  const runningFrame = await stage.locator('canvas').screenshot()
+  await expect.poll(async () => (await stage.locator('canvas').screenshot()).equals(runningFrame)).toBe(false)
+  await page.getByRole('button', { name: '重展剑境', exact: true }).click()
+  await expect(phase).toContainText('万剑分身')
+
+  await page.emulateMedia({ reducedMotion: 'reduce' })
+  await expect(stage.locator('canvas')).toBeHidden()
+  await expect(phase).toContainText('系统已开启减少动态效果')
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  await expect(stage).toHaveAttribute('data-ready', 'true')
+  await expect(stage.locator('canvas')).toBeVisible()
+  await page.getByRole('button', { name: '即刻归宗', exact: true }).click()
+  await expect(phase).toContainText('诛仙剑阵')
+})
+
+test('sword initialization failure can be retried from the homepage', async ({ orbit }) => {
+  const { page } = orbit
+  await page.addInitScript(() => {
+    localStorage.setItem('orbit:motion-tier', 'full')
+    const getContext = HTMLCanvasElement.prototype.getContext
+    let failOnce = true
+    HTMLCanvasElement.prototype.getContext = function (
+      this: HTMLCanvasElement,
+      ...args: Parameters<typeof getContext>
+    ) {
+      if (args[0] === 'webgl2' && failOnce) {
+        failOnce = false
+        throw new Error('Simulated transient graphics initialization failure')
+      }
+      return getContext.apply(this, args)
+    } as typeof getContext
+  })
+  await page.reload()
+  const stage = page.locator('[data-variant="welcome"]')
+  const phase = page.locator('.container_workspace_welcome_body_scene-state')
+  await expect(phase).toContainText('剑境加载失败')
+  await expect(stage.locator('img')).toBeVisible()
+  await page.getByRole('button', { name: '重展剑境', exact: true }).click()
+  await expect(stage).toHaveAttribute('data-ready', 'true')
+  await expect(phase).toContainText('万剑分身')
 })
 
 test('real PowerShell and CMD, split resize, terminal input and lifecycle cleanup', async ({

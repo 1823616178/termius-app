@@ -87,7 +87,9 @@ function jumpToHostsGroup(groupNameText: string): void {
         <span class="container_identities_page_header_eyebrow">令符玉牒 · 宗门印鉴</span>
         <h2 class="container_identities_page_header_title">凭据、同步分组与主机指纹库</h2>
         <p class="container_identities_page_header_description">
-          集中管理服务器同步分组、每台主机的本地 DPAPI / OpenSSH Agent 认证凭据状态与 SSH 可信指纹。
+          集中管理服务器同步分组、每台主机的本地系统凭据（{{
+            bootstrap?.platform === 'linux' ? 'Keyring / Secret Service' : 'DPAPI'
+          }}）与 SSH Agent 认证状态及可信指纹。
         </p>
       </div>
       <div class="container_identities_page_header_actions">
@@ -207,7 +209,13 @@ function jumpToHostsGroup(groupNameText: string): void {
         <h3 class="container_identities_creds_card_title">主机认证凭据安全审计</h3>
         <span class="container_identities_creds_dpapi_badge">
           {{
-            bootstrap?.encryptionAvailable ? '系统 DPAPI 凭据加密可用' : '系统凭据加密不可用（会话临时密码）'
+            bootstrap?.encryptionAvailable
+              ? bootstrap.platform === 'linux'
+                ? '系统 Keyring 凭据加密可用（Secret Service）'
+                : '系统 DPAPI 凭据加密可用'
+              : bootstrap?.platform === 'linux'
+                ? '未检测到系统 Keyring（gnome-keyring / kwallet），凭据仅临时使用'
+                : '系统凭据加密不可用（会话临时密码）'
           }}
         </span>
       </div>
@@ -235,8 +243,12 @@ function jumpToHostsGroup(groupNameText: string): void {
                   ? 'Agent 签名托管'
                   : host.hasPassword
                     ? syncStatus?.syncPasswords
-                      ? '本地 DPAPI + 云端 E2EE 已保护'
-                      : '本机 DPAPI 已安全保存'
+                      ? bootstrap?.platform === 'linux'
+                        ? '本地 Keyring + 云端 E2EE 已保护'
+                        : '本地 DPAPI + 云端 E2EE 已保护'
+                      : bootstrap?.platform === 'linux'
+                        ? '本机 Keyring 已安全保存'
+                        : '本机 DPAPI 已安全保存'
                     : '未保存（连接时输入）'
               }}
             </span>

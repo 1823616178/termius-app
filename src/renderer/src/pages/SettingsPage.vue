@@ -30,9 +30,11 @@ import {
   highContrast,
   installDownloadedUpdate,
   lineHeight,
-  motionTier,
+  motionPreference,
+  motionStatus,
   openUpdateReleasePage,
   page,
+  refreshMotionPreference,
   revealDownloadedUpdate,
   screenReaderDefault,
   setUiTheme,
@@ -44,7 +46,7 @@ import {
   updateTrayPreferences,
   updateUpdaterPreferences,
   windowInstance,
-  type MotionTier
+  type MotionPreference
 } from '../stores/workbench'
 
 const updateSectionRef = ref<HTMLElement>()
@@ -102,10 +104,21 @@ const cursorStyleOptions = [
 ]
 
 const motionTierOptions = [
-  { value: 'full', label: '完整' },
+  { value: 'auto', label: '自动（推荐）' },
+  { value: 'full', label: '强制开启' },
   { value: 'light', label: '轻量' },
   { value: 'off', label: '关闭' }
 ]
+
+const motionStatusText = computed(() => {
+  const status = motionStatus.value
+  const tierLabel = status.tier === 'full' ? '完整动效' : status.tier === 'light' ? '轻量动效' : '已关闭'
+  const measuredFps =
+    status.preference === 'auto' && status.fps !== null && !status.reason.includes('fps')
+      ? ` · ${status.fps} fps`
+      : ''
+  return `当前：${tierLabel} · ${status.reason}${measuredFps}`
+})
 
 const trayVisibilityOptions = [
   { value: 'when-minimized', label: '仅最小化或收到后台时显示（推荐）' },
@@ -304,14 +317,33 @@ function resetCustomUiTheme(): void {
       <label class="container_settings_terminal_body_motion-label">
         动效与性能档
         <OrbitSelect
-          :model-value="motionTier"
+          :model-value="motionPreference"
           :options="motionTierOptions"
           aria-label="动效与性能档"
           width="190px"
           instance="settings-motion"
-          @update:model-value="motionTier = $event as MotionTier"
+          @update:model-value="motionPreference = $event as MotionPreference"
         />
       </label>
+      <p class="container_settings_motion_body_status" :data-tier="motionStatus.tier">
+        {{ motionStatusText }}
+      </p>
+      <p class="container_settings_motion_body_description">
+        自动模式先检查 WebGL2、处理器与设备资源，再根据首页实际帧率逐级调整。
+        <span v-if="motionPreference === 'full'" class="container_settings_motion_body_warning">
+          强制开启会覆盖系统“减少动态效果”，低性能设备可能卡顿或增加耗电。
+        </span>
+      </p>
+      <button
+        v-if="motionPreference === 'auto'"
+        class="container_settings_motion_body_recheck"
+        type="button"
+        aria-label="重新检测动效性能"
+        @click="refreshMotionPreference"
+      >
+        <RefreshCw :size="12" />
+        重新检测
+      </button>
       <label class="container_settings_terminal_body_contrast-label">
         <input
           v-model="highContrast"
@@ -380,7 +412,13 @@ function resetCustomUiTheme(): void {
       <div class="container_settings_tray_header_row">
         <h3 class="container_settings_tray_header_title">后台运行与系统托盘</h3>
         <span class="container_settings_tray_header_badge" :data-active="trayState.trayCreated">
-          {{ trayState.trayCreated ? '托盘图标已在右侧工具栏显示' : '最小化时将在右侧系统托盘显示图标' }}
+          {{
+            trayState.trayCreated
+              ? '托盘图标已显示'
+              : bootstrap?.platform === 'linux'
+                ? '最小化或切入后台时尝试创建托盘图标'
+                : '最小化时将在右侧系统托盘显示图标'
+          }}
         </span>
       </div>
       <label class="container_settings_tray_minimize_label">
@@ -418,7 +456,11 @@ function resetCustomUiTheme(): void {
           立即隐藏到后台托盘
         </button>
         <span class="container_settings_tray_actions_hint">
-          隐藏后点击 Windows 右下角系统托盘图标即可随时恢复主窗口，右键可快捷新建终端或退出。
+          {{
+            bootstrap?.platform === 'linux'
+              ? '在支持 StatusNotifier / AppIndicator 的 Linux 桌面（如 Ubuntu 启用 AppIndicator 扩展）中，可点击系统托盘图标恢复窗口；若桌面未提供托盘，最小化按钮会保留在系统任务栏。'
+              : '隐藏后点击 Windows 右下角系统托盘图标即可随时恢复主窗口，右键可快捷新建终端或退出。'
+          }}
         </span>
       </div>
     </section>
@@ -427,11 +469,23 @@ function resetCustomUiTheme(): void {
       <p class="container_settings_security_body_status">
         <ShieldCheck :size="15" />
         {{
-          bootstrap?.encryptionAvailable ? 'Windows 系统凭据保护可用' : '系统凭据保护不可用，密码保存已禁用'
+          bootstrap?.encryptionAvailable
+            ? bootstrap.platform === 'linux'
+              ? `系统凭据加密可用（${bootstrap.encryptionBackend}）`
+              : 'Windows 系统凭据保护可用（DPAPI）'
+            : bootstrap?.platform === 'linux'
+              ? '未检测到系统 Keyring（gnome-keyring / kwallet），密码保存已禁用'
+              : '系统凭据保护不可用，密码保存已禁用'
         }}
       </p>
       <p class="container_settings_security_body_description">
-        主机配置保存在本地 SQLite 数据库；选择保存的密码由 Windows 系统保护。终端输出和输入历史默认不落盘。
+        {{
+          bootstrap?.platform === 'linux'
+            ? bootstrap?.encryptionAvailable
+              ? '主机配置保存在本地 SQLite 数据库（~/.config/Graphite Orbit/）；选择保存的密码由系统 Keyring / libsecret 保护。SSH 验证同时兼容应用指纹库与 ~/.ssh/known_hosts。'
+              : '主机配置保存在本地 SQLite 数据库；当前环境缺少运行中的 Secret Service / Keyring，连接时请输入临时密码或使用 SSH_AUTH_SOCK，不会以明文落盘。SSH 验证同时兼容 ~/.ssh/known_hosts。'
+            : '主机配置保存在本地 SQLite 数据库；选择保存的密码由 Windows 系统保护。终端输出和输入历史默认不落盘。'
+        }}
       </p>
     </section>
     <section ref="updateSectionRef" class="container_settings_update_body_section">
@@ -530,14 +584,25 @@ function resetCustomUiTheme(): void {
         </button>
 
         <button
-          v-if="updateState.phase === 'downloaded'"
+          v-if="updateState.phase === 'downloaded' && updateState.latest?.packageKind !== 'deb'"
           class="container_settings_update_actions_install"
           type="button"
           data-primary="true"
           @click="installDownloadedUpdate"
         >
           <Rocket :size="13" />
-          立即安装更新
+          {{ updateState.latest?.packageKind === 'appimage' ? '启动新版 AppImage 升级' : '立即安装更新' }}
+        </button>
+
+        <button
+          v-if="updateState.phase === 'downloaded' && updateState.latest?.packageKind === 'deb'"
+          class="container_settings_update_actions_debinstall"
+          type="button"
+          data-primary="true"
+          @click="installDownloadedUpdate"
+        >
+          <Rocket :size="13" />
+          打开软件包 / 安装指引 (.deb)
         </button>
 
         <button
@@ -567,6 +632,20 @@ function resetCustomUiTheme(): void {
         >
           忽略此版本
         </button>
+      </div>
+
+      <div
+        v-if="
+          updateState.phase === 'downloaded' &&
+          updateState.latest?.packageKind === 'deb' &&
+          updateState.downloadedFilePath
+        "
+        class="container_settings_update_debhint_box"
+      >
+        <span class="container_settings_update_debhint_label">.deb 包手动升级命令（Ubuntu / Debian）：</span>
+        <code class="container_settings_update_debhint_cmd">
+          sudo apt install "{{ updateState.downloadedFilePath }}"
+        </code>
       </div>
 
       <label class="container_settings_update_autocheck_label">
@@ -754,6 +833,40 @@ function resetCustomUiTheme(): void {
   justify-content: space-between;
   margin-top: 18px;
   font-size: 13px;
+}
+.container_settings_motion_body_status {
+  margin: 10px 0 0;
+  color: var(--color-accent-primary-hover);
+  font-size: 12px;
+  line-height: 1.6;
+  &[data-tier='off'] {
+    color: var(--color-text-muted);
+  }
+}
+.container_settings_motion_body_description {
+  margin: 5px 0 0;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  line-height: 1.65;
+}
+.container_settings_motion_body_warning {
+  color: var(--color-warning, #f5c46b);
+}
+.container_settings_motion_body_recheck {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 26px;
+  margin-top: 8px;
+  padding: 3px 8px;
+  color: var(--color-accent-primary-hover);
+  background: transparent;
+  border: 1px solid var(--color-accent-primary-ring);
+  border-radius: var(--radius-control);
+  font-size: 11px;
+  &:hover {
+    background: var(--color-accent-primary-soft);
+  }
 }
 .container_settings_terminal_body_blink-label,
 .container_settings_terminal_body_copy-label,
@@ -1151,6 +1264,27 @@ function resetCustomUiTheme(): void {
     align-items: center;
     gap: 6px;
   }
+}
+.container_settings_update_debhint_box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  border-radius: var(--radius-control);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-1);
+}
+.container_settings_update_debhint_label {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+.container_settings_update_debhint_cmd {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-accent-primary-hover);
+  overflow-wrap: anywhere;
+  user-select: text;
 }
 .container_settings_update_autocheck_label,
 .container_settings_update_prerelease_label {

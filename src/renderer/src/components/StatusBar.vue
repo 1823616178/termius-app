@@ -60,7 +60,13 @@ const syncLabel = computed(() => {
       {{ activeTheme.name }}
     </button>
     <span class="container_app_status_footer_protocol">
-      {{ focusedPane?.kind === 'ssh' ? 'SSH · TrueColor' : focusedPane ? 'ConPTY · TrueColor' : '准备就绪' }}
+      {{
+        focusedPane?.kind === 'ssh'
+          ? 'SSH · TrueColor'
+          : focusedPane
+            ? `${bootstrap?.platform === 'win32' ? 'ConPTY' : 'PTY'} · TrueColor`
+            : '准备就绪'
+      }}
     </span>
     <button
       class="container_app_status_footer_version"

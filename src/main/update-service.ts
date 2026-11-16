@@ -1,6 +1,8 @@
 import { app, shell } from 'electron'
+import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
+  chmodSync,
   createWriteStream,
   existsSync,
   mkdirSync,
@@ -17,12 +19,15 @@ import { Readable } from 'node:stream'
 import {
   DEFAULT_UPDATE_REPOSITORY,
   extractSha256FromDigest,
+  getLatestManifestFilename,
   isUpdateNewer,
   normalizeVersionString,
   parseLatestYml,
+  parseLatestYmlFiles,
   parseSha256Sums,
+  resolveUpdatePackageKind,
   sanitizeInstallerFilename,
-  selectWindowsInstallerAsset,
+  selectInstallerAssetForPlatform,
   updatePreferencesPatchSchema,
   updatePreferencesSchema,
   validateUpdateSourceUrl,
@@ -255,9 +260,28 @@ export class OrbitUpdateService {
     }
   }
 
+  private getTargetPlatform(): NodeJS.Platform {
+    return process.platform
+  }
+
+  private detectLinuxPackageFormat(): 'appimage' | 'deb' {
+    const override = process.env.ORBIT_LINUX_PACKAGE_FORMAT?.trim().toLowerCase()
+    if (override === 'deb' || override === 'appimage') return override
+    if (process.env.APPIMAGE) return 'appimage'
+    if (
+      existsSync('/var/lib/dpkg/info/graphite-orbit.list') ||
+      (app.isPackaged && process.execPath.startsWith('/opt/'))
+    ) {
+      return 'deb'
+    }
+    return 'appimage'
+  }
+
   private async checkViaLatestYmlFallback(): Promise<UpdateReleaseInfo | null> {
     const { owner, repo } = this.repository
-    const ymlUrl = `${this.getWebBaseUrl()}/${owner}/${repo}/releases/latest/download/latest.yml`
+    const platform = this.getTargetPlatform()
+    const manifestName = getLatestManifestFilename(platform)
+    const ymlUrl = `${this.getWebBaseUrl()}/${owner}/${repo}/releases/latest/download/${manifestName}`
     const response = await this.fetchWithRedirectValidation(
       ymlUrl,
       { headers: { Accept: 'text/plain, application/yaml, */*' } },
@@ -265,12 +289,22 @@ export class OrbitUpdateService {
     )
     if (response.status === 404) return null
     if (!response.ok) {
-      throw new Error(`无法读取 latest.yml (HTTP ${response.status})`)
+      throw new Error(`无法读取 ${manifestName} (HTTP ${response.status})`)
     }
-    const yml = parseLatestYml(await response.text())
+    const ymlText = await response.text()
+    const yml = parseLatestYml(ymlText)
     if (!yml) return null
+    const fileEntries = parseLatestYmlFiles(ymlText)
+    const preferredFormat = platform === 'linux' ? this.detectLinuxPackageFormat() : undefined
+    const matchedFile =
+      platform === 'linux' && preferredFormat
+        ? (fileEntries.find((entry) => entry.url.toLowerCase().endsWith(`.${preferredFormat}`)) ??
+          fileEntries[0])
+        : fileEntries[0]
 
-    const assetName = basename(yml.path)
+    const chosenPath = matchedFile?.url || yml.path
+    const assetName = sanitizeInstallerFilename(basename(chosenPath), yml.version, platform)
+    const packageKind = resolveUpdatePackageKind(assetName)
     const downloadUrl = `${this.getWebBaseUrl()}/${owner}/${repo}/releases/download/v${yml.version}/${encodeURIComponent(assetName)}`
     const sumsText = await this.fetchOptionalTextAsset(
       `${this.getWebBaseUrl()}/${owner}/${repo}/releases/latest/download/SHA256SUMS.txt`
@@ -286,10 +320,11 @@ export class OrbitUpdateService {
       releaseUrl: `${this.getWebBaseUrl()}/${owner}/${repo}/releases/tag/v${yml.version}`,
       prerelease: yml.version.includes('-'),
       assetName,
+      packageKind,
       downloadUrl: validateUpdateSourceUrl(downloadUrl, this.overrideOrigin),
-      sizeBytes: yml.size,
+      sizeBytes: matchedFile?.size ?? yml.size,
       sha256: sumsMap.get(assetName.toLowerCase()) ?? null,
-      sha512: yml.sha512
+      sha512: matchedFile?.sha512 ?? yml.sha512
     }
   }
 
@@ -348,7 +383,9 @@ export class OrbitUpdateService {
     }
 
     const assets = selected.assets ?? []
-    const latestYmlAsset = assets.find((item) => item.name.toLowerCase() === 'latest.yml')
+    const platform = this.getTargetPlatform()
+    const manifestName = getLatestManifestFilename(platform)
+    const latestYmlAsset = assets.find((item) => item.name.toLowerCase() === manifestName)
     const sumsAsset = assets.find((item) => item.name.toLowerCase() === 'sha256sums.txt')
     const [latestYmlText, sumsText] = await Promise.all([
       this.fetchOptionalTextAsset(latestYmlAsset?.browser_download_url),
@@ -356,22 +393,42 @@ export class OrbitUpdateService {
     ])
 
     const latestYml: LatestYmlMetadata | null = latestYmlText ? parseLatestYml(latestYmlText) : null
+    const latestYmlFiles = latestYmlText ? parseLatestYmlFiles(latestYmlText) : []
     const sumsMap = sumsText ? parseSha256Sums(sumsText) : new Map<string, string>()
-    const installer = selectWindowsInstallerAsset(assets, latestYml)
+    const preferredLinuxFormat = platform === 'linux' ? this.detectLinuxPackageFormat() : undefined
+    const installer = selectInstallerAssetForPlatform(assets, {
+      platform,
+      arch: process.arch,
+      preferredLinuxFormat,
+      latestYml
+    })
 
     const version = normalizeVersionString(latestYml?.version || selected.tag_name)
     const fallbackDownloadUrl = `${this.getWebBaseUrl()}/${owner}/${repo}/releases/tag/${encodeURIComponent(selected.tag_name)}`
     const assetName = installer
-      ? sanitizeInstallerFilename(installer.name, version)
+      ? sanitizeInstallerFilename(installer.name, version, platform)
       : latestYml?.path
-        ? sanitizeInstallerFilename(latestYml.path, version)
-        : `Graphite-Orbit-Setup-${version}.exe`
+        ? sanitizeInstallerFilename(latestYml.path, version, platform)
+        : platform === 'linux'
+          ? `Graphite-Orbit-${version}-linux-${process.arch}.AppImage`
+          : `Graphite-Orbit-Setup-${version}.exe`
+
+    const matchedYmlFile = latestYmlFiles.find(
+      (entry) => basename(entry.url).toLowerCase() === assetName.toLowerCase()
+    )
+    const resolvedSha512 =
+      matchedYmlFile?.sha512 ??
+      (latestYml && basename(latestYml.path).toLowerCase() === assetName.toLowerCase()
+        ? latestYml.sha512
+        : null)
 
     const sha256 =
       extractSha256FromDigest(installer?.digest) ??
       sumsMap.get(assetName.toLowerCase()) ??
       (installer ? sumsMap.get(installer.name.toLowerCase()) : undefined) ??
       null
+
+    const packageKind = installer ? resolveUpdatePackageKind(assetName) : 'release-page'
 
     return {
       noReleasesPublished: false,
@@ -384,12 +441,13 @@ export class OrbitUpdateService {
         releaseUrl: validateUpdateSourceUrl(selected.html_url || fallbackDownloadUrl, this.overrideOrigin),
         prerelease: Boolean(selected.prerelease),
         assetName,
+        packageKind,
         downloadUrl: installer
           ? validateUpdateSourceUrl(installer.browser_download_url, this.overrideOrigin)
           : '',
-        sizeBytes: installer?.size ?? latestYml?.size ?? null,
+        sizeBytes: installer?.size ?? matchedYmlFile?.size ?? latestYml?.size ?? null,
         sha256,
-        sha512: latestYml?.sha512 ?? null
+        sha512: resolvedSha512
       }
     }
   }
@@ -457,10 +515,21 @@ export class OrbitUpdateService {
 
         const cachedPath = join(
           this.updatesDir,
-          sanitizeInstallerFilename(release.assetName, release.version)
+          sanitizeInstallerFilename(release.assetName, release.version, this.getTargetPlatform())
         )
         const cachedHash = await this.verifyExistingInstaller(cachedPath, release)
         if (cachedHash) {
+          if (resolveUpdatePackageKind(release.assetName) === 'appimage') {
+            try {
+              chmodSync(cachedPath, 0o755)
+            } catch {
+              /* ignore chmod error */
+            }
+          }
+          const readyMessage =
+            release.packageKind === 'deb'
+              ? `新版本 v${release.version} (.deb) 已下载校验，点击查看安装命令（sudo apt install）。`
+              : `新版本 v${release.version} 安装包已就绪并完成完整性校验，可直接安装。`
           return this.updateState({
             phase: 'downloaded',
             latest: release,
@@ -473,7 +542,7 @@ export class OrbitUpdateService {
             verifiedHash: cachedHash,
             checkedAt,
             error: null,
-            message: `新版本 v${release.version} 安装包已就绪并完成完整性校验，可直接安装。`
+            message: readyMessage
           })
         }
 
@@ -617,11 +686,26 @@ export class OrbitUpdateService {
         }
 
         renameSync(tempPath, finalPath)
+        const pkgKind = latest.packageKind ?? resolveUpdatePackageKind(latest.assetName)
+        if (pkgKind === 'appimage') {
+          try {
+            chmodSync(finalPath, 0o755)
+          } catch {
+            /* ignore chmod failure */
+          }
+        }
         const verifiedLabel = latest.sha256
           ? `SHA256:${computedSha256}`
           : latest.sha512
             ? `SHA512:${computedSha512.slice(0, 16)}…`
             : `SHA256:${computedSha256}`
+
+        const downloadedMessage =
+          pkgKind === 'deb'
+            ? `v${latest.version} (.deb) 下载并校验完成，请在终端执行 sudo apt install "${finalPath}" 完成升级。`
+            : pkgKind === 'appimage'
+              ? `v${latest.version} AppImage 已下载校验并赋可执行权限，点击即可启动新版程序。`
+              : `v${latest.version} 下载并校验完成，点击即可启动安装程序升级。`
 
         return this.updateState({
           phase: 'downloaded',
@@ -629,7 +713,7 @@ export class OrbitUpdateService {
           downloadedFilePath: finalPath,
           verifiedHash: verifiedLabel,
           error: null,
-          message: `v${latest.version} 下载并校验完成，点击即可启动安装程序升级。`
+          message: downloadedMessage
         })
       } catch (error) {
         rmSync(tempPath, { force: true })
@@ -684,12 +768,61 @@ export class OrbitUpdateService {
       return false
     }
 
+    const pkgKind = latest.packageKind ?? resolveUpdatePackageKind(latest.assetName)
+
+    if (pkgKind === 'deb') {
+      if (process.env.ORBIT_UPDATE_TEST_DRY_INSTALL === '1') {
+        return true
+      }
+      const openError = await shell.openPath(filePath).catch((err) => String(err))
+      if (openError) {
+        shell.showItemInFolder(filePath)
+      }
+      this.updateState({
+        message: `请运行 sudo apt install "${filePath}" 或通过系统软件安装器完成 .deb 升级。`
+      })
+      return true
+    }
+
     if (this.callbacks.onConfirmInstall) {
       const confirmed = await this.callbacks.onConfirmInstall()
       if (!confirmed) return false
     }
 
     if (process.env.ORBIT_UPDATE_TEST_DRY_INSTALL === '1') {
+      return true
+    }
+
+    if (pkgKind === 'appimage') {
+      try {
+        chmodSync(filePath, 0o755)
+      } catch {
+        /* ignore chmod error */
+      }
+      await new Promise<void>((resolve, reject) => {
+        const child = spawn(filePath, [], {
+          detached: true,
+          stdio: 'ignore'
+        })
+        let settled = false
+        const timer = setTimeout(() => {
+          if (settled) return
+          settled = true
+          child.unref()
+          resolve()
+        }, 350)
+        child.once('error', (err) => {
+          if (settled) return
+          settled = true
+          clearTimeout(timer)
+          reject(
+            new Error(
+              `无法启动 AppImage（若系统缺少 FUSE，可安装 libfuse2 或使用 --appimage-extract-and-run）：${err.message}`
+            )
+          )
+        })
+      })
+      this.callbacks.onPrepareInstallQuit()
       return true
     }
 

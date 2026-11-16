@@ -2,7 +2,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { instanceClass } from '../../../shared/classes'
 import orbitIcon from '../assets/orbit-icon.svg'
-import { INTRO_SECONDS } from '../services/sword-motion'
+import { INTRO_SECONDS, MOVEMENT_SECONDS } from '../services/sword-motion'
+import { parseMotionTier, REDUCED_MOTION_REASON, type MotionTier } from '../services/motion-performance'
 import type { SwordScene, SwordSceneOptions } from '../services/sword-scene'
 
 const props = withDefaults(
@@ -13,6 +14,7 @@ const props = withDefaults(
     paused?: boolean
     boost?: boolean
     instance?: string
+    onFrameRate?: (fps: number) => void
   }>(),
   {
     variant: 'welcome',
@@ -26,12 +28,13 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   phase: [label: string]
+  formation: [index: number]
 }>()
 
 const c = (base: string) => instanceClass(base, props.instance)
 const canvas = ref<HTMLCanvasElement | null>(null)
 const reducedMotion = ref(false)
-const motionTier = ref<'full' | 'light' | 'off'>('full')
+const motionTier = ref<MotionTier>('off')
 const ready = ref(false)
 const failed = ref(false)
 const motionDisabled = computed(() => reducedMotion.value || motionTier.value === 'off')
@@ -40,16 +43,22 @@ const fallbackVisible = computed(() => !ready.value || failed.value || motionDis
 let scene: SwordScene | null = null
 let rafId = 0
 let lastTick = 0
+let lastRenderTick = 0
+let frameSeconds = 0
+let sampleStarted = 0
+let sampledFrames = 0
+let motionGeneration = ''
+let contextLost = false
 let elapsedSeconds = 0
 let introSeconds = 0
 let lastPhaseLabel = ''
+let lastFormationIndex = -1
 let lastWidth = 0
 let lastHeight = 0
 let lastDpr = 0
 let loading = false
 let disposed = false
 let visible = true
-let mediaQuery: MediaQueryList | null = null
 let attrObserver: MutationObserver | null = null
 let resizeObserver: ResizeObserver | null = null
 
@@ -93,12 +102,25 @@ function syncSceneOptions(): void {
 }
 
 function canAnimate(): boolean {
-  return !disposed && !failed.value && !motionDisabled.value && props.active && !props.paused && visible
+  return (
+    !disposed &&
+    !contextLost &&
+    !failed.value &&
+    !motionDisabled.value &&
+    props.active &&
+    !props.paused &&
+    visible
+  )
 }
 
 function stopLoop(): void {
   if (rafId) cancelAnimationFrame(rafId)
   rafId = 0
+  lastTick = 0
+  lastRenderTick = 0
+  frameSeconds = 0
+  sampleStarted = 0
+  sampledFrames = 0
 }
 
 function reportPhase(label: string): void {
@@ -108,11 +130,19 @@ function reportPhase(label: string): void {
   }
 }
 
+function reportFormation(index: number): void {
+  if (index !== lastFormationIndex) {
+    lastFormationIndex = index
+    emit('formation', index)
+  }
+}
+
 function renderCurrentFrame(): void {
   if (!scene || disposed) return
   try {
     const label = scene.render(elapsedSeconds, introSeconds)
     reportPhase(label)
+    reportFormation(scene.formationIndex())
   } catch (error) {
     console.warn('3D sword scene render error', error)
     handleFailure()
@@ -121,30 +151,59 @@ function renderCurrentFrame(): void {
 
 function handleFailure(): void {
   stopLoop()
-  scene?.dispose()
+  scene?.dispose(false)
   scene = null
   failed.value = true
   ready.value = false
   lastWidth = 0
   lastHeight = 0
+  reportPhase('剑境加载失败 · 点击重展剑境重试')
 }
 
 function tick(now: number): void {
   rafId = 0
-  if (!scene || disposed) return
-  const delta = lastTick ? Math.min(0.05, Math.max(0.001, (now - lastTick) / 1000)) : 0.016
+  if (!scene || !canAnimate()) return
+  const delta = lastTick ? Math.min(0.1, Math.max(0, (now - lastTick) / 1000)) : 0
   lastTick = now
-  elapsedSeconds += delta
-  if (introSeconds < INTRO_SECONDS) {
-    introSeconds = Math.min(INTRO_SECONDS, introSeconds + delta)
+  frameSeconds += delta
+  const interval = 1000 / (motionTier.value === 'light' || props.variant === 'compact' ? 30 : 60)
+  if (!lastRenderTick || now - lastRenderTick >= interval - 0.5) {
+    elapsedSeconds += frameSeconds
+    introSeconds = Math.min(INTRO_SECONDS, introSeconds + frameSeconds)
+    frameSeconds = 0
+    lastRenderTick = now
+    renderCurrentFrame()
+    if (props.variant === 'welcome' && scene && canAnimate()) {
+      if (!sampleStarted) sampleStarted = now
+      sampledFrames += 1
+      const sampleDuration = now - sampleStarted
+      if (sampleDuration >= 3000) {
+        const fps = (sampledFrames * 1000) / sampleDuration
+        sampleStarted = now
+        sampledFrames = 0
+        props.onFrameRate?.(fps)
+      }
+    }
   }
-  renderCurrentFrame()
-  if (props.active && !props.paused && visible && !fallbackVisible.value) {
+  if (canAnimate() && scene) {
     rafId = requestAnimationFrame(tick)
   }
 }
 
 function ensureRunning(): void {
+  if (motionDisabled.value) {
+    const reason = document.documentElement.dataset.motionReason
+    reportPhase(
+      reducedMotion.value ? '系统已开启减少动态效果 · 静态展示' : reason || '动效已关闭 · 可在设置中开启'
+    )
+    stopLoop()
+    if (scene) {
+      scene.dispose(false)
+      scene = null
+    }
+    ready.value = false
+    return
+  }
   if (!canAnimate()) {
     stopLoop()
     return
@@ -157,6 +216,7 @@ function ensureRunning(): void {
   resizeScene()
   if (!rafId) {
     lastTick = performance.now()
+    sampleStarted = lastTick
     rafId = requestAnimationFrame(tick)
   }
 }
@@ -164,19 +224,20 @@ function ensureRunning(): void {
 async function initializeScene(): Promise<void> {
   if (loading || scene || failed.value || disposed || !canvas.value) return
   loading = true
+  reportPhase('剑境加载中')
   try {
     const { createSwordScene } = await import('../services/sword-scene')
     if (disposed || !canvas.value || !canAnimate()) return
     const created = createSwordScene(canvas.value, sceneOptions())
-    if (disposed) {
-      created.dispose()
+    if (disposed || !canAnimate()) {
+      created.dispose(false)
       return
     }
     scene = created
     ready.value = true
     await nextTick()
     if (disposed) {
-      scene.dispose()
+      scene?.dispose()
       scene = null
       return
     }
@@ -198,14 +259,27 @@ async function initializeScene(): Promise<void> {
 }
 
 function readPreferences(): void {
-  reducedMotion.value = mediaQuery?.matches ?? false
-  const tier = document.documentElement.dataset.motion
-  motionTier.value = tier === 'off' || tier === 'light' ? tier : 'full'
+  const root = document.documentElement
+  const nextTier = parseMotionTier(root.dataset.motion)
+  const nextGeneration = root.dataset.motionGeneration ?? ''
+  if (nextTier !== motionTier.value || nextGeneration !== motionGeneration) {
+    sampleStarted = 0
+    sampledFrames = 0
+    motionGeneration = nextGeneration
+  }
+  motionTier.value = nextTier
+  reducedMotion.value =
+    root.dataset.motionPreference !== 'full' && root.dataset.motionReason === REDUCED_MOTION_REASON
 }
 
 function handleMotionChange(): void {
   readPreferences()
-  ensureRunning()
+  // v-show must reveal the canvas before measuring its dimensions.
+  void nextTick(() => {
+    syncSceneOptions()
+    resizeScene(true)
+    ensureRunning()
+  })
 }
 
 function handleVisibilityChange(): void {
@@ -215,17 +289,20 @@ function handleVisibilityChange(): void {
 
 function handleContextLost(event: Event): void {
   event.preventDefault()
+  contextLost = true
   stopLoop()
-  scene?.dispose()
+  scene?.dispose(false)
   scene = null
   ready.value = false
   failed.value = true
   lastWidth = 0
   lastHeight = 0
+  reportPhase('图形连接中断 · 等待恢复')
 }
 
 function handleContextRestored(): void {
   if (disposed) return
+  contextLost = false
   failed.value = false
   ready.value = false
   ensureRunning()
@@ -253,9 +330,12 @@ function onStageClick(): void {
 }
 
 function replayIntro(): void {
+  if (!contextLost) failed.value = false
+  stopLoop()
   elapsedSeconds = 0
   introSeconds = 0
   lastPhaseLabel = ''
+  lastFormationIndex = -1
   if (scene && !disposed) {
     renderCurrentFrame()
   }
@@ -263,10 +343,24 @@ function replayIntro(): void {
 }
 
 function jumpToClimax(): void {
+  if (!contextLost) failed.value = false
+  stopLoop()
   introSeconds = INTRO_SECONDS
-  elapsedSeconds = 12.6
+  elapsedSeconds = 2
   lastPhaseLabel = ''
   scene?.triggerPulse()
+  if (scene && !disposed) {
+    renderCurrentFrame()
+  }
+  ensureRunning()
+}
+
+function jumpToFormation(index: number): void {
+  if (!contextLost) failed.value = false
+  stopLoop()
+  introSeconds = INTRO_SECONDS
+  elapsedSeconds = index * MOVEMENT_SECONDS + MOVEMENT_SECONDS * 0.5
+  lastPhaseLabel = ''
   if (scene && !disposed) {
     renderCurrentFrame()
   }
@@ -280,22 +374,26 @@ function triggerBurst(): void {
 defineExpose({
   replayIntro,
   jumpToClimax,
+  jumpToFormation,
   triggerBurst
 })
 
 onMounted(() => {
   visible = document.visibilityState !== 'hidden'
-  mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
   readPreferences()
-  mediaQuery.addEventListener('change', handleMotionChange)
   attrObserver = new MutationObserver(() => {
-    readPreferences()
-    syncSceneOptions()
-    ensureRunning()
+    handleMotionChange()
   })
   attrObserver.observe(document.documentElement, {
     attributes: true,
-    attributeFilter: ['data-motion', 'data-contrast', 'data-ui-theme', 'style']
+    attributeFilter: [
+      'data-motion',
+      'data-motion-preference',
+      'data-motion-generation',
+      'data-contrast',
+      'data-ui-theme',
+      'style'
+    ]
   })
   resizeObserver = new ResizeObserver(() => resizeScene())
   if (canvas.value) {
@@ -333,7 +431,6 @@ onBeforeUnmount(() => {
   stopLoop()
   attrObserver?.disconnect()
   resizeObserver?.disconnect()
-  mediaQuery?.removeEventListener('change', handleMotionChange)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   canvas.value?.removeEventListener('webglcontextlost', handleContextLost)
   canvas.value?.removeEventListener('webglcontextrestored', handleContextRestored)

@@ -78,12 +78,24 @@ export interface Host {
   hasPassword: boolean
   updatedAt: string
 }
+export type ShellKind = 'powershell' | 'cmd' | 'wsl' | 'bash' | 'zsh' | 'fish' | 'sh'
+export type OrbitPlatform = 'win32' | 'linux' | 'darwin' | (string & {})
+export type EncryptionBackend =
+  | 'dpapi'
+  | 'keychain'
+  | 'gnome_libsecret'
+  | 'kwallet'
+  | 'kwallet5'
+  | 'kwallet6'
+  | 'basic_text'
+  | 'unknown'
+
 export interface ShellProfile {
   id: string
   name: string
   executable: string
   args: string[]
-  kind: 'powershell' | 'cmd' | 'wsl'
+  kind: ShellKind
   detail: string
 }
 export type TrayVisibilityMode = 'when-minimized' | 'always'
@@ -116,6 +128,7 @@ export type TrayAction = 'new-local' | 'open-hosts' | 'open-tunnels' | 'open-set
 
 export interface Bootstrap {
   windowId: string
+  platform: OrbitPlatform
   hosts: Host[]
   groups: SyncGroup[]
   tunnels: SyncTunnel[]
@@ -123,6 +136,7 @@ export interface Bootstrap {
   shells: ShellProfile[]
   home: string
   encryptionAvailable: boolean
+  encryptionBackend: EncryptionBackend
   maximized: boolean
   tray: TrayState
   update: UpdateStatusSnapshot

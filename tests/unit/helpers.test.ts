@@ -1,6 +1,7 @@
+import { createHmac } from 'node:crypto'
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { instanceClass } from '../../src/shared/classes'
 import {
@@ -10,12 +11,23 @@ import {
 } from '../../src/shared/shortcuts'
 import { redactDiagnostic } from '../../src/main/diagnostics'
 import {
+  lookupOpenSshKnownHost,
+  matchOpenSshHostPattern,
+  parseOpenSshKnownHosts
+} from '../../src/main/openssh-known-hosts'
+import {
   decodeWslOutput,
+  discoverPosixShells,
   findExecutableOnPath,
+  parseEtcShells,
   parseWslDistributions,
   wslProfileId
 } from '../../src/main/shells'
-import { parseHostKeyAlgorithm, normalizeSshHost } from '../../src/workers/connection/index'
+import {
+  parseHostKeyAlgorithm,
+  normalizeSshHost,
+  resolveSshAgentSocket
+} from '../../src/workers/connection/index'
 import { sanitizeShellEnv } from '../../src/workers/local-pty/index'
 import {
   TERMINAL_THEMES,
@@ -84,7 +96,7 @@ describe('shell discovery, redaction, SSH normalization, and UI helpers', () => 
     expect(parseWslDistributions(utf16)).toEqual(['Alpine', 'Ubuntu-24.04'])
   })
 
-  it('finds executables on quoted PATH segments and extra candidates', () => {
+  it('finds executables on quoted PATH segments and extra candidates across delimiters', () => {
     const dir = mkdtempSync(join(tmpdir(), 'orbit-path-test-'))
     tempDirs.push(dir)
     const binDir = join(dir, 'Quoted Tool')
@@ -92,9 +104,56 @@ describe('shell discovery, redaction, SSH normalization, and UI helpers', () => 
     const exePath = join(binDir, 'pwsh.exe')
     writeFileSync(exePath, '')
 
-    expect(findExecutableOnPath('pwsh.exe', `"${binDir}";C:\\missing`, [])).toBe(exePath)
+    expect(findExecutableOnPath('pwsh.exe', [`"${binDir}"`, join(dir, 'missing')].join(delimiter), [])).toBe(
+      exePath
+    )
+    expect(findExecutableOnPath('pwsh.exe', `"${binDir}"|C:\\missing`, [], '|')).toBe(exePath)
     expect(findExecutableOnPath('pwsh.exe', '', [exePath])).toBe(exePath)
     expect(findExecutableOnPath('pwsh.exe', 'relative/dir', [])).toBeUndefined()
+  })
+
+  it('discovers Linux POSIX shells honoring $SHELL first and deduplicating symlinks', () => {
+    const etcContent = [
+      '# /etc/shells: valid login shells',
+      '/bin/sh',
+      '/bin/bash',
+      '/usr/bin/bash',
+      '/usr/bin/zsh'
+    ].join('\n')
+    expect(parseEtcShells(etcContent)).toEqual(['/bin/sh', '/bin/bash', '/usr/bin/bash', '/usr/bin/zsh'])
+
+    const execSet = new Set(['/usr/bin/zsh', '/bin/bash', '/usr/bin/bash', '/bin/sh'])
+    const realMap = new Map<string, string>([
+      ['/bin/bash', '/usr/bin/bash'],
+      ['/usr/bin/bash', '/usr/bin/bash'],
+      ['/usr/bin/zsh', '/usr/bin/zsh'],
+      ['/bin/sh', '/usr/bin/dash']
+    ])
+
+    const shells = discoverPosixShells({
+      envShell: '/usr/bin/zsh',
+      envPath: '',
+      etcShellsContent: etcContent,
+      candidates: [],
+      checkExecutable: (p) => execSet.has(p),
+      resolveRealpath: (p) => realMap.get(p) ?? p
+    })
+
+    expect(shells.map((item) => item.executable)).toEqual(['/usr/bin/zsh', '/bin/sh', '/bin/bash'])
+    expect(shells[0]?.kind).toBe('zsh')
+    expect(shells[0]?.name).toContain('默认 Shell')
+    expect(shells[2]?.kind).toBe('bash')
+
+    const fallbackShells = discoverPosixShells({
+      envShell: '/nonexistent/shell',
+      envPath: '',
+      etcShellsContent: '',
+      candidates: ['/bin/bash', '/bin/sh'],
+      checkExecutable: (p) => p === '/bin/bash' || p === '/bin/sh',
+      resolveRealpath: (p) => p
+    })
+    expect(fallbackShells[0]?.executable).toBe('/bin/bash')
+    expect(fallbackShells[0]?.kind).toBe('bash')
   })
 
   it('redacts sensitive paths, private keys, tokens, and sqlite paths', () => {
@@ -114,26 +173,46 @@ describe('shell discovery, redaction, SSH normalization, and UI helpers', () => 
     expect(redacted).toContain('[REDACTED_PRIVATE_KEY]')
   })
 
-  it('sanitizes shell env by removing Electron variables', () => {
-    const env = sanitizeShellEnv({
-      PATH: 'C:\\Windows\\System32',
-      ELECTRON_RUN_AS_NODE: '1',
-      ELECTRON_NO_ASAR: '1',
-      ORIGINAL_XDG_CURRENT_DESKTOP: 'GNOME',
-      USERPROFILE: 'C:\\Users\\demo'
-    })
-    expect(env.ELECTRON_RUN_AS_NODE).toBeUndefined()
-    expect(env.ELECTRON_NO_ASAR).toBeUndefined()
-    expect(env.ORIGINAL_XDG_CURRENT_DESKTOP).toBeUndefined()
-    expect(env.PATH).toBe('C:\\Windows\\System32')
-    expect(env.TERM).toBe('xterm-256color')
-    expect(env.COLORTERM).toBe('truecolor')
-    expect(env.TERM_PROGRAM).toBe('GraphiteOrbit')
-    expect(env.CLICOLOR).toBe('1')
-    expect(env.FORCE_COLOR).toBe('3')
-    expect(env.WSL_UTF8).toBe('1')
-    expect(env.LS_COLORS).toContain('di=01;36')
-    expect(env.PROMPT).toContain('$E[')
+  it('sanitizes shell env for Windows and Linux separately by removing Electron variables', () => {
+    const winEnv = sanitizeShellEnv(
+      {
+        PATH: 'C:\\Windows\\System32',
+        ELECTRON_RUN_AS_NODE: '1',
+        ELECTRON_NO_ASAR: '1',
+        ORIGINAL_XDG_CURRENT_DESKTOP: 'GNOME',
+        USERPROFILE: 'C:\\Users\\demo'
+      },
+      'win32'
+    )
+    expect(winEnv.ELECTRON_RUN_AS_NODE).toBeUndefined()
+    expect(winEnv.ELECTRON_NO_ASAR).toBeUndefined()
+    expect(winEnv.ORIGINAL_XDG_CURRENT_DESKTOP).toBeUndefined()
+    expect(winEnv.PATH).toBe('C:\\Windows\\System32')
+    expect(winEnv.TERM).toBe('xterm-256color')
+    expect(winEnv.COLORTERM).toBe('truecolor')
+    expect(winEnv.TERM_PROGRAM).toBe('GraphiteOrbit')
+    expect(winEnv.CLICOLOR).toBe('1')
+    expect(winEnv.FORCE_COLOR).toBe('3')
+    expect(winEnv.WSL_UTF8).toBe('1')
+    expect(winEnv.LS_COLORS).toContain('di=01;36')
+    expect(winEnv.PROMPT).toContain('$E[')
+
+    const linuxEnv = sanitizeShellEnv(
+      {
+        PATH: '/usr/local/bin:/usr/bin:/bin',
+        SHELL: '/bin/bash',
+        ELECTRON_RUN_AS_NODE: '1',
+        ORIGINAL_XDG_CURRENT_DESKTOP: 'ubuntu:GNOME'
+      },
+      'linux'
+    )
+    expect(linuxEnv.ELECTRON_RUN_AS_NODE).toBeUndefined()
+    expect(linuxEnv.ORIGINAL_XDG_CURRENT_DESKTOP).toBeUndefined()
+    expect(linuxEnv.SHELL).toBe('/bin/bash')
+    expect(linuxEnv.WSL_UTF8).toBeUndefined()
+    expect(linuxEnv.PROMPT).toBeUndefined()
+    expect(linuxEnv.TERM).toBe('xterm-256color')
+    expect(linuxEnv.COLORTERM).toBe('truecolor')
   })
 
   it('provides 8 valid terminal themes and shell colorize commands for Windows and Linux', () => {
@@ -151,9 +230,59 @@ describe('shell discovery, redaction, SSH normalization, and UI helpers', () => 
 
     expect(buildShellColorizeCommand('ssh')).toContain('ls --color=auto')
     expect(buildShellColorizeCommand('local', 'wsl-ubuntu')).toContain('export PS1=')
+    expect(buildShellColorizeCommand('local', 'bash')).toContain('export PS1=')
+    expect(buildShellColorizeCommand('local', 'zsh')).toContain('export PS1=')
+    expect(buildShellColorizeCommand('local', 'fish')).toContain('set -gx TERM')
     expect(buildShellColorizeCommand('local', 'cmd')).toContain('prompt $E[')
     expect(buildShellColorizeCommand('local', 'powershell')).toContain('Set-PSReadLineOption')
     expect(buildShellColorizeCommand('local', 'pwsh')).toContain('function global:prompt')
+  })
+
+  it('resolves SSH agent sockets per platform and matches OpenSSH ~/.ssh/known_hosts formats', () => {
+    expect(resolveSshAgentSocket('win32', {})).toBe('\\\\.\\pipe\\openssh-ssh-agent')
+    expect(resolveSshAgentSocket('linux', { SSH_AUTH_SOCK: '/run/user/1000/keyring/ssh' })).toBe(
+      '/run/user/1000/keyring/ssh'
+    )
+    expect(resolveSshAgentSocket('linux', {})).toBeUndefined()
+
+    const pubBytes = Buffer.from('mock-ssh-ed25519-public-key-payload-for-test')
+    const pubB64 = pubBytes.toString('base64')
+    const salt = Buffer.from('0123456789abcdef')
+    const hashedHost = `|1|${salt.toString('base64')}|${createHmac('sha1', salt).update('[db.internal]:2222', 'utf8').digest('base64')}`
+
+    expect(matchOpenSshHostPattern('prod.example.com,10.0.0.8', '10.0.0.8', 22)).toBe(true)
+    expect(matchOpenSshHostPattern('*.example.com,!bad.example.com', 'bad.example.com', 22)).toBe(false)
+    expect(matchOpenSshHostPattern('[db.internal]:2222', 'db.internal', 2222)).toBe(true)
+    expect(matchOpenSshHostPattern(hashedHost, 'db.internal', 2222)).toBe(true)
+
+    const dir = mkdtempSync(join(tmpdir(), 'orbit-known-hosts-'))
+    tempDirs.push(dir)
+    const khPath = join(dir, 'known_hosts')
+    writeFileSync(
+      khPath,
+      [
+        '# comment',
+        `@revoked prod.example.com ssh-ed25519 ${pubB64}`,
+        `web.local ssh-ed25519 ${pubB64}`,
+        `${hashedHost} ssh-ed25519 ${pubB64}`
+      ].join('\n'),
+      'utf8'
+    )
+
+    const parsed = parseOpenSshKnownHosts(
+      `web.local ssh-ed25519 ${pubB64}\n${hashedHost} ssh-ed25519 ${pubB64}`,
+      'db.internal',
+      2222
+    )
+    expect(parsed).toHaveLength(1)
+    expect(parsed[0]?.fingerprint.startsWith('SHA256:')).toBe(true)
+
+    const matched = lookupOpenSshKnownHost('db.internal', 2222, parsed[0]?.fingerprint, 'ssh-ed25519', [
+      khPath
+    ])
+    expect(matched?.algorithm).toBe('ssh-ed25519')
+    expect(matched?.source).toBe('openssh')
+    expect(lookupOpenSshKnownHost('prod.example.com', 22, undefined, undefined, [khPath])).toBeUndefined()
   })
 
   it('normalizes bracketed IPv6 hosts and safely parses SSH host key algorithms', () => {

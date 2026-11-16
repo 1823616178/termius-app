@@ -19,11 +19,15 @@ files:
   - '!node_modules/better-sqlite3/src/**'
   - '!node_modules/better-sqlite3/build/Release/obj/**'
   - '!node_modules/better-sqlite3/prebuilds/darwin-*'
-  - '!node_modules/better-sqlite3/prebuilds/linux*'
+  - '!node_modules/better-sqlite3/prebuilds/linux-arm64.node'
+  - '!node_modules/better-sqlite3/prebuilds/linuxmusl-*'
   - '!node_modules/better-sqlite3/prebuilds/win32-arm64.node'
   - '!node_modules/node-pty/src/**'
   - '!node_modules/node-pty/deps/**'
+  - '!node_modules/node-pty/build/Release/obj/**'
+  - '!node_modules/node-pty/build/Release/obj.target/**'
   - '!node_modules/node-pty/prebuilds/win32-arm64/**'
+  - '!node_modules/node-pty/prebuilds/darwin-*'
   - '!node_modules/node-pty/third_party/conpty/*/win10-arm64/**'
   - '!node_modules/**/*.{c,cc,cpp,h,hpp,pdb,ipdb,iobj,lib,exp,vcxproj,filters,tlog,recipe}'
 asarUnpack:
@@ -49,3 +53,29 @@ nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   deleteAppDataOnUninstall: false
+linux:
+  icon: resources/icon.png
+  category: Development
+  maintainer: Graphite Orbit contributors <orbit@graphite.dev>
+  synopsis: 跨平台 SSH 与本地终端工作台
+  description: 跨平台 SSH 与本地终端工作台，支持多标签分屏、安全凭据存储与端到端加密同步。
+  executableName: graphite-orbit
+  desktop:
+    entry:
+      Name: Graphite Orbit
+      Comment: Cross-platform SSH & Local Terminal Workbench
+      Categories: Development;Utility;TerminalEmulator;
+      Keywords: ssh;terminal;pty;orbit;
+      StartupWMClass: Graphite Orbit
+  target:
+    - target: AppImage
+      arch: [x64]
+    - target: deb
+      arch: [x64]
+appImage:
+  artifactName: Graphite-Orbit-${version}-linux-${arch}.${ext}
+deb:
+  artifactName: Graphite-Orbit-${version}-linux-${arch}.${ext}
+  recommends:
+    - libsecret-1-0
+    - gnome-keyring

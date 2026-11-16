@@ -2,7 +2,7 @@
   "name": "graphite-orbit",
   "version": "0.1.0",
   "private": true,
-  "description": "Windows SSH 工作台 · Graphite Orbit",
+  "description": "跨平台 SSH 与本地终端工作台 · Graphite Orbit",
   "author": "Graphite Orbit contributors",
   "homepage": "https://github.com/1823616178/termius-app#readme",
   "repository": {
@@ -32,6 +32,8 @@
     "pack:dir": "yarn build && electron-builder --win --x64 --dir",
     "pack:win": "yarn build && electron-builder --win nsis --x64",
     "pack:win:publish": "yarn build && electron-builder --win nsis --x64 --publish always",
+    "pack:linux:dir": "yarn build && electron-builder --linux --x64 --dir",
+    "pack:linux": "yarn build && electron-builder --linux AppImage deb --x64",
     "release:checksums": "node scripts/release-checksums.mjs"
   },
   "dependencies": {

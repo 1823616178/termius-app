@@ -39,6 +39,30 @@ const AUTO_SYNC_DEBOUNCE_MS = 3_000
 const MAX_RETRY_429 = 2
 const MAX_CONFLICT_RACE_RETRIES = 5
 
+async function isSystemEncryptionAvailable(): Promise<boolean> {
+  try {
+    const available = await safeStorage.isAsyncEncryptionAvailable()
+    if (!available) return false
+    if (
+      process.platform === 'linux' &&
+      typeof safeStorage.getSelectedStorageBackend === 'function' &&
+      safeStorage.getSelectedStorageBackend() === 'basic_text'
+    ) {
+      return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+function unavailableEncryptionMessage(actionText: string): string {
+  if (process.platform === 'linux') {
+    return `当前 Linux 系统未检测到可用的 Keyring（gnome-keyring / kwallet），${actionText}。`
+  }
+  return `系统凭据保护不可用，${actionText}。`
+}
+
 class SyncHttpError extends Error {
   constructor(
     public readonly status: number,
@@ -110,7 +134,7 @@ export class SyncService {
         return
       }
       try {
-        const available = await safeStorage.isAsyncEncryptionAvailable()
+        const available = await isSystemEncryptionAvailable()
         if (!available) {
           this.account = await this.repository.call<SyncAccountRecord | undefined>('syncAccountClearAuth')
           this.lastError = '系统凭据保护不可用，请重新登录。'
@@ -155,7 +179,7 @@ export class SyncService {
 
   async getDefaults(): Promise<SyncConfigFormDefaults> {
     if (!this.account) await this.initFromDb()
-    const encryptionAvailable = await safeStorage.isAsyncEncryptionAvailable()
+    const encryptionAvailable = await isSystemEncryptionAvailable()
     return {
       serverUrl: this.account?.serverUrl ?? '',
       email: this.account?.rememberEmail ? (this.account.email ?? '') : '',
@@ -443,8 +467,8 @@ export class SyncService {
         if (!input.keepSignedIn) {
           nextEncryptedToken = null
         } else if (this.refreshToken) {
-          if (!(await safeStorage.isAsyncEncryptionAvailable())) {
-            throw new Error('系统凭据保护不可用，无法保存保持登录状态')
+          if (!(await isSystemEncryptionAvailable())) {
+            throw new Error(unavailableEncryptionMessage('无法保存保持登录状态'))
           }
           nextEncryptedToken = await safeStorage.encryptStringAsync(this.refreshToken)
         }
@@ -674,8 +698,8 @@ export class SyncService {
     const fallbackDeviceName = input.deviceName || existing?.deviceName || hostname() || 'Orbit Desktop'
     const appVersion = typeof app?.getVersion === 'function' ? app.getVersion() : '0.1.0'
 
-    if (input.keepSignedIn && !(await safeStorage.isAsyncEncryptionAvailable())) {
-      throw new Error('系统凭据保护不可用，无法启用保持登录状态。')
+    if (input.keepSignedIn && !(await isSystemEncryptionAvailable())) {
+      throw new Error(unavailableEncryptionMessage('无法启用保持登录状态'))
     }
 
     const endpoint = mode === 'register' ? '/api/v1/auth/register' : '/api/v1/auth/login'
@@ -804,7 +828,7 @@ export class SyncService {
   private async persistUnlockedVaultKey(): Promise<void> {
     if (!this.account) return
     try {
-      if (!(await safeStorage.isAsyncEncryptionAvailable())) return
+      if (!(await isSystemEncryptionAvailable())) return
       const rawKeyBase64 = await this.repository.call<string | null>('vaultExportKey')
       if (!rawKeyBase64) return
       const encryptedVaultKey = await safeStorage.encryptStringAsync(rawKeyBase64)
@@ -820,14 +844,14 @@ export class SyncService {
         deviceName: this.account.deviceName
       })
     } catch {
-      /* Ignore DPAPI persistence failure; user can still use session in-memory */
+      /* Ignore OS keyring persistence failure; user can still use session in-memory */
     }
   }
 
   private async tryRestoreVaultKeyFromDisk(): Promise<boolean> {
     if (!this.account?.encryptedVaultKey) return false
     try {
-      if (!(await safeStorage.isAsyncEncryptionAvailable())) return false
+      if (!(await isSystemEncryptionAvailable())) return false
       const dec = await safeStorage.decryptStringAsync(Buffer.from(this.account.encryptedVaultKey))
       return await this.repository.call<boolean>('vaultRestoreKey', { rawKeyBase64: dec.result })
     } catch {
@@ -999,12 +1023,12 @@ export class SyncService {
     etag: string | null,
     snapshotEpoch?: number
   ): Promise<boolean> {
-    const canEncrypt = await safeStorage.isAsyncEncryptionAvailable()
+    const canEncrypt = await isSystemEncryptionAvailable()
     const encryptedHostSecrets: Record<string, Uint8Array | null> = {}
     for (const item of evaluated.hostSecretsToEncrypt) {
       if (item.password) {
         if (!canEncrypt) {
-          throw new Error('系统凭据保护不可用，无法在本地保存同步的主机密码。')
+          throw new Error(unavailableEncryptionMessage('无法在本地保存同步的主机密码'))
         }
         encryptedHostSecrets[item.hostId] = await safeStorage.encryptStringAsync(item.password)
       } else {
@@ -1055,14 +1079,14 @@ export class SyncService {
 
   private async encryptBaseDoc(baseJson: string): Promise<Uint8Array | null> {
     if (!baseJson) return null
-    const canEncrypt = await safeStorage.isAsyncEncryptionAvailable()
+    const canEncrypt = await isSystemEncryptionAvailable()
     if (!canEncrypt) return null
     return safeStorage.encryptStringAsync(baseJson)
   }
 
   private async decryptBaseDocIfPresent(): Promise<string | null> {
     if (!this.account?.baseDocCipher) return null
-    if (!(await safeStorage.isAsyncEncryptionAvailable())) return null
+    if (!(await isSystemEncryptionAvailable())) return null
     try {
       const dec = await safeStorage.decryptStringAsync(Buffer.from(this.account.baseDocCipher))
       return dec.result
@@ -1075,7 +1099,7 @@ export class SyncService {
     const blobs = await this.repository.call<Array<{ id: string; secret: Uint8Array }>>('syncListSecretBlobs')
     const result: Record<string, string> = {}
     if (blobs.length === 0) return result
-    if (!(await safeStorage.isAsyncEncryptionAvailable())) return result
+    if (!(await isSystemEncryptionAvailable())) return result
     for (const entry of blobs) {
       try {
         const dec = await safeStorage.decryptStringAsync(Buffer.from(entry.secret))
@@ -1211,7 +1235,7 @@ export class SyncService {
     this.accessToken = res.accessToken
     this.refreshToken = res.refreshToken
     const encryptedRefreshToken =
-      account.keepSignedIn && (await safeStorage.isAsyncEncryptionAvailable())
+      account.keepSignedIn && (await isSystemEncryptionAvailable())
         ? await safeStorage.encryptStringAsync(res.refreshToken)
         : null
     this.account = await this.repository.call<SyncAccountRecord>('syncAccountUpsert', {

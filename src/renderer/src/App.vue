@@ -38,7 +38,8 @@ import {
   initialize,
   lineHeight,
   loadSavedPreferences,
-  motionTier,
+  motionPreference,
+  refreshMotionPreference,
   notice,
   openLocal,
   page,
@@ -120,10 +121,18 @@ watch(selectedShellId, (value) => {
   }
 })
 
-watch([motionTier, highContrast], ([tier, contrast]) => {
+watch(motionPreference, (preference) => {
+  refreshMotionPreference()
+  try {
+    localStorage.setItem('orbit:motion-tier', preference)
+  } catch {
+    /* storage unavailable */
+  }
+})
+
+watch(highContrast, (contrast) => {
   applyVisualPreferences()
   try {
-    localStorage.setItem('orbit:motion-tier', tier)
     localStorage.setItem('orbit:high-contrast', String(contrast))
   } catch {
     /* storage unavailable */

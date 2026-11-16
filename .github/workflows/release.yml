@@ -1,4 +1,4 @@
-name: Release Windows Installer
+name: Release Windows & Linux Installers
 
 on:
   push:
@@ -30,7 +30,66 @@ permissions:
   contents: write
 
 jobs:
-  release-windows-x64:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      draft: ${{ steps.meta.outputs.draft }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js from .nvmrc
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Resolve and validate release metadata
+        id: meta
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+          INPUT_DRAFT: ${{ inputs.draft }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          if [ "$REF_TYPE" = "tag" ]; then
+            RAW="$REF_NAME"
+          elif [ -n "${INPUT_VERSION// }" ]; then
+            RAW="$(echo "$INPUT_VERSION" | xargs)"
+          else
+            RAW="$(node -p "require('./package.json').version" | xargs)"
+          fi
+
+          VERSION="${RAW#v}"
+          VERSION="${VERSION#V}"
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "Invalid SemVer version: '$RAW'. Expected vX.Y.Z or X.Y.Z." >&2
+            exit 1
+          fi
+
+          TAG="v$VERSION"
+          IS_PRERELEASE="false"
+          if [[ "$VERSION" == *"-"* ]] || [ "$INPUT_PRERELEASE" = "true" ]; then
+            IS_PRERELEASE="true"
+          fi
+
+          IS_DRAFT="false"
+          if [ "$INPUT_DRAFT" = "true" ]; then
+            IS_DRAFT="true"
+          fi
+
+          {
+            echo "version=$VERSION"
+            echo "tag=$TAG"
+            echo "prerelease=$IS_PRERELEASE"
+            echo "draft=$IS_DRAFT"
+          } >> "$GITHUB_OUTPUT"
+
+  build-windows-x64:
+    needs: prepare
     runs-on: windows-latest
     defaults:
       run:
@@ -47,36 +106,68 @@ jobs:
       - name: Enable Corepack
         run: corepack enable
 
-      - name: Resolve and validate release metadata
-        id: meta
-        env:
-          INPUT_VERSION: ${{ inputs.version }}
-          INPUT_PRERELEASE: ${{ inputs.prerelease }}
-          INPUT_DRAFT: ${{ inputs.draft }}
-          REF_TYPE: ${{ github.ref_type }}
-          REF_NAME: ${{ github.ref_name }}
+      - name: Install dependencies (immutable)
+        run: yarn install --immutable
+
+      - name: Verify formatting, types, classes and unit tests
         run: |
-          $raw = if ($env:REF_TYPE -eq 'tag') {
-            $env:REF_NAME
-          } elseif (-not [string]::IsNullOrWhiteSpace($env:INPUT_VERSION)) {
-            $env:INPUT_VERSION.Trim()
-          } else {
-            (node -p "require('./package.json').version").Trim()
+          yarn format:check
+          yarn typecheck
+          yarn check:classes
+          yarn test
+
+      - name: Align package.json version with release tag
+        env:
+          TARGET_VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          $pkgVersion = (node -p "require('./package.json').version").Trim()
+          if ($pkgVersion -ne $env:TARGET_VERSION) {
+            Write-Host "Syncing package.json version ($pkgVersion -> $env:TARGET_VERSION) for release build..."
+            node -e 'const fs = require("node:fs"); const p = JSON.parse(fs.readFileSync("package.json", "utf8")); p.version = process.env.TARGET_VERSION; fs.writeFileSync("package.json", JSON.stringify(p, null, 2) + "\n", "utf8");'
           }
 
-          $version = $raw -replace '^[vV]+', ''
-          if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') {
-            throw "Invalid SemVer version: '$raw'. Expected vX.Y.Z or X.Y.Z."
-          }
+      - name: Build Windows x64 NSIS installer and latest.yml
+        run: yarn pack:win
 
-          $tag = "v$version"
-          $isPrerelease = if (($version -match '-') -or ($env:INPUT_PRERELEASE -eq 'true')) { 'true' } else { 'false' }
-          $isDraft = if ($env:INPUT_DRAFT -eq 'true') { 'true' } else { 'false' }
+      - name: Verify packaged ASAR binary via Playwright
+        env:
+          ORBIT_UPDATE_DISABLE_AUTO: '1'
+        run: yarn exec playwright test packaged.spec.ts --output=test-results/packaged
 
-          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "prerelease=$isPrerelease" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          "draft=$isDraft" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+      - name: Upload Windows release artifact bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-windows-x64
+          path: |
+            release/Graphite-Orbit-Setup-${{ needs.prepare.outputs.version }}.exe
+            release/Graphite-Orbit-Setup-${{ needs.prepare.outputs.version }}.exe.blockmap
+            release/latest.yml
+            test-results/
+          retention-days: 7
+
+  build-linux-x64:
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Linux native build & Electron runtime libraries
+        run: |
+          sudo apt-get update
+          PKGS="build-essential python3 libsecret-1-dev libnotify4 libnss3 libxss1 libgbm1 xvfb"
+          for pkg in libgtk-3-0t64 libgtk-3-0 libasound2t64 libasound2 libfuse2t64 libfuse2; do
+            if apt-cache show "$pkg" >/dev/null 2>&1; then PKGS="$PKGS $pkg"; fi
+          done
+          sudo apt-get install -y $PKGS
+
+      - name: Setup Node.js from .nvmrc
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Enable Corepack
+        run: corepack enable
 
       - name: Install dependencies (immutable)
         run: yarn install --immutable
@@ -90,75 +181,103 @@ jobs:
 
       - name: Align package.json version with release tag
         env:
-          TARGET_VERSION: ${{ steps.meta.outputs.version }}
+          TARGET_VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          $pkgVersion = (node -p "require('./package.json').version").Trim()
-          if ($pkgVersion -ne $env:TARGET_VERSION) {
-            Write-Host "Syncing package.json version ($pkgVersion -> $env:TARGET_VERSION) for release build..."
+          PKG_VERSION="$(node -p "require('./package.json').version" | xargs)"
+          if [ "$PKG_VERSION" != "$TARGET_VERSION" ]; then
+            echo "Syncing package.json version ($PKG_VERSION -> $TARGET_VERSION) for release build..."
             node -e 'const fs = require("node:fs"); const p = JSON.parse(fs.readFileSync("package.json", "utf8")); p.version = process.env.TARGET_VERSION; fs.writeFileSync("package.json", JSON.stringify(p, null, 2) + "\n", "utf8");'
-          }
+          fi
 
-      - name: Build Windows x64 NSIS installer and latest.yml
-        run: yarn pack:win
+      - name: Build Linux x64 AppImage, deb and latest-linux.yml
+        run: yarn pack:linux
 
-      - name: Generate release SHA256SUMS.txt
-        run: yarn release:checksums
-
-      - name: Verify packaged ASAR binary via Playwright
+      - name: Verify packaged ASAR binary via Playwright (Xvfb)
         env:
           ORBIT_UPDATE_DISABLE_AUTO: '1'
-        run: yarn exec playwright test packaged.spec.ts --output=test-results/packaged
+        run: xvfb-run -a yarn exec playwright test packaged.spec.ts --output=test-results/packaged
 
-      - name: Publish assets to GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.meta.outputs.tag }}
-          VERSION: ${{ steps.meta.outputs.version }}
-          IS_PRERELEASE: ${{ steps.meta.outputs.prerelease }}
-          IS_DRAFT: ${{ steps.meta.outputs.draft }}
-        run: |
-          $installer = "release/Graphite-Orbit-Setup-$env:VERSION.exe"
-          $blockmap = "release/Graphite-Orbit-Setup-$env:VERSION.exe.blockmap"
-          $yml = "release/latest.yml"
-          $sums = "release/SHA256SUMS.txt"
-
-          foreach ($file in @($installer, $blockmap, $yml, $sums)) {
-            if (-not (Test-Path $file)) {
-              throw "Expected release artifact missing: $file"
-            }
-          }
-
-          $assets = @($installer, $blockmap, $yml, $sums)
-          $exists = $false
-          gh release view "$env:TAG" 2>$null | Out-Null
-          if ($LASTEXITCODE -eq 0) { $exists = $true }
-
-          if ($exists) {
-            gh release upload "$env:TAG" @assets --clobber
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          } else {
-            $releaseArgs = @(
-              'release', 'create', $env:TAG,
-              '--target', $env:GITHUB_SHA,
-              '--title', "Graphite Orbit $env:TAG",
-              '--generate-notes'
-            )
-            if ($env:IS_PRERELEASE -eq 'true') { $releaseArgs += '--prerelease' }
-            if ($env:IS_DRAFT -eq 'true') { $releaseArgs += '--draft' }
-            $releaseArgs += $assets
-            & gh @releaseArgs
-            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          }
-
-      - name: Upload release artifacts for workflow audit
-        if: always()
+      - name: Upload Linux release artifact bundle
         uses: actions/upload-artifact@v4
         with:
-          name: graphite-orbit-win-x64-${{ steps.meta.outputs.version }}
+          name: dist-linux-x64
           path: |
-            release/Graphite-Orbit-Setup-${{ steps.meta.outputs.version }}.exe
-            release/Graphite-Orbit-Setup-${{ steps.meta.outputs.version }}.exe.blockmap
-            release/latest.yml
-            release/SHA256SUMS.txt
+            release/Graphite-Orbit-${{ needs.prepare.outputs.version }}-linux-x86_64.AppImage
+            release/Graphite-Orbit-${{ needs.prepare.outputs.version }}-linux-amd64.deb
+            release/latest-linux.yml
             test-results/
-          retention-days: 14
+          retention-days: 7
+
+  publish-release:
+    needs: [prepare, build-windows-x64, build-linux-x64]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js from .nvmrc
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: '.nvmrc'
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: dist-*
+          path: release
+          merge-multiple: true
+
+      - name: Verify expected release binaries and generate unified SHA256SUMS.txt
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          for file in \
+            "release/Graphite-Orbit-Setup-${VERSION}.exe" \
+            "release/Graphite-Orbit-Setup-${VERSION}.exe.blockmap" \
+            "release/latest.yml" \
+            "release/Graphite-Orbit-${VERSION}-linux-x86_64.AppImage" \
+            "release/Graphite-Orbit-${VERSION}-linux-amd64.deb" \
+            "release/latest-linux.yml"; do
+            if [ ! -f "$file" ]; then
+              echo "Expected release artifact missing: $file" >&2
+              exit 1
+            fi
+          done
+          node scripts/release-checksums.mjs
+
+      - name: Publish combined assets to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          IS_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+          IS_DRAFT: ${{ needs.prepare.outputs.draft }}
+        run: |
+          ASSETS=(
+            "release/Graphite-Orbit-Setup-${VERSION}.exe"
+            "release/Graphite-Orbit-Setup-${VERSION}.exe.blockmap"
+            "release/latest.yml"
+            "release/Graphite-Orbit-${VERSION}-linux-x86_64.AppImage"
+            "release/Graphite-Orbit-${VERSION}-linux-amd64.deb"
+            "release/latest-linux.yml"
+            "release/SHA256SUMS.txt"
+          )
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${ASSETS[@]}" --clobber
+          else
+            ARGS=(
+              release create "$TAG"
+              --target "$GITHUB_SHA"
+              --title "Graphite Orbit $TAG"
+              --generate-notes
+            )
+            if [ "$IS_PRERELEASE" = "true" ]; then
+              ARGS+=(--prerelease)
+            fi
+            if [ "$IS_DRAFT" = "true" ]; then
+              ARGS+=(--draft)
+            fi
+            ARGS+=("${ASSETS[@]}")
+            gh "${ARGS[@]}"
+          fi

@@ -5,6 +5,7 @@ import { Client as SshClient } from 'ssh2'
 import type { Host, NetProbeResult, PortCheckResult, TunnelRuntimeStatus } from '../shared/contracts'
 import type { SyncTunnel } from '../shared/sync'
 import type { DataClient } from './data-client'
+import { lookupOpenSshKnownHost } from './openssh-known-hosts'
 
 interface ActiveTunnelEntry {
   tunnel: SyncTunnel
@@ -227,17 +228,25 @@ export class TunnelRuntimeManager {
     const host = record.host
     let password: string | undefined
     if (host.auth === 'password' && record.secret) {
-      const dec = await safeStorage.decryptStringAsync(Buffer.from(record.secret))
-      password = dec.result
+      try {
+        const dec = await safeStorage.decryptStringAsync(Buffer.from(record.secret))
+        password = dec.result
+      } catch {
+        throw new Error(`无法解锁主机「${host.name}」的已保存密码，请确认系统 Keyring / 凭据保护已就绪。`)
+      }
     }
     if (host.auth === 'password' && !password) {
       throw new Error(`主机「${host.name}」未保存密码，无法自动建立加密转发通道`)
+    }
+    if (host.auth === 'agent' && process.platform !== 'win32' && !process.env.SSH_AUTH_SOCK?.trim()) {
+      throw new Error('未检测到 SSH_AUTH_SOCK 环境变量，无法通过 SSH Agent 建立隧道连接')
     }
     const known = await this.repository.call<{ fingerprint: string } | undefined>(
       'known',
       host.address,
       host.port
     )
+    const fallbackKnown = known ?? lookupOpenSshKnownHost(host.address, host.port)
 
     const client = new SshClient()
     return new Promise((resolve, reject) => {
@@ -275,8 +284,8 @@ export class TunnelRuntimeManager {
         readyTimeout: 10000,
         hostVerifier: (key: Buffer) => {
           const fp = `SHA256:${createHash('sha256').update(key).digest('base64').replace(/=+$/, '')}`
-          if (!known) return true
-          return known.fingerprint === fp
+          if (!fallbackKnown) return true
+          return fallbackKnown.fingerprint === fp
         }
       })
     })

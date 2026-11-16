@@ -1,6 +1,6 @@
 import { rebuild } from '@electron/rebuild'
 import { createRequire } from 'node:module'
-import { existsSync } from 'node:fs'
+import { chmodSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 const require = createRequire(import.meta.url)
 const { version } = require('electron/package.json')
@@ -24,6 +24,17 @@ await rebuild({
       ? ['better-sqlite3', 'cpu-features']
       : ['better-sqlite3', 'cpu-features', 'node-pty']
 })
-console.log(
-  `Native modules ready for Electron ${version} / ${process.arch}; Windows node-pty uses upstream Node-API prebuilds.`
-)
+if (process.platform !== 'win32') {
+  for (const helper of [
+    join(process.cwd(), 'node_modules/node-pty/build/Release/spawn-helper'),
+    join(
+      process.cwd(),
+      'node_modules/node-pty/prebuilds',
+      `${process.platform}-${process.arch}`,
+      'spawn-helper'
+    )
+  ]) {
+    if (existsSync(helper)) chmodSync(helper, 0o755)
+  }
+}
+console.log(`Native modules ready for Electron ${version} / ${process.arch} (${process.platform}).`)

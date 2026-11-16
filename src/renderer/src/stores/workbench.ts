@@ -33,9 +33,19 @@ import type {
   SyncTunnel,
   SyncTunnelInput
 } from '../../../shared/sync'
+import {
+  assessMotionCapability,
+  parseMotionPreference,
+  probeMotionGraphics,
+  resolveMotionPreference,
+  sampleMotionFrame,
+  type MotionCapability,
+  type MotionPreference,
+  type MotionTier
+} from '../services/motion-performance'
 
+export type { MotionPreference, MotionTier } from '../services/motion-performance'
 export type Page = 'workspace' | 'hosts' | 'local' | 'tunnels' | 'identities' | 'sync' | 'settings'
-export type MotionTier = 'full' | 'light' | 'off'
 export type SplitDropZone = 'left' | 'right' | 'top' | 'bottom'
 
 export interface Pane {
@@ -114,7 +124,25 @@ export const cursorBlink = ref(true)
 export const copyOnSelect = ref(false)
 export const activeTerminalDimensions = ref<{ cols: number; rows: number }>({ cols: 120, rows: 32 })
 export const selectedShellId = ref('')
-export const motionTier = ref<MotionTier>('full')
+export const motionPreference = ref<MotionPreference>('auto')
+export const motionTier = ref<MotionTier>('off')
+export const motionCapability = ref<MotionCapability>({
+  tier: 'off',
+  reason: '正在检测图形与设备性能',
+  webgl2Supported: false,
+  softwareRenderer: false,
+  cpuCores: null,
+  memoryGb: null
+})
+export const motionReason = ref('正在检测图形与设备性能')
+export const motionFps = ref<number | null>(null)
+export const motionStatus = computed(() => ({
+  ...motionCapability.value,
+  preference: motionPreference.value,
+  tier: motionTier.value,
+  reason: motionReason.value,
+  fps: motionFps.value
+}))
 export const highContrast = ref(false)
 export const screenReaderDefault = ref(false)
 export const uiTheme = ref<UiThemeId>('bagua-taiji')
@@ -172,6 +200,9 @@ let removeSyncData: (() => void) | undefined
 let removeTrayStateChanged: (() => void) | undefined
 let removeTrayAction: (() => void) | undefined
 let removeUpdateStateChanged: (() => void) | undefined
+let motionMediaQuery: MediaQueryList | null = null
+let motionGeneration = 0
+let slowMotionWindows = 0
 
 export function registerPaneContainer(tabToken: string, el: HTMLElement | null): void {
   if (el) paneContainers.set(tabToken, el)
@@ -325,10 +356,60 @@ export function requestPanePassword(tabToken: string, paneToken: string, errorMe
   }
 }
 
+function applyMotionPreferences(): void {
+  const root = document.documentElement
+  if (root.dataset.motion !== motionTier.value) root.dataset.motion = motionTier.value
+  if (root.dataset.motionPreference !== motionPreference.value) {
+    root.dataset.motionPreference = motionPreference.value
+  }
+  if (root.dataset.motionReason !== motionReason.value) root.dataset.motionReason = motionReason.value
+  const generation = String(motionGeneration)
+  if (root.dataset.motionGeneration !== generation) root.dataset.motionGeneration = generation
+}
+
 export function applyVisualPreferences(): void {
-  document.documentElement.dataset.motion = motionTier.value
+  applyMotionPreferences()
   document.documentElement.dataset.contrast = highContrast.value ? 'high' : 'standard'
   applyUiThemeToDocument(uiTheme.value, customUiColors.value)
+}
+
+export function refreshMotionPreference(): void {
+  const reducedMotion =
+    motionMediaQuery?.matches ?? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  const graphics =
+    motionPreference.value === 'auto'
+      ? probeMotionGraphics(document.createElement('canvas'))
+      : { webgl2Supported: true }
+  const navigatorHints = navigator as Navigator & { deviceMemory?: number }
+  motionCapability.value = assessMotionCapability({
+    ...graphics,
+    hardwareConcurrency: navigator.hardwareConcurrency,
+    deviceMemory: navigatorHints.deviceMemory,
+    reducedMotion
+  })
+  const decision = resolveMotionPreference(motionPreference.value, motionCapability.value)
+  motionGeneration += 1
+  motionTier.value = decision.tier
+  motionReason.value = decision.reason
+  motionFps.value = null
+  slowMotionWindows = 0
+  applyVisualPreferences()
+}
+
+function handleSystemMotionChange(): void {
+  refreshMotionPreference()
+}
+
+export function recordMotionFrameRate(fps: number): void {
+  if (motionPreference.value !== 'auto' || motionTier.value === 'off' || !Number.isFinite(fps) || fps <= 0) {
+    return
+  }
+  const sample = sampleMotionFrame({ tier: motionTier.value, fps, slowWindows: slowMotionWindows })
+  slowMotionWindows = sample.slowWindows
+  motionTier.value = sample.tier
+  motionReason.value = sample.reason
+  motionFps.value = sample.fps
+  applyMotionPreferences()
 }
 
 export function setUiTheme(themeId: UiThemeId): void {
@@ -408,10 +489,7 @@ export function loadSavedPreferences(): void {
     copyOnSelect.value = localStorage.getItem('orbit:copy-on-select') === 'true'
     const savedShell = localStorage.getItem('orbit:default-shell')
     if (savedShell) selectedShellId.value = savedShell
-    const savedMotion = localStorage.getItem('orbit:motion-tier')
-    if (savedMotion === 'full' || savedMotion === 'light' || savedMotion === 'off') {
-      motionTier.value = savedMotion
-    }
+    motionPreference.value = parseMotionPreference(localStorage.getItem('orbit:motion-tier'))
     highContrast.value = localStorage.getItem('orbit:high-contrast') === 'true'
     screenReaderDefault.value = localStorage.getItem('orbit:screen-reader') === 'true'
     const savedSidebar = Number(localStorage.getItem('orbit:sidebar-width'))
@@ -419,7 +497,11 @@ export function loadSavedPreferences(): void {
   } catch {
     /* preferences are optional */
   }
-  applyVisualPreferences()
+  if (!motionMediaQuery) {
+    motionMediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
+    motionMediaQuery.addEventListener('change', handleSystemMotionChange)
+  }
+  refreshMotionPreference()
 }
 
 export async function initialize(): Promise<void> {
@@ -528,6 +610,8 @@ export function disposeWorkbenchListeners(): void {
   removeTrayAction = undefined
   removeUpdateStateChanged?.()
   removeUpdateStateChanged = undefined
+  motionMediaQuery?.removeEventListener('change', handleSystemMotionChange)
+  motionMediaQuery = null
   clearTimeout(noticeTimeout)
   clearTimeout(splitAnimationTimer)
 }

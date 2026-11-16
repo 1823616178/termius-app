@@ -19,6 +19,9 @@ export type UpdatePhase =
   | 'downloaded'
   | 'error'
 
+export type UpdatePackageKind = 'nsis-exe' | 'appimage' | 'deb' | 'release-page'
+export type UpdaterPlatform = 'win32' | 'linux' | 'darwin' | (string & {})
+
 export interface UpdateReleaseInfo {
   version: string
   tagName: string
@@ -28,6 +31,7 @@ export interface UpdateReleaseInfo {
   releaseUrl: string
   prerelease: boolean
   assetName: string
+  packageKind?: UpdatePackageKind
   downloadUrl: string
   sizeBytes: number | null
   sha256: string | null
@@ -68,6 +72,12 @@ export interface ParsedSemver {
   minor: number
   patch: number
   prerelease: string[]
+}
+
+export interface LatestYmlFileEntry {
+  url: string
+  sha512: string | null
+  size: number | null
 }
 
 export interface LatestYmlMetadata {
@@ -190,6 +200,66 @@ function unquoteYamlValue(raw: string): string {
   return trimmed
 }
 
+export function parseLatestYmlFiles(content: string): LatestYmlFileEntry[] {
+  const entries: LatestYmlFileEntry[] = []
+  let current: LatestYmlFileEntry | null = null
+  let inFiles = false
+
+  const flush = (): void => {
+    if (current?.url) entries.push(current)
+    current = null
+  }
+
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.replace(/\t/g, '  ')
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+
+    const topMatch = /^([A-Za-z0-9_]+)\s*:\s*(.*)$/.exec(line)
+    if (topMatch && !line.startsWith(' ')) {
+      flush()
+      inFiles = topMatch[1] === 'files'
+      continue
+    }
+
+    if (!inFiles) continue
+    const listMatch = /^\s*-\s*([A-Za-z0-9_]+)\s*:\s*(.*)$/.exec(line)
+    if (listMatch) {
+      flush()
+      current = { url: '', sha512: null, size: null }
+      const key = listMatch[1]
+      const value = unquoteYamlValue(listMatch[2] ?? '')
+      if (key === 'url') current.url = value
+      else if (key === 'sha512' && value) current.sha512 = value
+      else if (key === 'size' && /^\d+$/.test(value)) current.size = Number(value)
+      continue
+    }
+
+    const propMatch = /^\s+([A-Za-z0-9_]+)\s*:\s*(.*)$/.exec(line)
+    if (propMatch && current) {
+      const key = propMatch[1]
+      const value = unquoteYamlValue(propMatch[2] ?? '')
+      if (key === 'url') current.url = value
+      else if (key === 'sha512' && value) current.sha512 = value
+      else if (key === 'size' && /^\d+$/.test(value)) current.size = Number(value)
+    }
+  }
+  flush()
+  return entries
+}
+
+export function getLatestManifestFilename(platform: UpdaterPlatform = 'win32'): string {
+  return platform === 'linux' ? 'latest-linux.yml' : 'latest.yml'
+}
+
+export function resolveUpdatePackageKind(assetName: string): UpdatePackageKind {
+  const lower = assetName.toLowerCase()
+  if (lower.endsWith('.appimage')) return 'appimage'
+  if (lower.endsWith('.deb')) return 'deb'
+  if (lower.endsWith('.exe')) return 'nsis-exe'
+  return 'release-page'
+}
+
 export function parseLatestYml(content: string): LatestYmlMetadata | null {
   let version = ''
   let path = ''
@@ -296,11 +366,20 @@ export function validateUpdateSourceUrl(rawUrl: string, allowedOverrideOrigin?: 
   return parsed.href
 }
 
-export function sanitizeInstallerFilename(rawName: string, fallbackVersion: string): string {
+export function sanitizeInstallerFilename(
+  rawName: string,
+  fallbackVersion: string,
+  platform: UpdaterPlatform = 'win32'
+): string {
   const base = rawName.split(/[\\/]/).pop()?.trim() ?? ''
   const cleaned = base.replace(/[^0-9A-Za-z._-]/g, '-').replace(/^-+/, '')
-  if (!cleaned || cleaned === '.' || cleaned === '..' || !cleaned.toLowerCase().endsWith('.exe')) {
-    return `Graphite-Orbit-Setup-${normalizeVersionString(fallbackVersion)}.exe`
+  const lower = cleaned.toLowerCase()
+  const hasSupportedExt = lower.endsWith('.exe') || lower.endsWith('.appimage') || lower.endsWith('.deb')
+  if (!cleaned || cleaned === '.' || cleaned === '..' || !hasSupportedExt) {
+    const version = normalizeVersionString(fallbackVersion)
+    return platform === 'linux'
+      ? `Graphite-Orbit-${version}-linux-x64.AppImage`
+      : `Graphite-Orbit-Setup-${version}.exe`
   }
   return cleaned
 }
@@ -309,6 +388,54 @@ export function extractSha256FromDigest(digest?: string | null): string | null {
   if (!digest) return null
   const match = /^sha256:([0-9a-fA-F]{64})$/.exec(digest.trim())
   return match ? match[1]!.toLowerCase() : null
+}
+
+function matchesTargetArch(filename: string, arch: string): boolean {
+  const lower = filename.toLowerCase()
+  if (arch === 'arm64' || arch === 'aarch64') {
+    return lower.includes('arm64') || lower.includes('aarch64')
+  }
+  if (arch === 'x64') {
+    if (lower.includes('arm64') || lower.includes('aarch64')) return false
+    return lower.includes('x64') || lower.includes('amd64') || lower.includes('x86_64')
+  }
+  return false
+}
+
+export function selectLinuxInstallerAsset(
+  assets: GitHubReleaseAssetWire[],
+  options: {
+    arch?: string
+    preferredFormat?: 'appimage' | 'deb'
+    latestYml?: LatestYmlMetadata | null
+  } = {}
+): GitHubReleaseAssetWire | undefined {
+  const arch = options.arch ?? 'x64'
+  const preferredFormat = options.preferredFormat ?? 'appimage'
+  const linuxAssets = assets.filter((asset) => {
+    const lower = asset.name.toLowerCase()
+    return (lower.endsWith('.appimage') || lower.endsWith('.deb')) && !lower.endsWith('.blockmap')
+  })
+  if (linuxAssets.length === 0) return undefined
+
+  const preferredExt = preferredFormat === 'deb' ? '.deb' : '.appimage'
+  const archMatched = linuxAssets.filter((item) => matchesTargetArch(item.name, arch))
+  const pool = archMatched.length > 0 ? archMatched : linuxAssets
+
+  const byPreferredExt = pool.filter((item) => item.name.toLowerCase().endsWith(preferredExt))
+  const orderedPool = byPreferredExt.length > 0 ? byPreferredExt : pool
+
+  if (options.latestYml?.path) {
+    const expected = options.latestYml.path.toLowerCase()
+    const exact = orderedPool.find((item) => item.name.toLowerCase() === expected)
+    if (exact) return exact
+  }
+
+  return (
+    orderedPool.find((item) => item.name.toLowerCase().endsWith('.appimage')) ??
+    orderedPool.find((item) => item.name.toLowerCase().endsWith('.deb')) ??
+    orderedPool[0]
+  )
 }
 
 export function selectWindowsInstallerAsset(
@@ -332,4 +459,23 @@ export function selectWindowsInstallerAsset(
     exeAssets.find((item) => /setup/i.test(item.name)) ??
     exeAssets[0]
   )
+}
+
+export function selectInstallerAssetForPlatform(
+  assets: GitHubReleaseAssetWire[],
+  options: {
+    platform: UpdaterPlatform
+    arch?: string
+    preferredLinuxFormat?: 'appimage' | 'deb'
+    latestYml?: LatestYmlMetadata | null
+  }
+): GitHubReleaseAssetWire | undefined {
+  if (options.platform === 'linux') {
+    return selectLinuxInstallerAsset(assets, {
+      arch: options.arch,
+      preferredFormat: options.preferredLinuxFormat,
+      latestYml: options.latestYml
+    })
+  }
+  return selectWindowsInstallerAsset(assets, options.latestYml)
 }

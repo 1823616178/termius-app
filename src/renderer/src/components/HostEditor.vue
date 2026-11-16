@@ -1,13 +1,19 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue'
 import { X, ShieldCheck } from 'lucide-vue-next'
 import { hostInputSchema, type Host, type HostInput } from '../../../shared/contracts'
+import { bootstrap } from '../stores/workbench'
 import OrbitSelect from './OrbitSelect.vue'
 
-const authOptions = [
+const isLinux = computed(() => bootstrap.value?.platform === 'linux')
+
+const authOptions = computed(() => [
   { value: 'password', label: '密码' },
-  { value: 'agent', label: 'Windows OpenSSH Agent' }
-]
+  {
+    value: 'agent',
+    label: isLinux.value ? 'OpenSSH Agent (SSH_AUTH_SOCK)' : 'Windows OpenSSH Agent'
+  }
+])
 
 const props = defineProps<{ host?: Host; encryptionAvailable: boolean; busy: boolean; error: string }>()
 const emit = defineEmits<{ save: [input: HostInput]; close: [] }>()
@@ -65,8 +71,10 @@ function submit() {
   errors.value = {}
   if (form.auth === 'password' && form.password && !form.savePassword) {
     errors.value.password = props.encryptionAvailable
-      ? '已输入新密码，请勾选“使用 Windows 系统保护保存密码”，或清空密码框。'
-      : '系统凭据保护不可用，不能保存密码；请留空并在连接时输入。'
+      ? '已输入新密码，请勾选“使用系统凭据保护保存密码”，或清空密码框。'
+      : isLinux.value
+        ? '当前未检测到可用系统 Keyring（gnome-keyring / kwallet），不能保存密码；请留空并在连接时临时输入。'
+        : '系统凭据保护不可用，不能保存密码；请留空并在连接时输入。'
     return
   }
   const normalized: HostInput = {
@@ -212,7 +220,15 @@ function submit() {
             type="checkbox"
             :disabled="!encryptionAvailable"
           />
-          使用 Windows 系统保护保存密码
+          {{
+            encryptionAvailable
+              ? isLinux
+                ? '使用系统 Keyring 安全保存密码（libsecret）'
+                : '使用 Windows 系统保护保存密码'
+              : isLinux
+                ? '保存密码已禁用（未检测到系统 Keyring：gnome-keyring / kwallet）'
+                : '保存密码已禁用（系统凭据保护不可用）'
+          }}
         </label>
         <label v-if="host?.hasPassword" class="container_hosts_editor_body_clear-label">
           <input

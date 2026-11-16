@@ -1,33 +1,46 @@
 import { describe, expect, it } from 'vitest'
 import {
+  FORMATIONS,
   formationCount,
   gatheringStrength,
   IMPACT_SECONDS,
   INTRO_SECONDS,
+  LINK_SEGMENT_CAPACITY,
   LOOP_SECONDS,
+  sampleFormationLinks,
   sampleFormationWeights,
   sampleIntroSwordPose,
   sampleStageState,
   sampleSwordPose
 } from '../../src/renderer/src/services/sword-motion'
 
-describe('sword formation choreography', () => {
+function linkCountAt(time: number): number {
+  const positions = new Float32Array(LINK_SEGMENT_CAPACITY * 2 * 3)
+  const weights = new Float32Array(LINK_SEGMENT_CAPACITY * 2)
+  const colors = new Uint8Array(LINK_SEGMENT_CAPACITY * 2)
+  const count = sampleFormationLinks(time, positions, weights, colors)
+  for (let v = 0; v < count * 2; v++) {
+    expect(weights[v]).toBeGreaterThanOrEqual(0)
+    expect(weights[v]).toBeLessThanOrEqual(1)
+    expect(Number.isFinite(positions[v * 3]!)).toBe(true)
+    expect(Number.isFinite(positions[v * 3 + 1]!)).toBe(true)
+    expect(Number.isFinite(positions[v * 3 + 2]!)).toBe(true)
+  }
+  return count
+}
+
+describe('twelve named sword formations', () => {
   it('uses bounded full and light instance counts', () => {
     expect(formationCount('full', false)).toBe(144)
     expect(formationCount('light', false)).toBe(32)
     expect(formationCount('full', true)).toBe(12)
+    expect(FORMATIONS).toHaveLength(12)
   })
 
-  it('gathers near the climax and rests at both loop boundaries', () => {
-    expect(gatheringStrength(0)).toBe(0)
-    expect(gatheringStrength(13)).toBeGreaterThan(0.95)
-    expect(gatheringStrength(20)).toBe(0)
-  })
-
-  it('is deterministic, finite and periodic', () => {
+  it('is deterministic, finite and periodic over the grand cycle', () => {
     const first = sampleSwordPose(7, 144, 1.25)
     const repeated = sampleSwordPose(7, 144, 1.25)
-    const nextLoop = sampleSwordPose(7, 144, 21.25)
+    const nextLoop = sampleSwordPose(7, 144, 1.25 + LOOP_SECONDS)
     expect(first).toEqual(repeated)
     expect(first.position.x).toBeCloseTo(nextLoop.position.x, 8)
     expect(first.position.y).toBeCloseTo(nextLoop.position.y, 8)
@@ -38,42 +51,68 @@ describe('sword formation choreography', () => {
     }
   })
 
-  it('moves swords closer to the heart at the gathering climax', () => {
-    const resting = sampleSwordPose(11, 144, 1)
-    const gathered = sampleSwordPose(11, 144, 13)
-    const restingRadius = Math.hypot(resting.position.x - 0.9, resting.position.y)
-    const gatheredRadius = Math.hypot(gathered.position.x - 0.9, gathered.position.y)
-    expect(gatheredRadius).toBeLessThan(restingRadius * 0.45)
-    expect(gathered.scale).toBeLessThan(resting.scale)
+  it('names each movement in sequence across the grand cycle', () => {
+    for (let m = 0; m < FORMATIONS.length; m++) {
+      const weights = sampleFormationWeights(m * 5 + 2.5)
+      expect(weights.formationIndex).toBe(m)
+      expect(weights.phaseLabel).toContain(FORMATIONS[m]!.name)
+    }
   })
 
-  it('arranges concentric radial Sword Lotus halo during the lotus phase', () => {
-    const weights = sampleFormationWeights(7.0)
-    expect(weights.lotus).toBeGreaterThan(0.9)
-    expect(weights.phaseLabel).toContain('剑莲')
-
-    const pose = sampleSwordPose(15, 144, 7.0)
-    const radialX = pose.position.x - 0.9
-    const radialY = pose.position.y - 0.22
-    const dot = radialX * pose.direction.x + radialY * pose.direction.y
-    expect(dot).toBeGreaterThan(0.5)
+  it('crossfades adjacent formations without positional jumps', () => {
+    for (let boundary = 5; boundary < LOOP_SECONDS; boundary += 5) {
+      const before = sampleSwordPose(20, 144, boundary - 0.02)
+      const after = sampleSwordPose(20, 144, boundary + 0.02)
+      const distance = Math.hypot(
+        before.position.x - after.position.x,
+        before.position.y - after.position.y,
+        before.position.z - after.position.z
+      )
+      expect(distance).toBeLessThan(0.6)
+    }
   })
 
-  it('fires double golden pulses and stretched sword volley during the 13-15s climax', () => {
-    const pulseA = sampleFormationWeights(13.3)
-    const volleyPeak = sampleFormationWeights(14.0)
-    const pulseB = sampleFormationWeights(14.3)
-    const calm = sampleFormationWeights(1.5)
+  it('gathers at the Zhuxian climax and rests elsewhere', () => {
+    expect(gatheringStrength(0)).toBe(0)
+    expect(gatheringStrength(3)).toBeGreaterThan(0.95)
+    expect(gatheringStrength(30)).toBe(0)
+    expect(gatheringStrength(LOOP_SECONDS)).toBe(0)
+  })
 
-    expect(pulseA.pulsePrimary).toBeGreaterThan(0.6)
-    expect(pulseA.volley).toBeGreaterThan(0.2)
-    expect(volleyPeak.volley).toBeGreaterThan(0.95)
-    expect(pulseB.pulseSecondary).toBeGreaterThan(0.4)
-    expect(calm.pulse).toBe(0)
+  it('emits formation-specific sword threads within capacity', () => {
+    expect(linkCountAt(2.5)).toBe(4)
+    expect(linkCountAt(7.5)).toBe(12)
+    expect(linkCountAt(12.5)).toBe(0)
+    expect(linkCountAt(47.5)).toBe(14)
+    expect(linkCountAt(52.5)).toBe(5)
+  })
 
-    const volleySword = sampleSwordPose(7, 144, 14.5)
-    expect(volleySword.stretch).toBeGreaterThan(1.4)
-    expect(volleySword.energy).toBeGreaterThan(0.5)
+  it('pours the gourd at the climax and lets it rest mid-cycle', () => {
+    const climax = sampleStageState(3, 3)
+    expect(climax.gourdReveal).toBeGreaterThan(0.9)
+    expect(climax.gourdPour).toBeGreaterThan(0.3)
+    expect(climax.corkLift).toBeGreaterThan(0.02)
+    expect(climax.vaporIntensity).toBeGreaterThan(0.2)
+    const calm = sampleStageState(20, 20)
+    expect(calm.gourdPour).toBeLessThan(0.3)
+    expect(calm.gourdGlow).toBeGreaterThanOrEqual(6)
+    for (const value of [climax.gourdTilt, climax.gourdPour, climax.corkLift, climax.vaporIntensity]) {
+      expect(Number.isFinite(value)).toBe(true)
+    }
+  })
+
+  it('blooms Chunli illusion and fires the six-meridian volley', () => {
+    const bloom = sampleFormationWeights(12.5)
+    expect(bloom.lotus).toBeGreaterThan(0.9)
+    expect(bloom.phaseLabel).toContain('春黎')
+
+    expect(sampleFormationWeights(2).pulsePrimary).toBeGreaterThan(0.6)
+    expect(sampleFormationWeights(3.5).pulseSecondary).toBeGreaterThan(0.4)
+    expect(sampleFormationWeights(20).pulse).toBe(0)
+    expect(sampleFormationWeights(37).volley).toBeGreaterThan(0.9)
+    let maxStretch = 0
+    for (let i = 0; i < 144; i++) maxStretch = Math.max(maxStretch, sampleSwordPose(i, 144, 37).stretch)
+    expect(maxStretch).toBeGreaterThan(1.4)
   })
 
   it('plunges divine sword into cracked earth and spawns clones before ascending', () => {
@@ -118,7 +157,7 @@ describe('sword formation choreography', () => {
     expect(settledSword).toEqual(sampleSwordPose(25, 144, INTRO_SECONDS))
   })
 
-  it('remains finite across every sword and phase in the loop', () => {
+  it('remains finite across every sword and phase in the grand cycle', () => {
     for (let t = 0; t <= LOOP_SECONDS; t += 2.5) {
       for (let i = 0; i < 144; i += 17) {
         const pose = sampleSwordPose(i, 144, t)
@@ -130,6 +169,9 @@ describe('sword formation choreography', () => {
           pose.glow,
           pose.stretch,
           pose.energy,
+          pose.gold,
+          pose.jade,
+          pose.seal,
           ...Object.values(introPose.position),
           ...Object.values(introPose.direction)
         ]) {

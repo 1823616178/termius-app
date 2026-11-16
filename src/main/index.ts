@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  Menu,
   ipcMain,
   dialog,
   MessageChannelMain,
@@ -31,6 +32,7 @@ import {
   portCheckSchema,
   tunnelToggleSchema,
   type Bootstrap,
+  type EncryptionBackend,
   type Host,
   type HostTrust,
   type KnownHostEntry,
@@ -52,7 +54,34 @@ import { SyncService } from './sync-service'
 import { OrbitTrayManager } from './tray-manager'
 import { probeTcpConnectivity, TunnelRuntimeManager } from './tunnel-network'
 import { OrbitUpdateService } from './update-service'
+import { lookupOpenSshKnownHost } from './openssh-known-hosts'
 import type { UpdateStatusSnapshot } from '../shared/updater'
+
+function resolveEncryptionBackend(): EncryptionBackend {
+  if (process.platform === 'win32') return 'dpapi'
+  if (process.platform === 'darwin') return 'keychain'
+  if (process.platform === 'linux' && typeof safeStorage.getSelectedStorageBackend === 'function') {
+    try {
+      return safeStorage.getSelectedStorageBackend()
+    } catch {
+      return 'unknown'
+    }
+  }
+  return 'unknown'
+}
+
+async function isEncryptionUsable(): Promise<boolean> {
+  try {
+    const available = await safeStorage.isAsyncEncryptionAvailable()
+    if (!available) return false
+    if (process.platform === 'linux' && resolveEncryptionBackend() === 'basic_text') {
+      return false
+    }
+    return true
+  } catch {
+    return false
+  }
+}
 
 if (process.env.ORBIT_USER_DATA) app.setPath('userData', process.env.ORBIT_USER_DATA)
 const windows = new Map<number, BrowserWindow>()
@@ -149,13 +178,39 @@ function getWorker(kind: 'local' | 'ssh'): UtilityProcess {
         if (known && known.fingerprint === data.fingerprint && known.algorithm === data.algorithm)
           worker.postMessage({ type: 'verify', id: data.id, accept: true })
         else {
+          const openSshKnown = !known
+            ? lookupOpenSshKnownHost(
+                session.host.address,
+                session.host.port,
+                data.fingerprint,
+                data.algorithm
+              )
+            : undefined
+          if (
+            !known &&
+            openSshKnown &&
+            openSshKnown.fingerprint === data.fingerprint &&
+            openSshKnown.algorithm === data.algorithm
+          ) {
+            await repository.call(
+              'trust',
+              session.host.address,
+              session.host.port,
+              data.fingerprint,
+              data.algorithm,
+              undefined,
+              'openssh'
+            )
+            worker.postMessage({ type: 'verify', id: data.id, accept: true })
+            return
+          }
           const challenge: HostTrust = {
             sessionId: data.id,
             address: session.host.address,
             port: session.host.port,
             fingerprint: data.fingerprint,
             algorithm: data.algorithm,
-            previous: known?.fingerprint
+            previous: known?.fingerprint ?? openSshKnown?.fingerprint
           }
           challenges.set(data.id, challenge)
           ownerWindow?.webContents.send(IPC.trustRequest, challenge)
@@ -255,13 +310,15 @@ function registerIpc(): void {
     ])
     return {
       windowId: `w${owner.id}`,
+      platform: process.platform,
       hosts,
       groups,
       tunnels,
       sync,
       shells: profiles,
       home: homedir(),
-      encryptionAvailable: await safeStorage.isAsyncEncryptionAvailable(),
+      encryptionAvailable: await isEncryptionUsable(),
+      encryptionBackend: resolveEncryptionBackend(),
       maximized: owner.isMaximized(),
       tray: trayManager?.getState() ?? {
         minimizeToTray: true,
@@ -290,8 +347,13 @@ function registerIpc(): void {
     const input = hostInputSchema.parse(raw)
     let encrypted: Buffer | undefined
     if (input.password && input.savePassword && input.auth === 'password') {
-      if (!(await safeStorage.isAsyncEncryptionAvailable()))
-        throw new Error('系统凭据保护不可用，不能保存密码。')
+      if (!(await isEncryptionUsable())) {
+        throw new Error(
+          process.platform === 'linux'
+            ? '当前 Linux 系统未检测到可用的 Keyring（gnome-keyring / kwallet），无法安全保存密码；请取消勾选保存并在连接时输入临时密码。'
+            : '系统凭据保护不可用，不能保存密码。'
+        )
+      }
       encrypted = await safeStorage.encryptStringAsync(input.password)
     }
     syncService.markLocalMutation()
@@ -479,10 +541,14 @@ function registerIpc(): void {
         title = host.name
         let password = input.password
         if (host.auth === 'password' && password === undefined && record.secret) {
-          const decrypted = await safeStorage.decryptStringAsync(Buffer.from(record.secret))
-          password = decrypted.result
-          if (decrypted.shouldReEncrypt)
-            await repository.call('updateSecret', host.id, await safeStorage.encryptStringAsync(password))
+          try {
+            const decrypted = await safeStorage.decryptStringAsync(Buffer.from(record.secret))
+            password = decrypted.result
+            if (decrypted.shouldReEncrypt && (await isEncryptionUsable()))
+              await repository.call('updateSecret', host.id, await safeStorage.encryptStringAsync(password))
+          } catch {
+            throw new Error('无法解锁已保存的密码（系统 Keyring / 凭据保护不可用），请重新输入本次连接密码。')
+          }
         }
         if (host.auth === 'password' && password === undefined) throw new Error('请输入本次连接密码。')
         spec = { host, password }
@@ -604,6 +670,7 @@ async function createWindow(): Promise<void> {
     title: 'Graphite Orbit',
     icon: existsSync(iconPath) ? iconPath : undefined,
     frame: false,
+    autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: true,
@@ -680,6 +747,9 @@ else {
   app
     .whenReady()
     .then(async () => {
+      if (process.platform === 'linux') {
+        Menu.setApplicationMenu(null)
+      }
       const userDataDir = app.getPath('userData')
       mkdirSync(userDataDir, { recursive: true })
       diagnostics = new DiagnosticLog(userDataDir)

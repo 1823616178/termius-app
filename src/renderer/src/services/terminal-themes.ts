@@ -346,8 +346,20 @@ export function cycleTerminalTheme(currentId: TerminalThemeId): TerminalThemeId 
 }
 
 export function buildShellColorizeCommand(kind: 'local' | 'ssh', profileId?: string): string {
-  if (kind === 'ssh' || profileId?.startsWith('wsl-')) {
+  const isPosixShell =
+    kind === 'ssh' ||
+    profileId?.startsWith('wsl-') ||
+    profileId === 'bash' ||
+    profileId?.startsWith('bash-') ||
+    profileId === 'zsh' ||
+    profileId?.startsWith('zsh-') ||
+    profileId === 'sh' ||
+    profileId?.startsWith('sh-')
+  if (isPosixShell) {
     return "export TERM=xterm-256color COLORTERM=truecolor CLICOLOR=1; alias ls='ls --color=auto' ll='ls -lah --color=auto' grep='grep --color=auto' ip='ip -c'; export PS1='\\[\\e[1;35m\\]●\\[\\e[0m\\] \\[\\e[1;32m\\]\\u@\\h\\[\\e[0m\\]:\\[\\e[1;36m\\]\\w\\[\\e[1;35m\\]\\$\\[\\e[0m\\] '\r"
+  }
+  if (profileId === 'fish' || profileId?.startsWith('fish-')) {
+    return "set -gx TERM xterm-256color; set -gx COLORTERM truecolor; alias ls 'ls --color=auto'; alias grep 'grep --color=auto'\r"
   }
   if (profileId === 'cmd') {
     return 'prompt $E[95m●$E[0m $E[96m$P$E[90m›$E[0m \r'

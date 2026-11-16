@@ -20,6 +20,7 @@ import {
 import { instanceClass } from '../../../shared/classes'
 import type { SyncDevice, SyncRevisionInfo } from '../../../shared/sync'
 import {
+  bootstrap,
   groupToken,
   hosts,
   notify,
@@ -586,7 +587,11 @@ async function handleRestoreRevision(revision: string) {
                 type="checkbox"
                 :disabled="!encryptionAvailable"
               />
-              保持登录状态（刷新令牌通过系统 DPAPI 加密保存）
+              {{
+                encryptionAvailable
+                  ? '保持登录状态（刷新令牌通过系统凭据保护加密保存）'
+                  : '保持登录状态不可用（未检测到系统 Keyring / 凭据保护）'
+              }}
             </label>
             <button class="container_sync_account_body_submit" type="submit" data-primary :disabled="busy">
               {{ busy ? '连接中…' : authMode === 'register' ? '注册并连接' : '登录并连接' }}
@@ -624,7 +629,11 @@ async function handleRestoreRevision(revision: string) {
                 :disabled="busy || !encryptionAvailable"
                 @change="handleToggleKeepSignedIn"
               />
-              保持登录状态（刷新令牌与保管库解锁凭据由系统 DPAPI 记忆）
+              {{
+                encryptionAvailable
+                  ? '保持登录状态（刷新令牌与保管库解锁凭据由系统凭据保护记忆）'
+                  : '保持登录状态不可用（未检测到系统 Keyring / 凭据保护）'
+              }}
             </label>
             <div class="container_sync_account_body_mode-row">
               <span class="container_sync_account_body_mode-label">主机/规则变更策略：</span>
@@ -855,8 +864,14 @@ async function handleRestoreRevision(revision: string) {
           <div class="container_sync_vault_body_capability">
             <ShieldCheck :size="15" />
             <span class="container_sync_vault_body_capability-text">
-              {{ syncStatus.capabilities.keySyncReason }} · 已启用本机 DPAPI
-              解锁记忆，下次重启自动保持已解锁状态。
+              {{ syncStatus.capabilities.keySyncReason }} ·
+              {{
+                encryptionAvailable
+                  ? bootstrap?.platform === 'linux'
+                    ? '已启用本机 Keyring 解锁记忆，下次重启自动保持已解锁状态。'
+                    : '已启用本机 DPAPI 解锁记忆，下次重启自动保持已解锁状态。'
+                  : '当前系统未检测到可用的 Keyring / 凭据保护，重启后需重新输入主密码解锁。'
+              }}
             </span>
           </div>
           <button

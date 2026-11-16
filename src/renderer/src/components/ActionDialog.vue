@@ -67,11 +67,12 @@ onBeforeUnmount(() => {
         <label v-if="encryptionAvailable" class="container_shared_action_body_save-label">
           <input v-model="savePassword" class="container_shared_action_body_save-input" type="checkbox" />
           {{
-            hasSavedPassword
-              ? '更新并保存密码到此主机（Windows 凭据保护）'
-              : '保存密码到此主机（Windows 凭据保护）'
+            hasSavedPassword ? '更新并保存密码到此主机（系统凭据保护）' : '保存密码到此主机（系统凭据保护）'
           }}
         </label>
+        <p v-else class="container_shared_action_body_nokeyring">
+          当前环境未检测到可用系统 Keyring，本次密码仅在会话内存中临时使用，不会落盘保存。
+        </p>
       </template>
       <template v-if="kind === 'trust'">
         <span class="container_shared_action_body_fingerprint-label">服务器公钥指纹</span>
@@ -181,6 +182,12 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: var(--color-text-secondary);
   cursor: pointer;
+}
+.container_shared_action_body_nokeyring {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  line-height: 1.6;
 }
 .container_shared_action_body_fingerprint,
 .container_shared_action_body_previous {

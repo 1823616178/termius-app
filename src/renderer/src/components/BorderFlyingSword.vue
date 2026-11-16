@@ -191,7 +191,7 @@ onBeforeUnmount(() => resizeObserver?.disconnect())
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  [class*='container_workspace_borderfx_overlay_base'] {
+  :global(:root:not([data-motion-preference='full']) [class*='container_workspace_borderfx_overlay_base']) {
     display: none;
   }
 }

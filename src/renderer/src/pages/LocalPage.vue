@@ -21,7 +21,11 @@ const c = (base: string, token: string) => instanceClass(base, windowInstance(to
         <span class="container_local_page_header_eyebrow">咫尺丹室 · 内景吐纳</span>
         <h2 class="container_local_page_header_title">本地终端</h2>
         <p class="container_local_page_header_description">
-          在独立 ConPTY 进程中运行，保持熟悉的 Shell 体验。
+          {{
+            bootstrap?.platform === 'linux'
+              ? '自动发现 $SHELL、/etc/shells 与系统终端环境；点击即在独立 PTY 中运行，支持 256 色与 TrueColor。'
+              : '自动发现 PowerShell、CMD 与已安装的 WSL 发行版；点击即在独立 ConPTY 进程中运行，保持熟悉的 Shell 体验。'
+          }}
         </p>
       </div>
       <button
@@ -62,7 +66,11 @@ const c = (base: string, token: string) => instanceClass(base, windowInstance(to
     </div>
     <p class="container_local_page_footer_hint">
       <Monitor :size="14" />
-      自动发现已安装的 Shell 与 WSL 发行版。未安装的环境不会被自动安装。
+      {{
+        bootstrap?.platform === 'linux'
+          ? '自动发现 $SHELL、/etc/shells 与系统已安装终端。'
+          : '自动发现已安装的 Shell 与 WSL 发行版。未安装的环境不会被自动安装。'
+      }}
     </p>
   </section>
 </template>

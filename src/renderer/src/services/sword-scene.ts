@@ -6,18 +6,18 @@ import {
   createGlyphSprite,
   createGourd,
   createGroundImpact,
-  createMainSword,
   createPillarTexture,
   createShockwaveTexture,
-  createWineBowl,
-  type GroundImpactModel,
-  type MainSwordModel,
-  type WineBowlModel
+  type GourdModel,
+  type GroundImpactModel
 } from './sword-models'
+import { createMainSword, createXuanyuanInscriptionTexture, type MainSwordModel } from './xuanyuan-sword'
 import {
   formationCount,
   IMPACT_SECONDS,
   INTRO_SECONDS,
+  LINK_SEGMENT_CAPACITY,
+  sampleFormationLinks,
   sampleIntroSwordPose,
   sampleStageState
 } from './sword-motion'
@@ -35,8 +35,9 @@ export interface SwordScene {
   setPointer(x: number, y: number): void
   update(options: SwordSceneOptions): void
   render(timeSeconds: number, introTimeSeconds?: number): string
+  formationIndex(): number
   triggerPulse(): void
-  dispose(): void
+  dispose(releaseContext?: boolean): void
 }
 
 interface Trail {
@@ -51,7 +52,11 @@ const GLYPHS = ['☰', '☱', '☲', '☳', '☴', '☵', '☶', '☷']
 const TRAIL_COUNT = 32
 const TRAIL_POINTS = 14
 
-function disposeSceneResources(scene: THREE.Scene, renderer: THREE.WebGLRenderer): void {
+function disposeSceneResources(
+  scene: THREE.Scene,
+  renderer: THREE.WebGLRenderer,
+  releaseContext = true
+): void {
   const geometries = new Set<THREE.BufferGeometry>()
   const materials = new Set<THREE.Material>()
   const textures = new Set<THREE.Texture>()
@@ -79,7 +84,7 @@ function disposeSceneResources(scene: THREE.Scene, renderer: THREE.WebGLRenderer
   materials.forEach((material) => material.dispose())
   textures.forEach((texture) => texture.dispose())
   renderer.dispose()
-  renderer.forceContextLoss()
+  if (releaseContext) renderer.forceContextLoss()
   scene.clear()
 }
 
@@ -94,7 +99,7 @@ export function createSwordScene(canvas: HTMLCanvasElement, initialOptions: Swor
   try {
     return buildSwordScene(renderer, scene, initialOptions)
   } catch (error) {
-    disposeSceneResources(scene, renderer)
+    disposeSceneResources(scene, renderer, false)
     throw error
   }
 }
@@ -122,9 +127,9 @@ function buildSwordScene(
   const rimLight = new THREE.PointLight('#5ec4a6', 24, 15, 1.5)
   rimLight.position.set(3.2, 1.8, 3.5)
   scene.add(rimLight)
-  const wineLight = new THREE.PointLight('#d98b38', 10, 7, 1.8)
-  wineLight.position.set(-2.4, -0.2, 2.8)
-  scene.add(wineLight)
+  const gourdLight = new THREE.PointLight('#d98b38', 8, 7, 1.8)
+  gourdLight.position.set(-1.25, -0.4, 2.2)
+  scene.add(gourdLight)
 
   const flyingGeometry = createFlyingSwordGeometry()
   const flyingMaterial = new THREE.MeshStandardMaterial({
@@ -194,7 +199,8 @@ function buildSwordScene(
   }
 
   const glowTexture = createGlowTexture()
-  const mainSword: MainSwordModel = createMainSword(glowTexture)
+  const inscriptionTexture = createXuanyuanInscriptionTexture()
+  const mainSword: MainSwordModel = createMainSword(glowTexture, inscriptionTexture)
   scene.add(mainSword.group)
 
   const pillarTexture = createPillarTexture()
@@ -296,14 +302,33 @@ function buildSwordScene(
   ringGroup.rotation.set(0.13, -0.08, 0)
   scene.add(ringGroup)
 
-  const gourd = createGourd()
-  gourd.position.set(-1.25, -0.7, 0.9)
-  gourd.scale.setScalar(0.54)
-  scene.add(gourd)
-  const wine: WineBowlModel = createWineBowl()
-  wine.group.position.set(2.65, -0.95, 0.8)
-  wine.group.scale.setScalar(0.76)
-  scene.add(wine.group)
+  const gourd: GourdModel = createGourd()
+  gourd.group.position.set(-1.25, -0.7, 0.9)
+  gourd.group.scale.setScalar(0.54)
+  scene.add(gourd.group)
+
+  const linkVertexCount = LINK_SEGMENT_CAPACITY * 2
+  const linkPositions = new Float32Array(linkVertexCount * 3)
+  const linkColors = new Float32Array(linkVertexCount * 3)
+  const linkWeights = new Float32Array(linkVertexCount)
+  const linkColorIdx = new Uint8Array(linkVertexCount)
+  const linkGeometry = new THREE.BufferGeometry()
+  linkGeometry.setAttribute(
+    'position',
+    new THREE.BufferAttribute(linkPositions, 3).setUsage(THREE.DynamicDrawUsage)
+  )
+  linkGeometry.setAttribute('color', new THREE.BufferAttribute(linkColors, 3).setUsage(THREE.DynamicDrawUsage))
+  const linkMaterial = new THREE.LineBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.5,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  })
+  const links = new THREE.LineSegments(linkGeometry, linkMaterial)
+  links.frustumCulled = false
+  links.visible = false
+  scene.add(links)
 
   const particlePositions = new Float32Array(420 * 3)
   for (let index = 0; index < 420; index++) {
@@ -341,6 +366,7 @@ function buildSwordScene(
   const pointerTarget = new THREE.Vector2()
   const pointer = new THREE.Vector2()
   let lastLoopTime = 0
+  let lastFormationIndex = 0
   let manualPulseProgress = 0
   let disposed = false
 
@@ -356,11 +382,11 @@ function buildSwordScene(
     flyingMaterial.emissive.copy(accent).multiplyScalar(0.24)
     foregroundMaterial.emissive.copy(isError ? seal : gold).multiplyScalar(0.45)
     guardianMaterial.emissive.copy(accent).multiplyScalar(0.35)
-    mainSword.bladeMaterial.color.copy(steel)
-    mainSword.bladeMaterial.emissive.copy(accent).multiplyScalar(0.22)
+    mainSword.bladeMaterial.color.copy(steel).lerp(gold, 0.58)
+    mainSword.bladeMaterial.emissive.copy(isError ? seal : gold).multiplyScalar(0.34)
     mainSword.goldMaterial.color.copy(gold)
     mainSword.tasselMaterial.color.copy(seal)
-    mainSword.glow.material.color.copy(accent)
+    mainSword.glow.material.color.copy(isError ? seal : gold).lerp(brightGold, 0.32)
     pillarMaterial.color.copy(isError ? seal : gold)
     flareMaterial.color.copy(isError ? seal : gold).lerp(brightGold, 0.35)
     shockwaves[0]!.material.color.copy(isError ? seal : gold)
@@ -385,8 +411,7 @@ function buildSwordScene(
     formation.position.x = compact ? -0.9 * 0.48 : 0
     ringGroup.position.x = compact ? 0 : 0.9
     ringGroup.scale.setScalar(compact ? 0.52 : 0.86)
-    gourd.visible = !compact
-    wine.group.visible = !compact
+    gourd.group.visible = !compact
     particles.visible = !compact
     pillarSprite.visible = !compact
     flareSprite.visible = !compact
@@ -448,6 +473,7 @@ function buildSwordScene(
 
     const compact = options.variant === 'compact'
     const stage = sampleStageState(time, compact ? Math.max(introTime * 2.6, 0.8) : introTime, compact)
+    lastFormationIndex = stage.formationIndex
     const { weights } = stage
     const phase = weights.phase
     const cycle = phase * Math.PI * 2
@@ -476,8 +502,9 @@ function buildSwordScene(
 
       instanceColor
         .copy(steel)
-        .lerp(jade, 0.26 + weights.lotus * 0.22)
-        .lerp(gold, Math.min(1, pose.glow * 0.36 + pose.energy * 0.55))
+        .lerp(jade, pose.jade)
+        .lerp(gold, pose.gold)
+        .lerp(seal, pose.seal * 0.6)
       if (pulse > 0.02) {
         instanceColor.lerp(brightGold, pulse * 0.42 * pose.energy)
       }
@@ -687,30 +714,59 @@ function buildSwordScene(
     })
 
     const gourdLift = (1 - stage.gourdReveal) * -0.95
-    gourd.position.y = -0.7 + Math.sin(cycle * 2) * 0.07 + gourdLift
-    gourd.scale.setScalar(0.54 * (0.35 + stage.gourdReveal * 0.65))
-    gourd.rotation.set(0.06, -0.24 + Math.sin(cycle) * 0.16, 0.08 + Math.sin(cycle * 2) * 0.035)
+    gourd.group.position.set(
+      -1.25 + Math.sin(cycle * 0.5) * 0.12,
+      -0.7 + Math.sin(time * 1.3) * 0.07 + gourdLift,
+      0.9 + Math.cos(cycle * 0.5) * 0.08
+    )
+    gourd.group.scale.setScalar(0.54 * (0.35 + stage.gourdReveal * 0.65))
+    gourd.group.rotation.set(
+      0.06 + stage.gourdPour * 0.12,
+      -0.24 + Math.sin(time * 0.6) * 0.16,
+      0.08 + stage.gourdTilt
+    )
+    gourd.body.scale.setScalar(1 + Math.sin(time * 1.3 + 0.6) * 0.02)
+    gourd.cork.position.y = 1.11 + stage.corkLift
+    gourd.cork.rotation.z = stage.gourdPour * 0.3
+    gourd.cord.rotation.z = Math.sin(time * 1.6 + 1) * 0.06 + stage.gourdPour * 0.1
+    gourd.sealMaterial.color.setRGB(1, 1, 1).lerp(brightGold, pulse * 0.6)
+    gourd.sealMaterial.opacity = 0.75 + gather * 0.25
 
-    const wineLift = (1 - stage.wineReveal) * -0.9
-    wine.group.position.y = -0.95 + wineLift
-    wine.group.scale.setScalar(0.76 * (0.35 + stage.wineReveal * 0.65))
-    wine.liquid.material.emissiveIntensity = 0.38 + gather * 0.45 + pulse * 0.55
-    wine.ripples.forEach((ripple, index) => {
-      const ripplePhase = (phase * 4 + index * 0.5) % 1
-      const size = 0.35 + ripplePhase * (1.85 + pulse * 0.45)
-      ripple.scale.set(size, size, size)
-      ripple.material.opacity = (1 - ripplePhase) * (0.18 + gather * 0.38 + pulse * 0.35) * stage.wineReveal
-    })
-    wine.droplets.forEach((droplet, index) => {
-      const angle = cycle * 2 + (index / wine.droplets.length) * Math.PI * 2
-      const lift = (Math.sin(angle) + 1) * 0.5
-      droplet.position.set(
-        Math.cos(angle) * 0.26,
-        0.28 + lift * (0.18 + gather * 0.28 + pulse * 0.24),
-        Math.sin(angle) * 0.26
-      )
-      droplet.scale.setScalar((0.55 + gather * 0.65 + pulse * 0.4) * stage.wineReveal)
-    })
+    const vaporAttribute = gourd.vapor.geometry.getAttribute('position') as THREE.BufferAttribute
+    const vaporArray = vaporAttribute.array as Float32Array
+    for (let v = 0; v < 24; v++) {
+      const life = time * 0.35 + v / 24 - Math.floor(time * 0.35 + v / 24)
+      vaporArray[v * 3] = Math.sin(time * 2 + v * 1.7) * 0.06 * life
+      vaporArray[v * 3 + 1] = 1.2 + life * 1.1
+      vaporArray[v * 3 + 2] = Math.cos(time * 1.8 + v) * 0.05 * life
+    }
+    vaporAttribute.needsUpdate = true
+    gourd.vapor.visible = !compact && stage.vaporIntensity > 0.02
+    gourd.vaporMaterial.opacity = stage.vaporIntensity * (options.tier === 'light' ? 0.25 : 0.5)
+    gourd.vaporMaterial.size = 0.04 + stage.vaporIntensity * 0.03
+    gourd.pourRibbon.visible = !compact && stage.gourdPour > 0.05
+    gourd.pourMaterial.opacity = stage.gourdPour * 0.45
+    gourd.pourRibbon.rotation.z = Math.sin(time * 1.2) * 0.05
+    gourd.pourRibbon.scale.setScalar(0.8 + stage.gourdPour * 0.4)
+    gourdLight.position.set(gourd.group.position.x, gourd.group.position.y + 0.4, gourd.group.position.z + 1.2)
+    gourdLight.intensity = stage.gourdGlow
+
+    const linkCount = sampleFormationLinks(time, linkPositions, linkWeights, linkColorIdx)
+    const showLinks = !compact && options.tier === 'full' && linkCount > 0
+    links.visible = showLinks
+    if (showLinks) {
+      for (let v = 0; v < linkCount * 2; v++) {
+        const base = linkColorIdx[v] === 1 ? jade : linkColorIdx[v] === 2 ? seal : gold
+        const w = linkWeights[v] ?? 0
+        linkColors[v * 3] = base.r * w
+        linkColors[v * 3 + 1] = base.g * w
+        linkColors[v * 3 + 2] = base.b * w
+      }
+      linkGeometry.getAttribute('position').needsUpdate = true
+      linkGeometry.getAttribute('color').needsUpdate = true
+      linkGeometry.setDrawRange(0, linkCount * 2)
+      linkMaterial.opacity = 0.4 + pulse * 0.3
+    }
 
     particles.rotation.z = cycle
     particles.rotation.y = Math.sin(cycle) * 0.08
@@ -733,14 +789,15 @@ function buildSwordScene(
     resize,
     update,
     render,
+    formationIndex: () => lastFormationIndex,
     triggerPulse,
     setPointer(x: number, y: number) {
       pointerTarget.set(Math.max(-1, Math.min(1, x)), Math.max(-1, Math.min(1, y)))
     },
-    dispose() {
+    dispose(releaseContext = true) {
       if (disposed) return
       disposed = true
-      disposeSceneResources(scene, renderer)
+      disposeSceneResources(scene, renderer, releaseContext)
     }
   }
 }
