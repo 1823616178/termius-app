@@ -47,37 +47,94 @@ export interface GourdModel {
   pourMaterial: THREE.MeshBasicMaterial
 }
 
-function transformed(geometry: THREE.BufferGeometry, x: number, y: number, z: number): THREE.BufferGeometry {
+function transformed(
+  geometry: THREE.BufferGeometry,
+  x: number,
+  y: number,
+  z: number,
+  r: number,
+  g: number,
+  b: number
+): THREE.BufferGeometry {
   geometry.translate(x, y, z)
-  return geometry.index ? geometry.toNonIndexed() : geometry
+  const nonIndexed = geometry.index ? geometry.toNonIndexed() : geometry
+  if (nonIndexed !== geometry) geometry.dispose()
+  const count = nonIndexed.getAttribute('position').count
+  const colors = new Float32Array(count * 3)
+  for (let i = 0; i < count; i++) {
+    colors[i * 3] = r
+    colors[i * 3 + 1] = g
+    colors[i * 3 + 2] = b
+  }
+  nonIndexed.setAttribute('color', new THREE.BufferAttribute(colors, 3))
+  return nonIndexed
+}
+
+function mergeColoredParts(parts: THREE.BufferGeometry[], label: string): THREE.BufferGeometry {
+  let geometry: THREE.BufferGeometry | null = null
+  try {
+    geometry = mergeGeometries(parts, false)
+  } finally {
+    for (const part of parts) part.dispose()
+  }
+  if (!geometry) throw new Error(label)
+  geometry.computeVertexNormals()
+  return geometry
 }
 
 export function createFlyingSwordGeometry(): THREE.BufferGeometry {
-  const body = new THREE.CylinderGeometry(0.052, 0.062, 0.8, 4, 1)
-  body.scale(1, 1, 0.42)
-  const point = new THREE.ConeGeometry(0.052, 0.12, 4, 1)
-  point.scale(1, 1, 0.42)
-  const guard = new THREE.BoxGeometry(0.22, 0.035, 0.07)
-  const grip = new THREE.CylinderGeometry(0.022, 0.028, 0.3, 6)
-  const pommel = new THREE.CylinderGeometry(0.042, 0.034, 0.05, 8)
-  const geometry = mergeGeometries(
+  const body = new THREE.CylinderGeometry(0.056, 0.064, 0.86, 4, 1, true)
+  body.scale(1.08, 1, 0.52)
+  const point = new THREE.ConeGeometry(0.056, 0.14, 4, 1, true)
+  point.scale(1.08, 1, 0.52)
+  const guard = new THREE.BoxGeometry(0.24, 0.036, 0.068)
+  const grip = new THREE.CylinderGeometry(0.022, 0.027, 0.28, 4, 1)
+  const pommel = new THREE.CylinderGeometry(0.042, 0.034, 0.046, 6, 1)
+  const details = [
+    transformed(new THREE.BoxGeometry(0.018, 0.64, 0.008), 0, 0.26, 0.028, 0.58, 0.88, 0.83),
+    transformed(new THREE.BoxGeometry(0.018, 0.64, 0.008), 0, 0.26, -0.028, 0.58, 0.88, 0.83),
+    transformed(new THREE.OctahedronGeometry(0.043), 0, -0.14, 0.04, 0.32, 0.82, 0.7)
+  ]
+  for (let band = 0; band < 4; band++) {
+    details.push(
+      transformed(
+        new THREE.CylinderGeometry(0.028, 0.028, 0.012, 6),
+        0,
+        -0.2 - band * 0.055,
+        0,
+        0.76,
+        0.59,
+        0.3
+      )
+    )
+  }
+  return mergeColoredParts(
     [
-      transformed(body, 0, 0.28, 0),
-      transformed(point, 0, 0.74, 0),
-      transformed(guard, 0, -0.135, 0),
-      transformed(grip, 0, -0.3, 0),
-      transformed(pommel, 0, -0.475, 0)
+      ...details,
+      transformed(body, 0, 0.3, 0, 1, 1, 1),
+      transformed(point, 0, 0.8, 0, 1, 1, 0.98),
+      transformed(guard, 0, -0.138, 0, 0.94, 0.78, 0.44),
+      transformed(grip, 0, -0.295, 0, 0.22, 0.2, 0.19),
+      transformed(pommel, 0, -0.455, 0, 0.94, 0.78, 0.44)
     ],
-    false
+    'Unable to create flying sword geometry'
   )
-  body.dispose()
-  point.dispose()
-  guard.dispose()
-  grip.dispose()
-  pommel.dispose()
-  if (!geometry) throw new Error('Unable to create flying sword geometry')
-  geometry.computeVertexNormals()
-  return geometry
+}
+
+export function createSkySwordGeometry(): THREE.BufferGeometry {
+  const body = new THREE.CylinderGeometry(0.055, 0.062, 0.88, 4, 1, true)
+  body.scale(1.05, 1, 0.32)
+  const point = new THREE.ConeGeometry(0.055, 0.16, 4, 1, true)
+  point.scale(1.05, 1, 0.32)
+  const guard = new THREE.BoxGeometry(0.22, 0.034, 0.06)
+  return mergeColoredParts(
+    [
+      transformed(body, 0, 0.28, 0, 1, 1, 1),
+      transformed(point, 0, 0.8, 0, 1, 1, 0.98),
+      transformed(guard, 0, -0.15, 0, 0.92, 0.76, 0.44)
+    ],
+    'Unable to create sky sword geometry'
+  )
 }
 
 export function createGlowTexture(): THREE.CanvasTexture {

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { Client, type ClientChannel } from 'ssh2'
 import { terminalChannel } from '../terminal-channel'
+import { handleSftpRequest, type SftpSessionState, type SftpWorkerRequest } from './sftp-handler'
 
 export function resolveSshAgentSocket(
   platform: NodeJS.Platform = process.platform,
@@ -23,6 +24,7 @@ export function normalizeSshHost(address: string): string {
 }
 
 const sessions = new Map<string, () => void>()
+const sftpStates = new Map<string, SftpSessionState>()
 const verifiers = new Map<string, (accept: boolean) => void>()
 
 process.parentPort?.on('message', ({ data, ports }) => {
@@ -34,12 +36,52 @@ process.parentPort?.on('message', ({ data, ports }) => {
     verifiers.get(data.id)?.(data.accept === true)
     return
   }
+  if (data.type === 'sftp:cancel') {
+    sftpStates.get(data.sessionId)?.activeTransfers.get(data.transferId)?.abort()
+    return
+  }
+  if (data.type === 'sftp:request') {
+    const req = data as SftpWorkerRequest
+    const state = sftpStates.get(req.sessionId)
+    if (!state) {
+      process.parentPort?.postMessage({
+        type: 'sftp:response',
+        requestId: req.requestId,
+        ok: false,
+        error: 'SSH 会话不存在或已断开，请重新连接后重试。'
+      })
+      return
+    }
+    void handleSftpRequest(state, req, (progress) => {
+      process.parentPort?.postMessage({ type: 'sftp:progress', ...progress })
+    }).then(
+      (result) => {
+        process.parentPort?.postMessage({
+          type: 'sftp:response',
+          requestId: req.requestId,
+          ok: true,
+          result
+        })
+      },
+      (error) => {
+        process.parentPort?.postMessage({
+          type: 'sftp:response',
+          requestId: req.requestId,
+          ok: false,
+          error: error instanceof Error ? error.message : 'SFTP 操作失败'
+        })
+      }
+    )
+    return
+  }
   if (data.type === 'shutdown') {
     for (const close of sessions.values()) close()
     process.exit(0)
   }
   if (data.type !== 'open' || !ports[0]) return
   const client = new Client()
+  const sftpState: SftpSessionState = { client, activeTransfers: new Map() }
+  const mode = data.mode === 'sftp' ? 'sftp' : 'shell'
   let stream: ClientChannel | undefined
   let ended = false
   let cols = data.cols as number,
@@ -72,16 +114,26 @@ process.parentPort?.on('message', ({ data, ports }) => {
         clearTimeout(deadline)
         ended = true
         verifiers.get(data.id)?.(false)
+        for (const controller of sftpState.activeTransfers.values()) controller.abort()
+        sftpState.activeTransfers.clear()
+        try {
+          sftpState.sftp?.end()
+        } catch {
+          /* Ignore SFTP close error */
+        }
+        sftpStates.delete(data.id)
         stream?.close()
         client.destroy()
       }
     },
     () => {
       sessions.delete(data.id)
+      sftpStates.delete(data.id)
       process.parentPort.postMessage({ type: 'closed', id: data.id })
     }
   )
   sessions.set(data.id, channel.close)
+  sftpStates.set(data.id, sftpState)
   channel.send({ type: 'state', state: 'connecting' })
   client.on('keyboard-interactive', (_name, _instructions, _lang, prompts, finish) => {
     if (!keyboardAttempted && secretPassword !== undefined && prompts.length === 1 && !prompts[0]?.echo) {
@@ -93,6 +145,27 @@ process.parentPort?.on('message', ({ data, ports }) => {
   })
   client.on('ready', () => {
     clearTimeout(deadline)
+    if (mode === 'sftp') {
+      channel.send({ type: 'state', state: 'authenticating', message: '认证成功，正在启动 SFTP 通道' })
+      client.sftp((error, sftp) => {
+        if (ended) {
+          sftp?.end()
+          return
+        }
+        if (error || !sftp) {
+          ended = true
+          channel.finish({ type: 'state', state: 'error', message: '服务器未启用或拒绝了 SFTP 子系统。' })
+          return
+        }
+        sftpState.sftp = sftp
+        sftp.once('close', () => {
+          sftpState.sftp = undefined
+          sftpState.sftpPromise = undefined
+        })
+        channel.send({ type: 'state', state: 'running' })
+      })
+      return
+    }
     channel.send({ type: 'state', state: 'authenticating', message: '认证成功，正在请求终端' })
     client.shell(
       { term: 'xterm-256color', cols, rows },

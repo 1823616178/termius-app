@@ -1,6 +1,14 @@
 import { z } from 'zod'
 import type { UpdatePreferencesPatch, UpdateStatusSnapshot } from './updater'
 import type {
+  SftpConflictDecision,
+  SftpExpandedUploadManifest,
+  SftpListResult,
+  SftpProgressEvent,
+  SftpStatResult,
+  SftpTransferItem
+} from './sftp'
+import type {
   SyncConfigFormDefaults,
   SyncConflictResolutionItem,
   SyncDevice,
@@ -162,7 +170,8 @@ export const openSessionSchema = z.discriminatedUnion('kind', [
       ...sessionBaseFields,
       kind: z.literal('ssh'),
       hostId: idSchema,
-      password: z.string().max(16384).optional()
+      password: z.string().max(16384).optional(),
+      mode: z.enum(['shell', 'sftp']).optional()
     })
     .strict()
 ])
@@ -228,6 +237,58 @@ export const knownHostRemoveSchema = z
     hostKey: z.string().min(1).max(512)
   })
   .strict()
+
+const remotePathSchema = z
+  .string()
+  .min(1, '路径不能为空')
+  .max(4096, '路径过长')
+  .refine((v) => !v.includes('\0'), '路径不能包含空字符')
+
+const localPathSchema = z
+  .string()
+  .min(1, '本地路径不能为空')
+  .max(4096, '本地路径过长')
+  .refine((v) => !v.includes('\0'), '本地路径不能包含空字符')
+
+export const sftpSessionSchema = z.object({ sessionId: idSchema }).strict()
+export const sftpPathRequestSchema = z.object({ sessionId: idSchema, path: remotePathSchema }).strict()
+export const sftpRenameSchema = z
+  .object({ sessionId: idSchema, oldPath: remotePathSchema, newPath: remotePathSchema })
+  .strict()
+export const sftpChmodSchema = z
+  .object({ sessionId: idSchema, path: remotePathSchema, mode: z.number().int().min(0).max(0o7777) })
+  .strict()
+export const sftpDeleteSchema = z
+  .object({ sessionId: idSchema, path: remotePathSchema, recursive: z.boolean().optional() })
+  .strict()
+export const sftpUploadSchema = z
+  .object({
+    transferId: idSchema,
+    sessionId: idSchema,
+    localPath: localPathSchema,
+    remotePath: remotePathSchema,
+    conflict: z.enum(['overwrite', 'skip', 'rename']).default('overwrite')
+  })
+  .strict()
+export const sftpDownloadSchema = z
+  .object({
+    transferId: idSchema,
+    sessionId: idSchema,
+    remotePath: remotePathSchema,
+    localPath: localPathSchema,
+    conflict: z.enum(['overwrite', 'skip', 'rename']).default('overwrite')
+  })
+  .strict()
+export const sftpCancelTransferSchema = z.object({ sessionId: idSchema, transferId: idSchema }).strict()
+export const sftpPickDownloadFileSchema = z.object({ defaultName: z.string().min(1).max(255) }).strict()
+export const sftpExpandLocalSchema = z.object({ localPaths: z.array(localPathSchema).max(500) }).strict()
+export const sftpRevealLocalSchema = z.object({ localPath: localPathSchema }).strict()
+
+export interface SftpRemoteTreeManifest {
+  dirs: string[]
+  files: { remotePath: string; relativePath: string; name: string; size: number }[]
+  skippedSymlinks: number
+}
 
 export interface NetProbeResult {
   host: string
@@ -343,6 +404,39 @@ export interface Bridge {
     openReleasePage(): Promise<void>
     updatePreferences(patch: UpdatePreferencesPatch): Promise<UpdateStatusSnapshot>
     onStateChanged(callback: (state: UpdateStatusSnapshot) => void): () => void
+  }
+  sftp: {
+    home(sessionId: string): Promise<string>
+    list(sessionId: string, path: string): Promise<SftpListResult>
+    stat(sessionId: string, path: string): Promise<SftpStatResult>
+    collectTree(sessionId: string, path: string): Promise<SftpRemoteTreeManifest>
+    mkdir(sessionId: string, path: string): Promise<void>
+    rename(sessionId: string, oldPath: string, newPath: string): Promise<void>
+    chmod(sessionId: string, path: string, mode: number): Promise<void>
+    remove(sessionId: string, path: string, recursive?: boolean): Promise<void>
+    upload(input: {
+      transferId: string
+      sessionId: string
+      localPath: string
+      remotePath: string
+      conflict: SftpConflictDecision
+    }): Promise<SftpTransferItem>
+    download(input: {
+      transferId: string
+      sessionId: string
+      remotePath: string
+      localPath: string
+      conflict: SftpConflictDecision
+    }): Promise<SftpTransferItem>
+    cancelTransfer(sessionId: string, transferId: string): Promise<void>
+    pickUploadFiles(): Promise<string[]>
+    pickUploadDirs(): Promise<string[]>
+    pickDownloadDir(): Promise<string | null>
+    pickDownloadFile(defaultName: string): Promise<string | null>
+    expandLocalUploads(localPaths: string[]): Promise<SftpExpandedUploadManifest>
+    revealLocal(localPath: string): Promise<boolean>
+    getDroppedPaths(files: FileList | File[]): string[]
+    onProgress(callback: (event: SftpProgressEvent) => void): () => void
   }
 }
 export { IPC } from './channels'

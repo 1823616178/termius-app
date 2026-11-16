@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import {
   ArrowDown,
   ArrowLeft,
   ArrowRight,
   ArrowUp,
   Columns2,
+  FolderOpen,
   Plus,
   Rows2,
   ShieldCheck,
@@ -18,7 +19,18 @@ import OrbitSelect from '../components/OrbitSelect.vue'
 import OrbitStage3D from '../components/OrbitStage3D.vue'
 import { FORMATIONS } from '../services/sword-motion'
 import BorderFlyingSword from '../components/BorderFlyingSword.vue'
+import SftpPanel from '../components/SftpPanel.vue'
 import TerminalPane from '../components/TerminalPane.vue'
+import {
+  activeSftpContext,
+  activeTransferCount,
+  disposeSftpBridgeListeners,
+  initSftpBridgeListeners,
+  setSftpPanelWidth,
+  sftpDrawerOpen,
+  sftpPanelWidth,
+  toggleSftpPanel
+} from '../services/sftp-store'
 import { TERMINAL_THEMES, type TerminalThemeId } from '../services/terminal-themes'
 import {
   activeTab,
@@ -194,8 +206,13 @@ function endTabDrag() {
   dragPointerBlock.value = false
 }
 
+onMounted(() => {
+  initSftpBridgeListeners()
+})
+
 onBeforeUnmount(() => {
   endTabDrag()
+  disposeSftpBridgeListeners()
 })
 
 function resolveDragPayload(event: DragEvent): DragPayload | null {
@@ -564,6 +581,26 @@ function resizePanes(event: PointerEvent, tab: Tab) {
   el.addEventListener('pointerup', finish)
   el.addEventListener('lostpointercapture', finish)
 }
+
+function resizeSftpPanel(event: PointerEvent) {
+  const el = event.currentTarget as HTMLElement
+  const container = el.parentElement
+  if (!container) return
+  el.setPointerCapture(event.pointerId)
+  const update = (move: PointerEvent) => {
+    const rect = container.getBoundingClientRect()
+    if (rect.width <= 0) return
+    setSftpPanelWidth(rect.right - move.clientX)
+  }
+  const finish = () => {
+    el.removeEventListener('pointermove', update)
+    el.removeEventListener('pointerup', finish)
+    el.removeEventListener('lostpointercapture', finish)
+  }
+  el.addEventListener('pointermove', update)
+  el.addEventListener('pointerup', finish)
+  el.addEventListener('lostpointercapture', finish)
+}
 </script>
 
 <template>
@@ -689,6 +726,20 @@ function resizePanes(event: PointerEvent, tab: Tab) {
       >
         <Rows2 :size="16" />
       </button>
+      <button
+        v-if="tabs.length"
+        class="container_workspace_tabs_header_sftp"
+        type="button"
+        aria-label="SFTP 文件传输"
+        title="展开或收起右侧 SFTP 文件管理面板"
+        :aria-pressed="sftpDrawerOpen"
+        @click="toggleSftpPanel()"
+      >
+        <FolderOpen :size="15" />
+        <span v-if="activeTransferCount > 0" class="container_workspace_tabs_header_sftp-badge">
+          {{ activeTransferCount }}
+        </span>
+      </button>
     </header>
     <div v-if="!tabs.length && bootstrap" class="container_workspace_welcome_body_base">
       <div :key="welcomeIntroKey" class="container_workspace_welcome_body_atmosphere" aria-hidden="true">
@@ -708,10 +759,13 @@ function resizePanes(event: PointerEvent, tab: Tab) {
         @formation="swordFormationIndex = $event"
       />
       <div class="container_workspace_welcome_body_scene-note" aria-hidden="true">
-        <span class="container_workspace_welcome_body_scene-name">{{
-          FORMATIONS[swordFormationIndex]?.name ?? '万剑归宗'
-        }}</span>
+        <span class="container_workspace_welcome_body_scene-name">
+          {{ FORMATIONS[swordFormationIndex]?.name ?? '万剑归宗' }}
+        </span>
         <span class="container_workspace_welcome_body_scene-state">{{ swordPhaseNote }}</span>
+        <span class="container_workspace_welcome_body_view-hint">
+          左右拖拽环视 · 上下俯仰 · 滚轮缩放 · 双击复位
+        </span>
       </div>
       <div class="container_workspace_welcome_body_controls">
         <button
@@ -797,125 +851,154 @@ function resizePanes(event: PointerEvent, tab: Tab) {
       </div>
       <BorderFlyingSword :instance="windowInstance('border')" />
     </div>
-    <div
-      v-for="tab in tabs"
-      v-show="activeTab === tab.token"
-      :key="tab.token"
-      :ref="(el) => registerPaneContainer(tab.token, el as HTMLElement | null)"
-      :class="c('container_workspace_panes_body_base', tab.token)"
-      :data-direction="tab.direction"
-      :data-tab-dragging="isDraggingAny"
-      :data-drag-pointer-block="dragPointerBlock"
-      @dragover.prevent="onWorkspaceDragOver($event, tab)"
-      @dragleave="onWorkspaceDragLeave($event)"
-      @drop.prevent="onWorkspaceDrop($event, tab.token)"
-    >
-      <template v-for="(pane, index) in tab.panes" :key="pane.token">
+    <div v-if="tabs.length" class="container_workspace_stage_body_base">
+      <div class="container_workspace_stage_body_panes">
         <div
-          :class="c('container_workspace_panes_body_pane', pane.token)"
-          :data-focused="tab.focusedPaneToken === pane.token && tab.panes.length > 1"
-          :data-split-enter="splitEnteredPaneToken === pane.token"
-          :data-drop-target-pane="targetPaneToken === pane.token && Boolean(splitDropZone)"
-          :data-pane-count="tab.panes.length"
-          :style="
-            tab.panes.length === 2
-              ? { flex: index === 0 ? `0 0 calc(${tab.ratio}% - 3px)` : '1' }
-              : { flex: '1' }
-          "
-          @focusin="tab.focusedPaneToken = pane.token"
-          @dragover.prevent.stop="onPaneDragOver($event, tab, pane)"
-          @drop.prevent.stop="onPaneDrop($event, tab, pane)"
+          v-for="tab in tabs"
+          v-show="activeTab === tab.token"
+          :key="tab.token"
+          :ref="(el) => registerPaneContainer(tab.token, el as HTMLElement | null)"
+          :class="c('container_workspace_panes_body_base', tab.token)"
+          :data-direction="tab.direction"
+          :data-tab-dragging="isDraggingAny"
+          :data-drag-pointer-block="dragPointerBlock"
+          @dragover.prevent="onWorkspaceDragOver($event, tab)"
+          @dragleave="onWorkspaceDragLeave($event)"
+          @drop.prevent="onWorkspaceDrop($event, tab.token)"
         >
-          <TerminalPane
-            :token="windowInstance(pane.token)"
-            :title="pane.title"
-            :kind="pane.kind"
-            :profile-id="pane.profileId"
-            :host-id="pane.hostId"
-            :password="pane.password"
-            :retry-seq="pane.retrySeq ?? 0"
-            :auth-cancelled-seq="pane.authCancelledSeq ?? 0"
-            :visible="activeTab === tab.token && page === 'workspace'"
-            :can-unsplit="tab.panes.length > 1"
-            :is-dragging="draggedPane?.paneToken === pane.token"
-            :font-size="fontSize"
-            :screen-reader-default="screenReaderDefault"
-            @consumed="pane.password = undefined"
-            @state="pane.state = $event"
-            @auth-failed="requestPanePassword(tab.token, pane.token, $event)"
-            @unsplit="detachPaneToTab(tab.token, pane.token)"
-            @close-pane="closePane(tab.token, pane.token)"
-            @header-drag-start="onPaneHeaderDragStart($event, tab, pane)"
-            @header-drag-end="endTabDrag"
-          />
+          <template v-for="(pane, index) in tab.panes" :key="pane.token">
+            <div
+              :class="c('container_workspace_panes_body_pane', pane.token)"
+              :data-focused="tab.focusedPaneToken === pane.token && tab.panes.length > 1"
+              :data-split-enter="splitEnteredPaneToken === pane.token"
+              :data-drop-target-pane="targetPaneToken === pane.token && Boolean(splitDropZone)"
+              :data-pane-count="tab.panes.length"
+              :style="
+                tab.panes.length === 2
+                  ? { flex: index === 0 ? `0 0 calc(${tab.ratio}% - 3px)` : '1' }
+                  : { flex: '1' }
+              "
+              @focusin="tab.focusedPaneToken = pane.token"
+              @dragover.prevent.stop="onPaneDragOver($event, tab, pane)"
+              @drop.prevent.stop="onPaneDrop($event, tab, pane)"
+            >
+              <TerminalPane
+                :token="windowInstance(pane.token)"
+                :title="pane.title"
+                :kind="pane.kind"
+                :profile-id="pane.profileId"
+                :host-id="pane.hostId"
+                :password="pane.password"
+                :retry-seq="pane.retrySeq ?? 0"
+                :auth-cancelled-seq="pane.authCancelledSeq ?? 0"
+                :visible="activeTab === tab.token && page === 'workspace'"
+                :can-unsplit="tab.panes.length > 1"
+                :is-dragging="draggedPane?.paneToken === pane.token"
+                :font-size="fontSize"
+                :screen-reader-default="screenReaderDefault"
+                :sftp-active="sftpDrawerOpen && activeSftpContext?.paneToken === pane.token"
+                :sftp-transfer-count="activeTransferCount"
+                @consumed="pane.password = undefined"
+                @state="pane.state = $event"
+                @session="pane.sessionId = $event"
+                @toggle-sftp="toggleSftpPanel(pane.token)"
+                @auth-failed="requestPanePassword(tab.token, pane.token, $event)"
+                @unsplit="detachPaneToTab(tab.token, pane.token)"
+                @close-pane="closePane(tab.token, pane.token)"
+                @header-drag-start="onPaneHeaderDragStart($event, tab, pane)"
+                @header-drag-end="endTabDrag"
+              />
+            </div>
+            <div
+              v-if="index === 0 && tab.panes.length === 2"
+              :class="c('container_workspace_panes_body_resize', tab.token)"
+              role="separator"
+              tabindex="0"
+              :aria-orientation="tab.direction === 'vertical' ? 'horizontal' : 'vertical'"
+              :aria-valuenow="Math.round(tab.ratio)"
+              :aria-valuemin="getRatioBounds(tab)[0]"
+              :aria-valuemax="getRatioBounds(tab)[1]"
+              aria-label="调整分屏比例"
+              @pointerdown="resizePanes($event, tab)"
+              @keydown.left.prevent="tab.direction === 'horizontal' && adjustRatio(tab, -5)"
+              @keydown.right.prevent="tab.direction === 'horizontal' && adjustRatio(tab, 5)"
+              @keydown.up.prevent="tab.direction === 'vertical' && adjustRatio(tab, -5)"
+              @keydown.down.prevent="tab.direction === 'vertical' && adjustRatio(tab, 5)"
+            />
+          </template>
+          <div
+            v-if="isDraggingAny && activeTab === tab.token"
+            :class="c('container_workspace_split_overlay_base', tab.token)"
+            :data-zone="splitDropZone ?? 'idle'"
+            aria-hidden="true"
+          >
+            <div
+              :class="c('container_workspace_split_overlay_preview', tab.token)"
+              :data-zone="splitDropZone ?? 'idle'"
+              :style="splitPreviewStyle()"
+            >
+              <div :class="c('container_workspace_split_overlay_badge', tab.token)">
+                <span :class="c('container_workspace_split_overlay_label', tab.token)">
+                  {{ splitOverlayText(tab.token) }}
+                </span>
+                <span :class="c('container_workspace_split_overlay_hint', tab.token)">
+                  {{ splitOverlayHintText() }}
+                </span>
+              </div>
+            </div>
+            <div :class="c('container_workspace_split_overlay_compass', tab.token)">
+              <div
+                :class="c('container_workspace_split_compass_top', tab.token)"
+                :data-active="splitDropZone === 'top'"
+              >
+                <ArrowUp :size="14" />
+                上分屏
+              </div>
+              <div
+                :class="c('container_workspace_split_compass_left', tab.token)"
+                :data-active="splitDropZone === 'left'"
+              >
+                <ArrowLeft :size="14" />
+                左分屏
+              </div>
+              <div
+                :class="c('container_workspace_split_compass_right', tab.token)"
+                :data-active="splitDropZone === 'right'"
+              >
+                右分屏
+                <ArrowRight :size="14" />
+              </div>
+              <div
+                :class="c('container_workspace_split_compass_bottom', tab.token)"
+                :data-active="splitDropZone === 'bottom'"
+              >
+                <ArrowDown :size="14" />
+                下分屏
+              </div>
+            </div>
+          </div>
         </div>
-        <div
-          v-if="index === 0 && tab.panes.length === 2"
-          :class="c('container_workspace_panes_body_resize', tab.token)"
-          role="separator"
-          tabindex="0"
-          :aria-orientation="tab.direction === 'vertical' ? 'horizontal' : 'vertical'"
-          :aria-valuenow="Math.round(tab.ratio)"
-          :aria-valuemin="getRatioBounds(tab)[0]"
-          :aria-valuemax="getRatioBounds(tab)[1]"
-          aria-label="调整分屏比例"
-          @pointerdown="resizePanes($event, tab)"
-          @keydown.left.prevent="tab.direction === 'horizontal' && adjustRatio(tab, -5)"
-          @keydown.right.prevent="tab.direction === 'horizontal' && adjustRatio(tab, 5)"
-          @keydown.up.prevent="tab.direction === 'vertical' && adjustRatio(tab, -5)"
-          @keydown.down.prevent="tab.direction === 'vertical' && adjustRatio(tab, 5)"
-        />
-      </template>
+      </div>
       <div
-        v-if="isDraggingAny && activeTab === tab.token"
-        :class="c('container_workspace_split_overlay_base', tab.token)"
-        :data-zone="splitDropZone ?? 'idle'"
-        aria-hidden="true"
+        v-if="sftpDrawerOpen"
+        class="container_workspace_stage_body_sftp-resizer"
+        role="separator"
+        tabindex="0"
+        aria-orientation="vertical"
+        aria-label="调整 SFTP 面板宽度"
+        :aria-valuenow="sftpPanelWidth"
+        :aria-valuemin="300"
+        :aria-valuemax="660"
+        @pointerdown="resizeSftpPanel"
+        @keydown.left.prevent="setSftpPanelWidth(sftpPanelWidth + 24)"
+        @keydown.right.prevent="setSftpPanelWidth(sftpPanelWidth - 24)"
+      />
+      <div
+        v-if="sftpDrawerOpen"
+        class="container_workspace_stage_body_sftp-dock"
+        :style="{ width: `${sftpPanelWidth}px` }"
       >
-        <div
-          :class="c('container_workspace_split_overlay_preview', tab.token)"
-          :data-zone="splitDropZone ?? 'idle'"
-          :style="splitPreviewStyle()"
-        >
-          <div :class="c('container_workspace_split_overlay_badge', tab.token)">
-            <span :class="c('container_workspace_split_overlay_label', tab.token)">
-              {{ splitOverlayText(tab.token) }}
-            </span>
-            <span :class="c('container_workspace_split_overlay_hint', tab.token)">
-              {{ splitOverlayHintText() }}
-            </span>
-          </div>
-        </div>
-        <div :class="c('container_workspace_split_overlay_compass', tab.token)">
-          <div
-            :class="c('container_workspace_split_compass_top', tab.token)"
-            :data-active="splitDropZone === 'top'"
-          >
-            <ArrowUp :size="14" />
-            上分屏
-          </div>
-          <div
-            :class="c('container_workspace_split_compass_left', tab.token)"
-            :data-active="splitDropZone === 'left'"
-          >
-            <ArrowLeft :size="14" />
-            左分屏
-          </div>
-          <div
-            :class="c('container_workspace_split_compass_right', tab.token)"
-            :data-active="splitDropZone === 'right'"
-          >
-            右分屏
-            <ArrowRight :size="14" />
-          </div>
-          <div
-            :class="c('container_workspace_split_compass_bottom', tab.token)"
-            :data-active="splitDropZone === 'bottom'"
-          >
-            <ArrowDown :size="14" />
-            下分屏
-          </div>
-        </div>
+        <SftpPanel />
       </div>
     </div>
   </section>
@@ -1374,10 +1457,15 @@ function resizePanes(event: PointerEvent, tab: Tab) {
   letter-spacing: 2px;
   color: var(--color-text-muted);
 }
+.container_workspace_welcome_body_view-hint {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  letter-spacing: 0.5px;
+}
 .container_workspace_welcome_body_controls {
   position: absolute;
   z-index: 4;
-  top: 100px;
+  top: 120px;
   right: 38px;
   display: flex;
   gap: 8px;
@@ -1623,6 +1711,54 @@ function resizePanes(event: PointerEvent, tab: Tab) {
   .container_workspace_welcome_body_controls {
     display: none;
   }
+}
+.container_workspace_tabs_header_sftp {
+  position: relative;
+  width: auto !important;
+  gap: 4px;
+  padding: 5px 7px !important;
+  &[aria-pressed='true'] {
+    color: var(--color-accent-primary-hover);
+    background: var(--color-accent-primary-soft);
+    border-color: var(--color-accent-primary-ring);
+  }
+}
+.container_workspace_tabs_header_sftp-badge {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--color-accent-secondary);
+}
+.container_workspace_stage_body_base {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: row;
+  overflow: hidden;
+}
+.container_workspace_stage_body_panes {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.container_workspace_stage_body_sftp-resizer {
+  width: 5px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: transparent;
+  transition: background 140ms ease;
+  &:hover {
+    background: var(--color-accent-primary-ring);
+  }
+}
+.container_workspace_stage_body_sftp-dock {
+  flex-shrink: 0;
+  min-height: 0;
+  max-width: 65vw;
+  display: flex;
+  flex-direction: column;
 }
 .container_workspace_panes_body_base {
   position: relative;

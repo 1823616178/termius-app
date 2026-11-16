@@ -23,6 +23,7 @@ export interface TerminalHandle {
   writeInput: (data: string) => void
   applyAppearance: (opts: TerminalAppearanceOptions) => void
   getDimensions: () => { cols: number; rows: number }
+  getSessionId: () => string | undefined
   isConnected: () => boolean
   getLastState: () => Extract<TerminalEvent, { type: 'state' }>
   detachHost: (hostElement: HTMLElement) => void
@@ -34,6 +35,7 @@ export interface TerminalHandle {
 
 interface RegistryEntry {
   terminal: Terminal
+  writeInput: (data: string) => void
   applyAppearance: (opts: TerminalAppearanceOptions) => void
   reattach: (
     nextElement: HTMLElement,
@@ -66,6 +68,13 @@ export function updateAllTerminalsAppearance(opts: TerminalAppearanceOptions): v
 
 export function disposeTerminalByToken(token: string): void {
   registry.get(token)?.dispose()
+}
+
+export function writeTerminalInputByToken(token: string, data: string): boolean {
+  const entry = registry.get(token)
+  if (!entry) return false
+  entry.writeInput(data)
+  return true
 }
 
 export function createTerminal(
@@ -275,6 +284,7 @@ export function createTerminal(
     writeInput: enqueueInput,
     applyAppearance,
     getDimensions: () => ({ cols: terminal.cols, rows: terminal.rows }),
+    getSessionId: () => session?.id,
     isConnected: () => connected,
     getLastState: () => lastState,
     detachHost,
@@ -401,7 +411,7 @@ export function createTerminal(
     return handle
   }
 
-  registry.set(token, { terminal, applyAppearance, reattach, dispose })
+  registry.set(token, { terminal, writeInput: enqueueInput, applyAppearance, reattach, dispose })
 
   return handle
 }

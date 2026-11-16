@@ -54,6 +54,7 @@ export interface Pane {
   kind: 'local' | 'ssh'
   profileId?: string
   hostId?: string
+  sessionId?: string
   password?: string
   retrySeq?: number
   authCancelledSeq?: number

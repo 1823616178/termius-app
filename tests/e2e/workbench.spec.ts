@@ -1,5 +1,5 @@
 import { test as base, expect, _electron, type ElectronApplication, type Page } from '@playwright/test'
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { generateKeyPairSync } from 'node:crypto'
@@ -7,6 +7,7 @@ import { Server, type Connection } from 'ssh2'
 import { createServer, type AddressInfo } from 'node:net'
 import { startMockSyncServer } from '../helpers/mock-sync-server'
 import { startMockUpdateServer } from '../helpers/mock-update-server'
+import { startMockSftpSshServer } from '../helpers/mock-sftp-server'
 import {
   decryptSyncDocument,
   encryptSyncDocument,
@@ -1560,4 +1561,182 @@ test('checks GitHub releases, downloads verified installer and respects prerelea
     await stop(app)
     await server.close()
   }
+})
+
+test('terminal right-side SFTP drawer browses, uploads, downloads, chmods, renames and deletes over live SSH', async ({}, info) => {
+  const sftpServer = await startMockSftpSshServer({
+    username: 'orbit-test',
+    password: 'SftpPassword!9'
+  })
+  const appDir = await mkdtemp(join(tmpdir(), 'orbit-sftp-app-'))
+  const localTransferDir = await mkdtemp(join(tmpdir(), 'orbit-sftp-local-'))
+  const localUploadFile = join(localTransferDir, 'upload-bundle.bin')
+  const localDownloadFile = join(localTransferDir, 'downloaded-notes.txt')
+  const uploadPayload = Buffer.concat([
+    Buffer.from('ORBIT_SFTP_UPLOAD_HEADER\n', 'utf8'),
+    Buffer.alloc(160 * 1024, 0x5a),
+    Buffer.from('\nORBIT_SFTP_UPLOAD_TAIL', 'utf8')
+  ])
+  await writeFile(localUploadFile, uploadPayload)
+
+  const { app, page } = await launch(appDir)
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(error.message))
+
+  try {
+    await page.getByRole('button', { name: '主机', exact: true }).click()
+    await createHost(page, 'SFTP文件服务器', sftpServer.port, sftpServer.password)
+    await page.getByRole('button', { name: '连接 SFTP文件服务器', exact: true }).click()
+
+    const trust = page.getByRole('dialog', { name: '确认服务器身份' })
+    await expect(trust).toBeVisible()
+    await trust.getByRole('button', { name: '信任并继续' }).click()
+
+    await expect(page.getByText('运行中', { exact: true })).toBeVisible({ timeout: 10_000 })
+    await expect(page.locator('.xterm-rows').first()).toContainText('orbit@mock-sftp:~$')
+
+    await page.getByRole('button', { name: '打开 SFTP 文件面板', exact: true }).click()
+    const sftpAside = page.getByRole('complementary', { name: 'SFTP 文件管理', exact: true })
+    await expect(sftpAside).toBeVisible()
+
+    // Verify SFTP panel docks cleanly to the right of the terminal pane
+    const terminalBox = await page.locator('.container_workspace_stage_body_panes').boundingBox()
+    const sftpBox = await sftpAside.boundingBox()
+    expect(terminalBox).not.toBeNull()
+    expect(sftpBox).not.toBeNull()
+    expect(sftpBox!.x).toBeGreaterThanOrEqual(terminalBox!.x + terminalBox!.width - 4)
+
+    await expect(sftpAside.getByText('readme.txt', { exact: true })).toBeVisible({ timeout: 10_000 })
+    await expect(sftpAside.getByText('projects', { exact: true })).toBeVisible()
+    await expect(sftpAside.getByText('.env', { exact: true })).toBeHidden()
+
+    await sftpAside.getByRole('button', { name: '显示隐藏文件', exact: true }).click()
+    await expect(sftpAside.getByText('.env', { exact: true })).toBeVisible()
+    await sftpAside.getByRole('button', { name: '显示隐藏文件', exact: true }).click()
+    await expect(sftpAside.getByText('.env', { exact: true })).toBeHidden()
+
+    // Navigate into subdirectory and back via home/breadcrumb
+    await sftpAside.getByText('projects', { exact: true }).dblclick()
+    await expect(sftpAside.getByText('deploy.sh', { exact: true })).toBeVisible()
+    await sftpAside.getByRole('button', { name: '主目录', exact: true }).click()
+    await expect(sftpAside.getByText('readme.txt', { exact: true })).toBeVisible()
+
+    // Create remote directory
+    await sftpAside.getByRole('button', { name: '新建远端文件夹', exact: true }).click()
+    await sftpAside.getByLabel('新建文件夹名称', { exact: true }).fill('release-build')
+    await sftpAside.getByRole('button', { name: '创建', exact: true }).click()
+    await expect(sftpAside.getByText('release-build', { exact: true })).toBeVisible()
+    const createdDirStat = await stat(join(sftpServer.homeDir, 'release-build'))
+    expect(createdDirStat.isDirectory()).toBe(true)
+
+    // Rename remote file
+    await sftpAside.getByRole('button', { name: '重命名 readme.txt', exact: true }).click()
+    await sftpAside.getByLabel('重命名文件名', { exact: true }).fill('notes.txt')
+    await sftpAside.getByRole('button', { name: '确定', exact: true }).click()
+    await expect(sftpAside.getByText('notes.txt', { exact: true })).toBeVisible()
+    await expect(sftpAside.getByText('readme.txt', { exact: true })).toBeHidden()
+
+    // Chmod via context menu
+    await sftpAside.getByText('notes.txt', { exact: true }).click({ button: 'right' })
+    await sftpAside.getByRole('button', { name: '修改权限 (chmod)', exact: true }).click()
+    await sftpAside.getByLabel('八进制权限', { exact: true }).fill('0750')
+    await sftpAside.getByRole('button', { name: '应用', exact: true }).click()
+    await expect(
+      sftpAside.locator('[class*="container_workspace_sftp_row_item"]').filter({ hasText: 'notes.txt' })
+    ).toContainText('0750')
+
+    // Stub Electron dialogs in main process for deterministic real upload/download testing
+    await app.evaluate(
+      ({ dialog }, paths) => {
+        dialog.showOpenDialog = (async () => ({
+          canceled: false,
+          filePaths: [paths.uploadPath]
+        })) as typeof dialog.showOpenDialog
+        dialog.showSaveDialog = (async () => ({
+          canceled: false,
+          filePath: paths.downloadPath
+        })) as typeof dialog.showSaveDialog
+      },
+      { uploadPath: localUploadFile, downloadPath: localDownloadFile }
+    )
+
+    // Real SFTP upload
+    await sftpAside.getByRole('button', { name: '上传文件', exact: true }).click()
+    const queue = sftpAside.getByRole('region', { name: 'SFTP 传输队列', exact: true })
+    const uploadQueueItem = queue
+      .locator('[class*="container_workspace_sftp_queue_item"]')
+      .filter({ hasText: 'upload-bundle.bin' })
+    await expect(uploadQueueItem).toContainText('已完成 ·', { timeout: 15_000 })
+    await expect(
+      sftpAside
+        .locator('[class*="container_workspace_sftp_row_item"]')
+        .filter({ hasText: 'upload-bundle.bin' })
+    ).toBeVisible({ timeout: 10_000 })
+    const remoteUploaded = await readFile(join(sftpServer.homeDir, 'upload-bundle.bin'))
+    expect(remoteUploaded.equals(uploadPayload)).toBe(true)
+
+    // Real SFTP download
+    await sftpAside.getByRole('button', { name: '下载 notes.txt', exact: true }).click()
+    const downloadQueueItem = queue
+      .locator('[class*="container_workspace_sftp_queue_item"]')
+      .filter({ hasText: 'notes.txt' })
+    await expect(downloadQueueItem).toContainText('已完成 ·', { timeout: 15_000 })
+    await expect
+      .poll(async () => await readFile(localDownloadFile, 'utf8').catch(() => ''), { timeout: 15_000 })
+      .toBe('Hello Orbit SFTP\nLine 2\n')
+
+    await checkClasses(page)
+    await page.screenshot({ path: info.outputPath('sftp-panel.png') })
+
+    // Delete created directory
+    await sftpAside.getByRole('button', { name: '删除 release-build', exact: true }).click()
+    const deleteDialog = sftpAside.getByRole('dialog', { name: '确认删除远端项目', exact: true })
+    await expect(deleteDialog).toBeVisible()
+    await deleteDialog.getByRole('button', { name: '确认删除', exact: true }).click()
+    await expect(sftpAside.getByText('release-build', { exact: true })).toBeHidden()
+    expect(await readdir(sftpServer.homeDir)).not.toContain('release-build')
+
+    expect(errors).toEqual([])
+  } finally {
+    await stop(app)
+    await sftpServer.close()
+    await rm(appDir, { recursive: true, force: true })
+    await rm(localTransferDir, { recursive: true, force: true })
+  }
+})
+
+test('all twelve sword formations support orbit, zoom and reset', async ({ orbit }, info) => {
+  test.setTimeout(120_000)
+  const { page } = orbit
+  await page.evaluate(() => localStorage.setItem('orbit:motion-tier', 'full'))
+  await page.reload()
+  const stage = page.locator('[data-variant="welcome"]')
+  await expect(stage).toHaveAttribute('data-ready', 'true')
+  const rail = page.locator('.container_workspace_welcome_body_formrail button')
+  await expect(rail).toHaveCount(12)
+  const box = await stage.boundingBox()
+  expect(box).not.toBeNull()
+  const x = box!.x + box!.width * 0.76
+  const y = box!.y + box!.height * 0.56
+  for (let i = 0; i < 12; i++) {
+    await rail.nth(i).click()
+    await expect(rail.nth(i)).toHaveAttribute('data-active', 'true')
+    await page.mouse.dblclick(x, y)
+    await page.waitForTimeout(350)
+    await page.screenshot({ path: info.outputPath(`formation-${i + 1}-front.png`) })
+    await page.mouse.move(x, y)
+    await page.mouse.down()
+    await page.mouse.move(x - 145, y - 28, { steps: 16 })
+    await expect(stage).toHaveAttribute('data-dragging', 'true')
+    await page.mouse.up()
+    await expect(stage).toHaveAttribute('data-dragging', 'false')
+    await page.waitForTimeout(350)
+    await expect(stage).toHaveAttribute('data-ready', 'true')
+    await page.screenshot({ path: info.outputPath(`formation-${i + 1}-orbit.png`) })
+  }
+  await page.mouse.wheel(0, -240)
+  await page.waitForTimeout(300)
+  await page.screenshot({ path: info.outputPath('formation-zoom.png') })
+  await page.mouse.dblclick(x, y)
+  await expect(stage).toHaveAttribute('data-ready', 'true')
 })

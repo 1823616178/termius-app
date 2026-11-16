@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   Bridge,
   HostInput,
@@ -9,6 +9,7 @@ import type {
   TrayPreferencesPatch,
   TrayState
 } from '../shared/contracts'
+import type { SftpProgressEvent } from '../shared/sftp'
 import type { UpdatePreferencesPatch, UpdateStatusSnapshot } from '../shared/updater'
 import type {
   SyncConflictResolutionItem,
@@ -160,6 +161,49 @@ const api: Bridge = {
       ipcRenderer.on(IPC.updateStateChanged, listener)
       return () => {
         ipcRenderer.removeListener(IPC.updateStateChanged, listener)
+      }
+    }
+  },
+  sftp: {
+    home: (sessionId) => ipcRenderer.invoke(IPC.sftpHome, { sessionId }),
+    list: (sessionId, path) => ipcRenderer.invoke(IPC.sftpList, { sessionId, path }),
+    stat: (sessionId, path) => ipcRenderer.invoke(IPC.sftpStat, { sessionId, path }),
+    collectTree: (sessionId, path) => ipcRenderer.invoke(IPC.sftpCollectTree, { sessionId, path }),
+    mkdir: (sessionId, path) => ipcRenderer.invoke(IPC.sftpMkdir, { sessionId, path }),
+    rename: (sessionId, oldPath, newPath) =>
+      ipcRenderer.invoke(IPC.sftpRename, { sessionId, oldPath, newPath }),
+    chmod: (sessionId, path, mode) => ipcRenderer.invoke(IPC.sftpChmod, { sessionId, path, mode }),
+    remove: (sessionId, path, recursive) =>
+      ipcRenderer.invoke(IPC.sftpDelete, { sessionId, path, recursive }),
+    upload: (input) => ipcRenderer.invoke(IPC.sftpUpload, input),
+    download: (input) => ipcRenderer.invoke(IPC.sftpDownload, input),
+    cancelTransfer: (sessionId, transferId) =>
+      ipcRenderer.invoke(IPC.sftpCancelTransfer, { sessionId, transferId }),
+    pickUploadFiles: () => ipcRenderer.invoke(IPC.sftpPickUploadFiles),
+    pickUploadDirs: () => ipcRenderer.invoke(IPC.sftpPickUploadDirs),
+    pickDownloadDir: () => ipcRenderer.invoke(IPC.sftpPickDownloadDir),
+    pickDownloadFile: (defaultName) => ipcRenderer.invoke(IPC.sftpPickDownloadFile, { defaultName }),
+    expandLocalUploads: (localPaths) => ipcRenderer.invoke(IPC.sftpExpandLocalUploads, { localPaths }),
+    revealLocal: (localPath) => ipcRenderer.invoke(IPC.sftpRevealLocal, { localPath }),
+    getDroppedPaths: (files) => {
+      const paths: string[] = []
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i]
+        if (!file) continue
+        try {
+          const p = webUtils.getPathForFile(file)
+          if (p) paths.push(p)
+        } catch {
+          /* ignore non-local drop items */
+        }
+      }
+      return paths
+    },
+    onProgress: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, event: SftpProgressEvent) => callback(event)
+      ipcRenderer.on(IPC.sftpProgress, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.sftpProgress, listener)
       }
     }
   }

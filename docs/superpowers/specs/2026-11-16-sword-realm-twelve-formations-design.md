@@ -14,7 +14,7 @@
 2. **葫芦动效**：葫芦升级为"酒仙养剑"动作语言，与剑阵同呼吸、同高潮。
 3. **十二式整体剑阵**：60s 大循环、每式 5s、相邻 0.9s 交叉过渡＋"收心一息"pinch，衔接平滑无跳变；右侧阵印 rail 可巡览 / 跳转。
 4. **保留已验收资产**：插剑序章（3.8s）、地裂、碎屑、冲击波、主剑轩辕造型（汉剑直刃短锋）、边框飞剑、主题联动、性能分档、降级路径，时序不变。
-5. **性能不劣化**：实例上限不变（full 144 / light 32 / compact 12）；无每帧几何重建；剑丝 / 剑网连线仅 1 个 draw call。
+5. **宏大万剑场面与性能保障**：核心十二剑阵实例升至 **full 1260 / light 180 / compact 24**（1260 为 3/4/5/6/7/9/12/45 公倍数），并新增远景「天地剑海」**900 把**（light 120 把）；全零堆分配 `*Into` 热路径；160 条剑气尾迹合批为 **1 个 `LineSegments` draw call**（取代旧 32 次 draw call）；连线容量 `LINK_SEGMENT_CAPACITY=96`（1 个 draw call）。
 
 ---
 
@@ -89,24 +89,26 @@
 
 ---
 
-## 4. 每式位置 / 朝向 / 能量（实现数学）
+## 4. 每式位置 / 朝向 / 能量（实现数学与宏大分层）
 
-记 `N=count`、`i=index`、`gt=time%60`、`rot=gt*0.6`、`HEART=(0.9,0.26)`、`seed/fib/rotateAround` 为模块内确定性helper。
+记 `N=count`、`i=index`、`gt=time%60`、`cyc=gt/60`、`base=cyc*TAU`、`HEART=(1.12,0.22)`。所有旋转角速度与周期触发步长均取 `base` / `cyc` 的整数倍，确保 `gt=60→0` 首尾完全连续无跳变；穿梭类子阵（诛仙剑流、大庚剑丝、五行相生流）采用闭环往复/全周循环轨迹，避免尾迹拉丝跳变。
 
-- **M1 诛仙**：`gate=i%4`；`gateCenter(gate)=HEART+(cos(a)*2.5, sin(a)*2.0, -0.6)`，`a=gate*TAU/4+TAU/8+rot*0.12`；簇偏移 `fib(floor(i/4),ceil(N/4))*0.5`；朝向=朝心；`fired=floor(gt*1.2)%4===gate` → energy/stretch/gold/seal 脉冲。
-- **M2 大庚**：`k=i%12`；`s=fract(floor(i/12)/ceil(N/12)+gt*0.06)`；`pos=lerp(threadEnds(k), s)`；朝向=丝方向；`stretch=1.6`、`scale=0.16`、`gold=0.8`；shimmer=`sin(gt*3+k)`。
-- **M3 春黎**：`arm=i%5`、`t=floor(i/5)/per`；`a=arm*TAU/5+t*2.4+rot*0.3`、`r=0.5+t*2.4`；幻影偏移 `ghost=sin(gt*2+i)*0.12` 垂直于径向；`jade=0.7`。
-- **M4 青蟠**：`t=i/N`；`a=t*TAU*3.2+rot*0.5`；`r=1.5+0.35*sin(t*TAU*2+gt*1.5)`；`y=-1.4+t*3.2`；朝向≈`(-sin a,0.9,cos a*0.5)`；`jade=0.8`。
-- **M5 小千**：`layer=i%6`；`a=(j/per)*TAU+rot*(layer%2?-0.4:0.4)+layer*0.2`；`r=0.7+layer*0.42+sin(gt*1.2-layer*0.5)*0.12`；`z=-0.9-layer*0.15`；层奇偶金/玉。
-- **M6 大千**：`shell=i%3`；`fib` 球点 ×`R=1.2+shell*0.8`，绕轴 `[0,1,0]/[.7,.7,0]/[0,.6,.8]` 旋转 `rot*(0.25+shell*0.12)`（Rodrigues）；朝向=`cross(axis, spun)`。
-- **M7 恒山**：`squad=floor(i/7)`、`member=i%7`；队心轨道 `R=2.6`；`mode=smoothstep(-0.2,0.2,sin(gt*0.8+squad))`；罗sette 半径 `lerp(0.24,0.42,mode)`；朝向=守(向内)→攻(向外) 按 mode 混合。
-- **M8 六脉**：`mer=i%6`、`s=floor(i/6)/per`；`a=mer*TAU/6+rot*0.1`；`wave=fract(gt*0.5-mer/6)`；`g=exp(-((s-wave)*6)^2)`；`r=0.4+s*3.0`；`stretch=1+1.2g`、`gold=0.4+0.6g`。
-- **M9 罗汉**：`a=(i/N)*TAU+rot*0.08`、`R=2.2`；`y=HEART.y+sin(a)*R*0.35-0.2`；朝向≈`(sway,1,sway*0.5)`；`tap=floor(gt*0.5)%N===i` 微脉冲；低能量。
-- **M10 九宫**：`cell=i%9`；`cellCenter=(HEART.x+(cell%3-1)*1.5, HEART.y+(floor(cell/3)-1)*1.2, -1.0)`；簇 `fib*0.4` 绕 z 旋转 `rot*0.4+cell`；朝向=朝邻宫+切线 0.4 混合。
-- **M11 五行**：`elem=i%5`；`elemCenter` 五角 `R=2.0`、`a=elem*TAU/5-TAU/4+rot*0.15`；簇 `fib*0.45`；朝向=朝下一元素；`active=floor(gt*0.6)%5===elem`；配色表 `[[.8,.1,0],[.15,.8,0],[.1,.2,0],[.2,.05,.7],[.5,.15,.2]]`（金木水火土）。
-- **M12 五九**：`i<45` 亮盘 `a=(i/45)*TAU+rot*0.9`、`r=1.6+((i%5)%2)*0.2`、`gold=0.8`；其余外圈暗回声 `R=3.0`、`scale=0.1`、低能量。
+- **M1 诛仙**：62% 四门立体剑门光幕（每门 3 圈同心正交圆环面向剑心，依次脉冲）＋ 24% 四门朝心梭形剑流 ＋ 14% 外围陷绝锁阵环；连线 8 段（4 门朝心＋4 外围四门连线）。
+- **M2 大庚**：84% 沿 24 条深空三维金丝闭环疾驰（`stretch=2.1`、极细高金）＋ 16% 外围锚点剑桩；连线 24 段。
+- **M3 春黎**：72% 五瓣三叠立体青玉莲瓣 ＋ 28% 幻影叠影；高玉微金芯。
+- **M4 青蟠**：74% 五股盘旋青龙剑脊与龙头冠羽（`t>0.91` 张角）＋ 26% 升腾青元风旋剑群。
+- **M5 小千**：六重倾角交错同心双层曼陀罗剑轮，交替金/玉、正反转呼吸。
+- **M6 大千**：45% 三重正交/斜轴浑天星环 ＋ 55% 三层斐波那契大千星壳。
+- **M7 恒山**：3 层轨道共 60 组完整 7 剑小队（`N>=210`）＋ 外圈双层同步攻守方阵壁，在向心守盾与离心齐射间平滑切换。
+- **M8 六脉**：6 条三维倾角螺旋剑气脉道（各含 3 股纵深流），`pow(0.5+0.5*cos((s-wave)*TAU),6)` 脉冲外奔拉长。
+- **M9 罗汉**：18 尊内环大罗汉立剑巨柱 ＋ 三层抬升阶梯式百八罗汉剑坛，伴随周天金波禅韵流转。
+- **M10 九宫**：72% 空间微倾 3×3 九宫三环旋涡塔 ＋ 28% 外圈八门八卦三爻剑阵；连线 22 段（九宫格＋对角＋外八卦）。
+- **M11 五行**：72% 五方三环五行剑域（金/木/水/火/土专属配比）＋ 28% 连续环绕五角的相生剑河；连线 10 段（外相生五边形＋内相克五角星）。
+- **M12 五九**：前 45 把高金皇道长剑双环疾旋 ＋ 其余 `N-45` 把修复全周映射组成五臂对数螺旋剑河星系。
+- **远景天地剑海（`skySwords`）**：full 900 把 / light 120 把，分天河剑带（避让左侧文案安全区）、远景地平剑轮、深空星哨三层，随诛仙聚势与六脉奔涌联动。
+- **飞剑造型**：`createFlyingSwordGeometry` 与 `createSkySwordGeometry` 均预烘焙顶点色（亮银剑刃、鎏金格首、深墨剑柄），在 `InstancedMesh` 乘法染色下保持刃/格/柄材质层次。
 
-每式输出 `SwordPose{position,direction,scale,glow,stretch,energy,gold,jade,seal}`。
+每式输出写入预分配 `SwordPose{position,direction,scale,glow,stretch,energy,gold,jade,seal}`（零堆分配 `*Into`）。
 
 ---
 
@@ -114,14 +116,15 @@
 
 ### 5.1 大循环与交叉过渡
 - `LOOP_SECONDS=60`、`MOVEMENT_SECONDS=5`、`CROSS=0.45`（边界半宽）。
-- `formationAt(gt)` → `{index, local, fade, from}`：`local<0.45` 时为上一式→本式的尾段（`from=prev`，`fade=smoothstep(4.55,5.45,local+5)`）；`local>4.55` 时为本式→下一式（`from=index`）；其余 `fade=0`。保证跨边界连续。
-- `sampleSwordPose`：`blendPose(a,b,fade,pinch)`，`pinch=sin(fade*π)*0.16`；位置向 HEART 收 `(1-pinch)`（z 收 `1-pinch*0.5`），`glow+=pinch*0.6` → "收心一息"的得体过渡。
-- 内部旋转统一 `rot=gt*0.6`，跨式不重置。
+- `formationAt(gt)` → `{index, local, fade, from}`：`local<0.45` 时为上一式→本式的尾段（`from=prev`，`fade=smoothstep(4.55,5.45,local+5)`）；`local>4.55` 时为本式→下一式（`from=index`）；其余 `fade=0`。保证跨边界（含 `60s→0s` 回绕）连续。
+- `sampleSwordPoseInto`：`blendPoseInto(a,b,fade,pinch)`，`pinch=sin(fade*π)*0.16`；位置向 `HEART=(1.12,0.22)` 收 `(1-pinch)`（z 收 `1-pinch*0.5`），`glow+=pinch*0.6` → "收心一息"的得体过渡。
+- 内部旋转统一以 `cyc=gt/60` 与 `base=cyc*TAU` 的整数倍驱动，全周期无缝。
 
 ### 5.2 高潮权重（`sampleFormationWeights`）
 - `gather = smoothstep(0.5,2,gt)*(1-smoothstep(4,5,gt))`（诛仙窗口）。
 - `lotus = smoothstep(10,11,gt)*(1-smoothstep(14,15,gt))`（春黎）。
 - `volley = smoothstep(35,36,gt)*(1-smoothstep(39,40,gt))`（六脉）。
+- `ambientPulse = sin(local/5*π)*0.35`（全十二式常驻律动呼吸）。
 - `pulsePrimary = pulseEnvelope(gt,1,3)`；`pulseSecondary = pulseEnvelope(gt,2.5,4.2,0.76)`；`pulse=max`。
 - `vortex = gather`；`phase = gt/60`；`climaxShockwaveA/B = pulsePrimary/pulseSecondary`。
 - `phaseLabel`：序章内沿用"开阵启封·天剑破空/裂地渊鸣/万剑分身/凌虚归阵"；否则 `名称 · 副标`。
@@ -134,12 +137,13 @@
 
 ---
 
-## 6. 剑丝 / 剑网连线（单 draw call）
+## 6. 剑丝 / 剑网连线与尾迹（各单 draw call）
 
-- `LINK_SEGMENT_CAPACITY=48`；预分配 `LineSegments`（position+color，DynamicDrawUsage），加法混合、`depthWrite=false`。
+- `LINK_SEGMENT_CAPACITY=96`；预分配 `LineSegments`（position+color，DynamicDrawUsage），加法混合、`depthWrite=false`。
 - `sampleFormationLinks(gt, outPos, outWeights, outColorIdx)` 返回段数；仅 `full && !compact && count>0` 可见。
-- 生成器：gates=4（门心→心）、threads=12（weight*0.6）、grid=14（6 横+6 纵+2 对角）、ring=5（weight*0.8）。
-- 过渡期同时输出主导式 `(1-fade)` 与邻式 `fade` 两组，顶点色=palette[colorIdx]*weight（加法下淡出=趋黑），`setDrawRange(0,count*2)`；`opacity=0.4+pulse*0.3`。
+- 生成器：gates=8（4 门→心＋4 门外框）、threads=24、grid=22（九宫格＋对角＋外八卦）、ring=10（外五角相生＋内五角星相克）。
+- 剑气尾迹：`TRAIL_COUNT=160`、`TRAIL_SEGMENTS=7` 合批为单个 `THREE.LineSegments`（仅 1 draw call，按剑体金/玉/朱实时着色）。
+- 过渡期同时输出主导式 `(1-fade)` 与邻式 `fade` 两组，顶点色=palette[colorIdx]*weight（加法下淡出=趋黑），`setDrawRange(0,count*2)`；`opacity=0.42+pulse*0.28+ambientPulse*0.1`。
 
 ---
 
@@ -154,17 +158,16 @@
 
 ## 8. 实例配色与性能降级
 
-- 实例色=`steel.lerp(jade,pose.jade).lerp(gold,pose.gold).lerp(seal,pose.seal*0.6)`；pulse→brightGold；error→seal。取代旧的 glow/energy 估色，使每式配色精确可控。
-- 十二维纯位置数学，O(N)；无每帧几何/材质重建；连线 1 draw call；vapor 24 点、pourRibbon 预建。
-- light：vapor opacity 减半、连线隐藏；compact：葫芦/连线/vapor 隐藏、实例 12；dpr cap、fog、tone mapping 不变；WebGL 失败/reduced/off 沿用 fallback 图与提示。
+- 实例色=`steel.lerp(jade,pose.jade).lerp(gold,pose.gold).lerp(seal,pose.seal*0.85)`；pulse→brightGold；error→seal；`flyingMaterial.emissive` 保持中性金属暗光以免冲淡金/朱剑色。
+- 十二维纯位置数学 `O(N)` 零堆分配 `*Into`；无每帧几何/材质重建；连线 1 draw call；尾迹合批 1 draw call；天幕剑海 1 draw call；vapor 24 点、pourRibbon 预建。
+- light：核心 180 把 + 天幕 120 把、vapor opacity 减半、连线/尾迹/护阵剑隐藏；compact：葫芦/天幕/连线/vapor 隐藏、核心 24 把（light 12 把）；dpr cap、fog、tone mapping 不变；WebGL 失败/reduced/off 沿用 fallback 图与提示。
 
 ---
 
 ## 9. 测试与验收（已执行）
 
-单元 `sword-motion.test.ts`（10 例）：实例上限+12 式；60s 周期/确定性/有限；十二式顺序命名；边界 ±0.02 位置差 <0.6（过渡连续）；gather 包络；连线段数 4/12/0/14/5 且 weight∈[0,1]；葫芦高潮 pour>0.3 / 平静 <0.3；春黎 lotus>0.9 + 六脉 volley>0.9 且 max stretch>1.4；插剑序章断言不变；全循环有限。
-e2e：`即刻归宗`→诛仙；rail 12 格、点第 10 格→九宫八卦剑阵+`data-active`、截图 `sword-jiugong.png`、点回第 1 格→诛仙；上下文丢失恢复→诛仙；缩放/分档/边框飞剑回归。
-已执行结果：语义类检查 843 角色通过；full typecheck 通过；生产构建通过；**94 项单元测试全绿**；剑境 e2e 2 例通过；真实 Electron 截图确认诛仙四门+朱线、九宫剑网、插剑序章、1100×700 布局均无酒碗、无裁切、rail 不遮内容。
+单元 `sword-motion.test.ts`（11 例）：核心与天幕实例上限 + 12 式；60s 周期/确定性/有限；十二式顺序命名；边界 ±0.02 位置差 <0.6（含 `60s→0s` 首尾回绕）；五九全周四象限覆盖（无缺角）；gather 包络与常驻 ambientPulse；连线段数 8/24/0/22/10 且 weight∈[0,1]；葫芦高潮 pour>0.3 / 平静 <0.3；春黎 lotus>0.9 + 六脉 volley>0.9 且 max stretch>1.4；插剑序章与 `*Into` 一致性断言；全循环与天幕剑海全有限。
+e2e：`即刻归宗`→诛仙；rail 12 格、点第 10 格→九宫八卦剑阵+`data-active`、截图 `sword-jiugong.png`、点回第 1 格→诛仙；上下文丢失恢复→诛仙；缩放/分档/边框飞剑与性能检测回归。
 
 ---
 

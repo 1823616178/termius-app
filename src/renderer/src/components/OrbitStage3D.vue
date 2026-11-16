@@ -36,6 +36,7 @@ const canvas = ref<HTMLCanvasElement | null>(null)
 const reducedMotion = ref(false)
 const motionTier = ref<MotionTier>('off')
 const ready = ref(false)
+const dragging = ref(false)
 const failed = ref(false)
 const motionDisabled = computed(() => reducedMotion.value || motionTier.value === 'off')
 const fallbackVisible = computed(() => !ready.value || failed.value || motionDisabled.value)
@@ -308,9 +309,58 @@ function handleContextRestored(): void {
   ensureRunning()
 }
 
+const DRAG_CLICK_THRESHOLD = 5
+
+let dragPointerId = -1
+let dragLastX = 0
+let dragLastY = 0
+let dragDistance = 0
+let suppressNextClick = false
+
+function canOrbit(): boolean {
+  return props.variant === 'welcome' && !!scene && !reducedMotion.value && canAnimate()
+}
+
+function onPointerDown(event: PointerEvent): void {
+  if (event.button !== 0 || dragPointerId !== -1 || !canOrbit()) return
+  dragPointerId = event.pointerId
+  dragLastX = event.clientX
+  dragLastY = event.clientY
+  dragDistance = 0
+  suppressNextClick = false
+  try {
+    ;(event.currentTarget as HTMLElement | null)?.setPointerCapture(event.pointerId)
+  } catch {
+    // Pointer capture is best-effort; dragging still works inside the stage.
+  }
+  scene?.beginOrbit()
+  dragging.value = true
+}
+
+function endDrag(event: PointerEvent): void {
+  if (event.pointerId !== dragPointerId) return
+  dragPointerId = -1
+  dragging.value = false
+  suppressNextClick = dragDistance > DRAG_CLICK_THRESHOLD
+  try {
+    ;(event.currentTarget as HTMLElement | null)?.releasePointerCapture(event.pointerId)
+  } catch {
+    // Capture may already be released by the browser.
+  }
+  scene?.endOrbit()
+}
+
 function onPointerMove(event: PointerEvent): void {
   const element = canvas.value
   if (!element || !scene || reducedMotion.value) return
+  if (event.pointerId === dragPointerId) {
+    const dx = event.clientX - dragLastX
+    const dy = event.clientY - dragLastY
+    dragLastX = event.clientX
+    dragLastY = event.clientY
+    dragDistance += Math.hypot(dx, dy)
+    scene.orbitBy(dx, dy)
+  }
   const rect = element.getBoundingClientRect()
   if (!rect.width || !rect.height) return
   scene.setPointer(
@@ -323,7 +373,22 @@ function onPointerLeave(): void {
   scene?.setPointer(0, 0)
 }
 
+function onWheel(event: WheelEvent): void {
+  if (!canOrbit()) return
+  event.preventDefault()
+  const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? lastHeight : 1
+  scene?.zoomBy(event.deltaY * unit)
+}
+
+function onStageDoubleClick(): void {
+  if (canOrbit()) scene?.resetView()
+}
+
 function onStageClick(): void {
+  if (suppressNextClick) {
+    suppressNextClick = false
+    return
+  }
   if (props.variant === 'welcome' && canAnimate()) {
     scene?.triggerPulse()
   }
@@ -371,10 +436,15 @@ function triggerBurst(): void {
   scene?.triggerPulse()
 }
 
+function resetView(): void {
+  scene?.resetView()
+}
+
 defineExpose({
   replayIntro,
   jumpToClimax,
   jumpToFormation,
+  resetView,
   triggerBurst
 })
 
@@ -445,9 +515,16 @@ onBeforeUnmount(() => {
     :data-variant="variant"
     :data-state="state"
     :data-ready="ready && !fallbackVisible"
+    :data-dragging="dragging"
     aria-hidden="true"
+    @pointerdown="onPointerDown"
     @pointermove="onPointerMove"
+    @pointerup="endDrag"
+    @pointercancel="endDrag"
+    @lostpointercapture="endDrag"
     @pointerleave="onPointerLeave"
+    @wheel="onWheel"
+    @dblclick="onStageDoubleClick"
     @click="onStageClick"
   >
     <canvas v-show="!fallbackVisible" ref="canvas" :class="c('container_workspace_orbit_body_canvas')" />
@@ -473,6 +550,12 @@ onBeforeUnmount(() => {
   user-select: none;
   touch-action: none;
   isolation: isolate;
+  &[data-variant='welcome'][data-ready='true'] {
+    cursor: grab;
+    &[data-dragging='true'] {
+      cursor: grabbing;
+    }
+  }
   &[data-variant='compact'] {
     width: 108px;
     height: 92px;

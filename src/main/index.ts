@@ -14,8 +14,9 @@ import {
   type IpcMainEvent,
   type IpcMainInvokeEvent
 } from 'electron'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { existsSync, mkdirSync } from 'node:fs'
+import { lstat, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { pathToFileURL } from 'node:url'
@@ -30,6 +31,17 @@ import {
   netProbeSchema,
   openSessionSchema,
   portCheckSchema,
+  sftpCancelTransferSchema,
+  sftpChmodSchema,
+  sftpDeleteSchema,
+  sftpDownloadSchema,
+  sftpExpandLocalSchema,
+  sftpPathRequestSchema,
+  sftpPickDownloadFileSchema,
+  sftpRenameSchema,
+  sftpRevealLocalSchema,
+  sftpSessionSchema,
+  sftpUploadSchema,
   tunnelToggleSchema,
   type Bootstrap,
   type EncryptionBackend,
@@ -39,6 +51,11 @@ import {
   type ShellProfile,
   type SyncDataUpdate
 } from '../shared/contracts'
+import {
+  sanitizeDownloadFilename,
+  type SftpExpandedUploadManifest,
+  type SftpProgressEvent
+} from '../shared/sftp'
 import {
   syncGroupInputSchema,
   syncResolveConflictsSchema,
@@ -96,6 +113,15 @@ let syncPhaseLabel = '本地工作区'
 const workers = new Map<'local' | 'ssh', UtilityProcess>()
 const sessions = new Map<string, { owner: number; kind: 'local' | 'ssh'; host?: Host; pid?: number }>()
 const challenges = new Map<string, HostTrust>()
+const pendingSftpRequests = new Map<
+  string,
+  {
+    sessionId: string
+    resolve: (value: unknown) => void
+    reject: (error: Error) => void
+    timer?: NodeJS.Timeout
+  }
+>()
 let pendingSessionOpens = 0
 let quitting = false
 let shuttingDown = false
@@ -127,9 +153,20 @@ function authorize(event: IpcMainInvokeEvent | IpcMainEvent): BrowserWindow {
   return owner
 }
 
+function rejectPendingSftpForSession(sessionId: string, reason: string): void {
+  for (const [requestId, pending] of pendingSftpRequests) {
+    if (pending.sessionId === sessionId) {
+      pendingSftpRequests.delete(requestId)
+      if (pending.timer) clearTimeout(pending.timer)
+      pending.reject(new Error(reason))
+    }
+  }
+}
+
 function closeSession(id: string): void {
   const session = sessions.get(id)
   if (!session) return
+  rejectPendingSftpForSession(id, 'SSH 会话已关闭')
   workers.get(session.kind)?.postMessage({ type: 'close', id })
   sessions.delete(id)
   challenges.delete(id)
@@ -158,11 +195,29 @@ function getWorker(kind: 'local' | 'ssh'): UtilityProcess {
   workers.set(kind, worker)
   worker.stderr?.on('data', (chunk: Buffer) => diagnostics?.write(`${kind}-worker`, chunk.toString('utf8')))
   worker.on('message', async (data) => {
+    if (data.type === 'sftp:response') {
+      const pending = pendingSftpRequests.get(data.requestId)
+      if (!pending) return
+      pendingSftpRequests.delete(data.requestId)
+      if (pending.timer) clearTimeout(pending.timer)
+      if (data.ok) pending.resolve(data.result)
+      else pending.reject(new Error(typeof data.error === 'string' ? data.error : 'SFTP 操作失败'))
+      return
+    }
+    if (data.type === 'sftp:progress') {
+      const progress = data as SftpProgressEvent & { type: 'sftp:progress' }
+      const s = sessions.get(progress.sessionId)
+      if (!s) return
+      const win = windows.get(s.owner)
+      if (win && !win.isDestroyed()) win.webContents.send(IPC.sftpProgress, progress)
+      return
+    }
     const session = sessions.get(data.id)
     if (!session) return
     const ownerWindow = windows.get(session.owner)
     if (data.type === 'spawned') session.pid = data.pid
     if (data.type === 'closed') {
+      rejectPendingSftpForSession(data.id, 'SSH 会话已断开')
       sessions.delete(data.id)
       challenges.delete(data.id)
       trayManager?.refresh()
@@ -227,6 +282,7 @@ function getWorker(kind: 'local' | 'ssh'): UtilityProcess {
     }
     for (const [id, session] of sessions) {
       if (session.kind === kind) {
+        rejectPendingSftpForSession(id, 'SSH 后台进程已退出')
         windows
           .get(session.owner)
           ?.webContents.send(IPC.sessionFailure, { id, message: '终端后台进程已退出，请新建会话。' })
@@ -237,6 +293,81 @@ function getWorker(kind: 'local' | 'ssh'): UtilityProcess {
     trayManager?.refresh()
   })
   return worker
+}
+
+function callSftpWorker(
+  owner: BrowserWindow,
+  sessionId: string,
+  payload: Record<string, unknown>,
+  timeoutMs = 30_000
+): Promise<unknown> {
+  const session = sessions.get(sessionId)
+  if (!session || session.owner !== owner.id || session.kind !== 'ssh') {
+    return Promise.reject(new Error('当前终端未连接活跃 SSH 会话，无法使用 SFTP'))
+  }
+  const requestId = randomUUID()
+  const worker = getWorker('ssh')
+  return new Promise((resolve, reject) => {
+    const timer =
+      timeoutMs > 0
+        ? setTimeout(() => {
+            pendingSftpRequests.delete(requestId)
+            reject(new Error('SFTP 操作超时，请检查网络连接'))
+          }, timeoutMs)
+        : undefined
+    pendingSftpRequests.set(requestId, { sessionId, resolve, reject, timer })
+    worker.postMessage({ type: 'sftp:request', requestId, sessionId, ...payload })
+  })
+}
+
+async function expandLocalUploadPaths(localPaths: string[]): Promise<SftpExpandedUploadManifest> {
+  const MAX_ENTRIES = 5000
+  const dirs: string[] = []
+  const files: SftpExpandedUploadManifest['files'] = []
+  let skippedSymlinks = 0
+  let count = 0
+
+  async function walkDir(fullDir: string, relBase: string): Promise<void> {
+    const entries = await readdir(fullDir, { withFileTypes: true })
+    for (const entry of entries) {
+      if (++count > MAX_ENTRIES) {
+        throw new Error(`单次上传项目超过 ${MAX_ENTRIES} 个上限，请分批传输`)
+      }
+      const fullChild = join(fullDir, entry.name)
+      const relChild = `${relBase}/${entry.name}`
+      if (entry.isSymbolicLink()) {
+        skippedSymlinks++
+        continue
+      }
+      if (entry.isDirectory()) {
+        dirs.push(relChild)
+        await walkDir(fullChild, relChild)
+      } else if (entry.isFile()) {
+        const st = await lstat(fullChild)
+        files.push({ localPath: fullChild, relativePath: relChild, name: entry.name, size: st.size })
+      }
+    }
+  }
+
+  for (const rawPath of localPaths) {
+    if (++count > MAX_ENTRIES) {
+      throw new Error(`单次上传项目超过 ${MAX_ENTRIES} 个上限，请分批传输`)
+    }
+    const st = await lstat(rawPath)
+    if (st.isSymbolicLink()) {
+      skippedSymlinks++
+      continue
+    }
+    const name = basename(rawPath)
+    if (!name) continue
+    if (st.isDirectory()) {
+      dirs.push(name)
+      await walkDir(rawPath, name)
+    } else if (st.isFile()) {
+      files.push({ localPath: rawPath, relativePath: name, name, size: st.size })
+    }
+  }
+  return { dirs, files, skippedSymlinks }
 }
 
 function registerSessionSecurity(): void {
@@ -551,7 +682,7 @@ function registerIpc(): void {
           }
         }
         if (host.auth === 'password' && password === undefined) throw new Error('请输入本次连接密码。')
-        spec = { host, password }
+        spec = { host, password, mode: input.mode ?? 'shell' }
       }
       if (owner.isDestroyed()) throw new Error('窗口已关闭')
       const worker = getWorker(input.kind)
@@ -581,6 +712,133 @@ function registerIpc(): void {
     if (accept)
       await repository.call('trust', request.address, request.port, request.fingerprint, request.algorithm)
     workers.get('ssh')?.postMessage({ type: 'verify', id, accept })
+  })
+  ipcMain.handle(IPC.sftpHome, (event, raw) => {
+    const owner = authorize(event)
+    const { sessionId } = sftpSessionSchema.parse(raw)
+    return callSftpWorker(owner, sessionId, { action: 'home' })
+  })
+  ipcMain.handle(IPC.sftpList, (event, raw) => {
+    const owner = authorize(event)
+    const { sessionId, path } = sftpPathRequestSchema.parse(raw)
+    return callSftpWorker(owner, sessionId, { action: 'list', path })
+  })
+  ipcMain.handle(IPC.sftpStat, (event, raw) => {
+    const owner = authorize(event)
+    const { sessionId, path } = sftpPathRequestSchema.parse(raw)
+    return callSftpWorker(owner, sessionId, { action: 'stat', path })
+  })
+  ipcMain.handle(IPC.sftpCollectTree, (event, raw) => {
+    const owner = authorize(event)
+    const { sessionId, path } = sftpPathRequestSchema.parse(raw)
+    return callSftpWorker(owner, sessionId, { action: 'collectTree', path }, 60_000)
+  })
+  ipcMain.handle(IPC.sftpMkdir, (event, raw) => {
+    const owner = authorize(event)
+    const { sessionId, path } = sftpPathRequestSchema.parse(raw)
+    return callSftpWorker(owner, sessionId, { action: 'mkdir', path })
+  })
+  ipcMain.handle(IPC.sftpRename, (event, raw) => {
+    const owner = authorize(event)
+    const { sessionId, oldPath, newPath } = sftpRenameSchema.parse(raw)
+    return callSftpWorker(owner, sessionId, { action: 'rename', oldPath, newPath })
+  })
+  ipcMain.handle(IPC.sftpChmod, (event, raw) => {
+    const owner = authorize(event)
+    const { sessionId, path, mode } = sftpChmodSchema.parse(raw)
+    return callSftpWorker(owner, sessionId, { action: 'chmod', path, mode })
+  })
+  ipcMain.handle(IPC.sftpDelete, (event, raw) => {
+    const owner = authorize(event)
+    const { sessionId, path, recursive } = sftpDeleteSchema.parse(raw)
+    return callSftpWorker(owner, sessionId, { action: 'delete', path, recursive }, 120_000)
+  })
+  ipcMain.handle(IPC.sftpUpload, (event, raw) => {
+    const owner = authorize(event)
+    const input = sftpUploadSchema.parse(raw)
+    return callSftpWorker(
+      owner,
+      input.sessionId,
+      {
+        action: 'upload',
+        transferId: input.transferId,
+        localPath: input.localPath,
+        remotePath: input.remotePath,
+        conflict: input.conflict
+      },
+      0
+    )
+  })
+  ipcMain.handle(IPC.sftpDownload, (event, raw) => {
+    const owner = authorize(event)
+    const input = sftpDownloadSchema.parse(raw)
+    return callSftpWorker(
+      owner,
+      input.sessionId,
+      {
+        action: 'download',
+        transferId: input.transferId,
+        remotePath: input.remotePath,
+        localPath: input.localPath,
+        conflict: input.conflict
+      },
+      0
+    )
+  })
+  ipcMain.handle(IPC.sftpCancelTransfer, (event, raw) => {
+    const owner = authorize(event)
+    const { sessionId, transferId } = sftpCancelTransferSchema.parse(raw)
+    const session = sessions.get(sessionId)
+    if (session && session.owner === owner.id && session.kind === 'ssh') {
+      workers.get('ssh')?.postMessage({ type: 'sftp:cancel', sessionId, transferId })
+    }
+  })
+  ipcMain.handle(IPC.sftpPickUploadFiles, async (event) => {
+    const owner = authorize(event)
+    const res = await dialog.showOpenDialog(owner, {
+      title: '选择要上传的本地文件',
+      properties: ['openFile', 'multiSelections']
+    })
+    return res.canceled ? [] : res.filePaths
+  })
+  ipcMain.handle(IPC.sftpPickUploadDirs, async (event) => {
+    const owner = authorize(event)
+    const res = await dialog.showOpenDialog(owner, {
+      title: '选择要上传的本地文件夹',
+      properties: ['openDirectory', 'multiSelections']
+    })
+    return res.canceled ? [] : res.filePaths
+  })
+  ipcMain.handle(IPC.sftpPickDownloadDir, async (event) => {
+    const owner = authorize(event)
+    const res = await dialog.showOpenDialog(owner, {
+      title: '选择本地保存目录',
+      defaultPath: app.getPath('downloads'),
+      properties: ['openDirectory', 'createDirectory']
+    })
+    return res.canceled ? null : (res.filePaths[0] ?? null)
+  })
+  ipcMain.handle(IPC.sftpPickDownloadFile, async (event, raw) => {
+    const owner = authorize(event)
+    const { defaultName } = sftpPickDownloadFileSchema.parse(raw)
+    const safeName = sanitizeDownloadFilename(defaultName)
+    const res = await dialog.showSaveDialog(owner, {
+      title: '保存远端文件到本地',
+      defaultPath: join(app.getPath('downloads'), safeName)
+    })
+    return res.canceled ? null : (res.filePath ?? null)
+  })
+  ipcMain.handle(IPC.sftpExpandLocalUploads, async (event, raw) => {
+    authorize(event)
+    const { localPaths } = sftpExpandLocalSchema.parse(raw)
+    return expandLocalUploadPaths(localPaths)
+  })
+  ipcMain.handle(IPC.sftpRevealLocal, (event, raw) => {
+    authorize(event)
+    const { localPath } = sftpRevealLocalSchema.parse(raw)
+    if (!existsSync(localPath)) return false
+    shell.showItemInFolder(localPath)
+    return true
   })
   ipcMain.handle(IPC.trayState, (event) => {
     authorize(event)

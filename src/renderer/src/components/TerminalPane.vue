@@ -6,6 +6,7 @@ import {
   Copy,
   Eraser,
   ExternalLink,
+  FolderOpen,
   GripVertical,
   Network,
   Palette,
@@ -66,12 +67,16 @@ const props = defineProps<{
   visible: boolean
   canUnsplit?: boolean
   isDragging?: boolean
+  sftpActive?: boolean
+  sftpTransferCount?: number
   fontSize: number
   screenReaderDefault: boolean
 }>()
 const emit = defineEmits<{
   consumed: []
   state: [state: string]
+  session: [sessionId: string | undefined]
+  toggleSftp: []
   authFailed: [message: string]
   unsplit: []
   closePane: []
@@ -422,6 +427,7 @@ function disposeHandle() {
   detachSubscriptions()
   handle?.dispose()
   handle = undefined
+  emit('session', undefined)
 }
 
 async function mountAndConnect() {
@@ -484,6 +490,7 @@ async function mountAndConnect() {
   })
 
   if (alreadyConnected) {
+    emit('session', handle.getSessionId())
     handle.refresh()
     await nextTick()
     if (props.visible) handle.terminal.focus()
@@ -498,6 +505,7 @@ async function mountAndConnect() {
       if (!props.hostId) throw new Error('缺少主机配置标识')
       await handle.connect({ kind: 'ssh', hostId: props.hostId, password: props.password })
     }
+    emit('session', handle.getSessionId())
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : '连接失败'
     if (props.kind === 'ssh' && props.hostId && errorMessage.includes('请输入本次连接密码')) {
@@ -637,6 +645,22 @@ onBeforeUnmount(() => {
         {{ labels[status] }}
       </span>
       <span :class="c('container_workspace_terminal_header_dims')">{{ dims.cols }}×{{ dims.rows }}</span>
+      <button
+        :class="c('container_workspace_terminal_toolbar_sftp')"
+        type="button"
+        aria-label="打开 SFTP 文件面板"
+        title="在右侧展开 SFTP 文件列表与传输队列"
+        :aria-pressed="Boolean(sftpActive)"
+        @click="emit('toggleSftp')"
+      >
+        <FolderOpen :size="14" />
+        <span
+          v-if="(sftpTransferCount ?? 0) > 0"
+          :class="c('container_workspace_terminal_toolbar_sftp-count')"
+        >
+          {{ sftpTransferCount }}
+        </span>
+      </button>
       <button
         :class="c('container_workspace_terminal_toolbar_tunnels')"
         type="button"
@@ -1226,6 +1250,7 @@ onBeforeUnmount(() => {
   color: var(--color-error);
   background: var(--color-error-soft);
 }
+.container_workspace_terminal_toolbar_sftp,
 .container_workspace_terminal_toolbar_search,
 .container_workspace_terminal_toolbar_accessibility,
 .container_workspace_terminal_toolbar_search-case,
@@ -1236,6 +1261,11 @@ onBeforeUnmount(() => {
     background: var(--color-accent-primary-soft);
     border-color: var(--color-accent-primary-ring);
   }
+}
+[class*='container_workspace_terminal_toolbar_sftp-count'] {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--color-accent-secondary);
 }
 .container_workspace_terminal_body_surface {
   flex: 1;
