@@ -2147,3 +2147,147 @@ test('workspace tab bar scrolls horizontally on overflow without showing a verti
   await page.screenshot({ path: info.outputPath('tabbar-narrow.png') })
   await checkClasses(page)
 })
+
+test('terminal recognizes links with hover underline, pointer cursor and clickable tooltip', async ({
+  orbit
+}) => {
+  const { page, app } = orbit
+  await page.getByRole('button', { name: '打开本地终端', exact: true }).click()
+  await expect(page.getByText('运行中', { exact: true })).toHaveCount(1)
+  await expect(page.locator('.xterm-rows').first()).toContainText('PS ', { timeout: 15_000 })
+
+  const terminalInput = page.locator('.xterm-helper-textarea').first()
+  await terminalInput.focus()
+  await page.keyboard.type('Write-Output ("LINK1 " + "https://example.com/" + "orbit-docs，完成")')
+  await page.keyboard.press('Enter')
+  await expect(page.locator('.xterm-rows').first()).toContainText('https://example.com/orbit-docs', {
+    timeout: 15_000
+  })
+
+  await page.keyboard.type('Write-Output ("LINK2 " + "localhost:5173/" + "panel")')
+  await page.keyboard.press('Enter')
+  await expect(page.locator('.xterm-rows').first()).toContainText('localhost:5173/panel', {
+    timeout: 15_000
+  })
+
+  const locateTerminalSubstring = async (rowMatch: string, needle = rowMatch) =>
+    page.evaluate(
+      ({ rowNeedle, target }) => {
+        const rows = document.querySelectorAll('.xterm-rows > div')
+        for (const row of rows) {
+          if (!(row.textContent ?? '').includes(rowNeedle)) continue
+          const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT)
+          let node = walker.nextNode()
+          while (node) {
+            const text = node.textContent ?? ''
+            const idx = text.indexOf(target)
+            if (idx !== -1) {
+              const range = document.createRange()
+              range.setStart(node, idx)
+              range.setEnd(node, idx + target.length)
+              const rect = range.getBoundingClientRect()
+              if (rect.width > 0 && rect.height > 0) {
+                return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+              }
+            }
+            node = walker.nextNode()
+          }
+        }
+        return null
+      },
+      { rowNeedle: rowMatch, target: needle }
+    )
+
+  const link1Pos = await locateTerminalSubstring('https://example.com/orbit-docs', 'orbit-docs')
+  expect(link1Pos).not.toBeNull()
+
+  await app.evaluate(({ dialog }) => {
+    const g = globalThis as {
+      __origShowMessageBox?: typeof dialog.showMessageBox
+      __openedLinkPrompts?: Array<{ title?: string; detail?: string }>
+    }
+    g.__origShowMessageBox = dialog.showMessageBox.bind(dialog)
+    g.__openedLinkPrompts = []
+    dialog.showMessageBox = (async (...args: unknown[]) => {
+      const options = (args.length >= 2 ? args[1] : args[0]) as { title?: string; detail?: string }
+      g.__openedLinkPrompts!.push({ title: options.title, detail: options.detail })
+      return { response: 0, checkboxChecked: false }
+    }) as typeof dialog.showMessageBox
+  })
+
+  try {
+    await page.mouse.move(link1Pos!.x, link1Pos!.y)
+    await expect(page.locator('.xterm .xterm-cursor-pointer')).toHaveCount(1)
+    const link1Style = await page.evaluate(({ x, y }) => {
+      const target = document.elementFromPoint(x, y) as HTMLElement | null
+      const linkRow = [...document.querySelectorAll('.xterm-rows > div')].find((row) =>
+        (row.textContent ?? '').includes('https://example.com/orbit-docs')
+      )
+      const linkSpan = linkRow
+        ? ([...linkRow.querySelectorAll('span')].find((el) =>
+            (el.textContent ?? '').includes('orbit-docs')
+          ) as HTMLElement | undefined)
+        : undefined
+      return {
+        cursor: target ? getComputedStyle(target).cursor : '',
+        underline: linkSpan ? getComputedStyle(linkSpan).textDecorationLine : '',
+        thickness: linkSpan ? getComputedStyle(linkSpan).textDecorationThickness : ''
+      }
+    }, link1Pos!)
+    expect(link1Style.cursor).toBe('pointer')
+    expect(link1Style.underline).toContain('underline')
+    expect(link1Style.thickness).toBe('1.5px')
+
+    const hoverTip = page.locator('.xterm .xterm-hover.xterm-link-preview')
+    await expect(hoverTip).toBeVisible()
+    await expect(hoverTip).toContainText('https://example.com/orbit-docs')
+    await expect(hoverTip).toContainText('可点击打开')
+    await checkClasses(page)
+
+    await hoverTip.click()
+    await expect
+      .poll(() =>
+        app.evaluate(
+          () => (globalThis as { __openedLinkPrompts?: Array<{ detail?: string }> }).__openedLinkPrompts
+        )
+      )
+      .toEqual([{ title: '打开外部链接？', detail: 'https://example.com/orbit-docs' }])
+
+    // Moving off link clears pointer cursor, underline, and tooltip
+    await page.mouse.move(4, 4)
+    await expect(page.locator('.xterm .xterm-cursor-pointer')).toHaveCount(0)
+    await expect(hoverTip).toBeHidden()
+
+    // Bare localhost:port link is also recognized and clickable directly on the terminal cell
+    const link2Pos = await locateTerminalSubstring('localhost:5173/panel')
+    expect(link2Pos).not.toBeNull()
+    await page.mouse.move(link2Pos!.x, link2Pos!.y)
+    await expect(page.locator('.xterm .xterm-cursor-pointer')).toHaveCount(1)
+    await expect(hoverTip).toBeVisible()
+    await expect(hoverTip).toContainText('http://localhost:5173/panel')
+
+    await page.mouse.click(link2Pos!.x, link2Pos!.y)
+    await expect
+      .poll(() =>
+        app.evaluate(
+          () => (globalThis as { __openedLinkPrompts?: Array<{ detail?: string }> }).__openedLinkPrompts
+        )
+      )
+      .toEqual([
+        { title: '打开外部链接？', detail: 'https://example.com/orbit-docs' },
+        { title: '打开外部链接？', detail: 'http://localhost:5173/panel' }
+      ])
+  } finally {
+    await app.evaluate(({ dialog }) => {
+      const g = globalThis as {
+        __origShowMessageBox?: typeof dialog.showMessageBox
+        __openedLinkPrompts?: unknown
+      }
+      if (g.__origShowMessageBox) {
+        dialog.showMessageBox = g.__origShowMessageBox
+        delete g.__origShowMessageBox
+      }
+      delete g.__openedLinkPrompts
+    })
+  }
+})

@@ -1,13 +1,13 @@
 import type { Terminal } from '@xterm/xterm'
 import type { SearchAddon } from '@xterm/addon-search'
 import type { OpenSessionInput, SessionInfo, TerminalEvent } from '../../../shared/contracts'
+import { createTerminalLinkIntegration } from './terminal-links'
 import { getTerminalTheme, type CursorShape, type TerminalThemeId } from './terminal-themes'
 
 interface XtermModules {
   Terminal: typeof import('@xterm/xterm').Terminal
   FitAddon: typeof import('@xterm/addon-fit').FitAddon
   SearchAddon: typeof import('@xterm/addon-search').SearchAddon
-  WebLinksAddon: typeof import('@xterm/addon-web-links').WebLinksAddon
 }
 
 let xtermModulesPromise: Promise<XtermModules> | undefined
@@ -17,14 +17,12 @@ function loadXtermModules(): Promise<XtermModules> {
     xtermModulesPromise = Promise.all([
       import('@xterm/xterm'),
       import('@xterm/addon-fit'),
-      import('@xterm/addon-search'),
-      import('@xterm/addon-web-links')
+      import('@xterm/addon-search')
     ])
-      .then(([xtermPkg, fitPkg, searchPkg, webLinksPkg]) => ({
+      .then(([xtermPkg, fitPkg, searchPkg]) => ({
         Terminal: xtermPkg.Terminal,
         FitAddon: fitPkg.FitAddon,
-        SearchAddon: searchPkg.SearchAddon,
-        WebLinksAddon: webLinksPkg.WebLinksAddon
+        SearchAddon: searchPkg.SearchAddon
       }))
       .catch((error) => {
         xtermModulesPromise = undefined
@@ -130,7 +128,7 @@ export async function createTerminal(
   if (existingBeforeLoad) {
     return existingBeforeLoad.reattach(element, onState, initialScreenReaderMode, initialAppearance)
   }
-  const { Terminal, FitAddon, SearchAddon, WebLinksAddon } = await loadXtermModules()
+  const { Terminal, FitAddon, SearchAddon } = await loadXtermModules()
   const existingAfterLoad = registry.get(token)
   if (existingAfterLoad) {
     return existingAfterLoad.reattach(element, onState, initialScreenReaderMode, initialAppearance)
@@ -160,12 +158,14 @@ export async function createTerminal(
   })
   const fit = new FitAddon()
   const search = new SearchAddon()
-  const webLinks = new WebLinksAddon((_event, uri) => {
+  const links = createTerminalLinkIntegration(terminal, (uri) => {
     void window.orbit.shell.openExternal(uri).catch(() => {})
   })
+  terminal.options.linkHandler = links.linkHandler
+  const linkProviderSub = terminal.registerLinkProvider(links.provider)
+  const linkScrollSub = terminal.onScroll(() => links.hideHover())
   terminal.loadAddon(fit)
   terminal.loadAddon(search)
-  terminal.loadAddon(webLinks)
   terminal.open(element)
 
   let port: MessagePort | undefined
@@ -301,6 +301,7 @@ export async function createTerminal(
 
   const detachHost = (hostElement: HTMLElement) => {
     if (disposed || currentElement !== hostElement) return
+    links.hideHover()
     observer.disconnect()
     clearTimeout(resizeTimer)
     cancelAnimationFrame(frame)
@@ -315,6 +316,9 @@ export async function createTerminal(
     clearTimeout(resizeTimer)
     dprMedia?.removeEventListener('change', onDprChange)
     cancelAnimationFrame(frame)
+    linkProviderSub.dispose()
+    linkScrollSub.dispose()
+    links.dispose()
     input.dispose()
     removeFailure()
     if (port) {

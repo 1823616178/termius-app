@@ -18,8 +18,7 @@ const rendererOnlyDeps = new Set([
   '@lucide/vue',
   '@xterm/xterm',
   '@xterm/addon-fit',
-  '@xterm/addon-search',
-  '@xterm/addon-web-links'
+  '@xterm/addon-search'
 ])
 for (const dep of Object.keys(pkg.dependencies ?? {})) {
   if (rendererOnlyDeps.has(dep)) {

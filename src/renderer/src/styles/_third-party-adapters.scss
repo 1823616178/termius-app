@@ -22,3 +22,53 @@
 .xterm .xterm-selection div {
   border-radius: 2px;
 }
+.xterm.xterm-cursor-pointer,
+.xterm .xterm-cursor-pointer,
+.xterm .xterm-cursor-pointer .xterm-rows,
+.xterm .xterm-cursor-pointer .xterm-rows span,
+.xterm.xterm-cursor-pointer .xterm-viewport {
+  cursor: pointer;
+}
+.xterm .xterm-cursor-pointer .xterm-rows span[style*='underline'] {
+  text-decoration-thickness: 1.5px !important;
+  text-underline-offset: 3px;
+}
+.xterm .xterm-hover.xterm-link-preview {
+  position: absolute;
+  z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(460px, calc(100% - 16px));
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--color-accent-primary-ring, rgba(212, 175, 99, 0.35));
+  background: var(--color-surface-2, #171e1c);
+  color: var(--color-text-primary, #efe9da);
+  box-shadow: var(--shadow-3d-sm, 0 4px 14px rgba(0, 0, 0, 0.45));
+  font-family: var(--font-sans, system-ui, sans-serif);
+  font-size: 12px;
+  line-height: 1.35;
+  cursor: pointer;
+  user-select: none;
+  &:hover {
+    border-color: var(--color-accent-primary, #d4af63);
+    background: var(--color-surface-elevated, #1e2724);
+  }
+  &[hidden] {
+    display: none;
+  }
+}
+.xterm .xterm-hover.xterm-link-preview .xterm-link-preview-url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary, #bfb7a4);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.xterm .xterm-hover.xterm-link-preview .xterm-link-preview-hint {
+  flex-shrink: 0;
+  color: var(--color-accent-primary, #d4af63);
+  font-weight: 600;
+}
