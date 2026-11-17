@@ -454,6 +454,7 @@ function registerIpc(): void {
       tray: trayManager?.getState() ?? {
         minimizeToTray: true,
         closeToTray: false,
+        closeAction: 'quit',
         trayVisibility: 'when-minimized',
         trayCreated: false,
         windowHiddenToTray: false
@@ -846,6 +847,7 @@ function registerIpc(): void {
       trayManager?.getState() ?? {
         minimizeToTray: true,
         closeToTray: false,
+        closeAction: 'quit',
         trayVisibility: 'when-minimized',
         trayCreated: false,
         windowHiddenToTray: false
@@ -956,9 +958,16 @@ async function createWindow(): Promise<void> {
   win.on('restore', () => trayManager?.handleWindowShown(win))
   win.on('close', (event) => {
     if (quitting) return
-    if (trayManager?.getPreferences().closeToTray) {
+    const prefs = trayManager?.getPreferences()
+    const closeAction = prefs?.closeAction ?? (prefs?.closeToTray ? 'tray' : 'quit')
+    if (closeAction === 'tray') {
       event.preventDefault()
-      trayManager.minimizeToTray(win)
+      trayManager?.minimizeToTray(win)
+      return
+    }
+    if (closeAction === 'minimize') {
+      event.preventDefault()
+      trayManager?.minimizeToTaskbar(win)
       return
     }
     const ownedCount = [...sessions.values()].filter((session) => session.owner === windowId).length

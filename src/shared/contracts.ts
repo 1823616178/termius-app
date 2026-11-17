@@ -107,10 +107,12 @@ export interface ShellProfile {
   detail: string
 }
 export type TrayVisibilityMode = 'when-minimized' | 'always'
+export type CloseButtonAction = 'quit' | 'tray' | 'minimize'
 
 const trayPreferenceFields = {
   minimizeToTray: z.boolean(),
   closeToTray: z.boolean(),
+  closeAction: z.enum(['quit', 'tray', 'minimize']),
   trayVisibility: z.enum(['when-minimized', 'always'])
 }
 
@@ -118,6 +120,7 @@ export const trayPreferencesSchema = z
   .object({
     minimizeToTray: trayPreferenceFields.minimizeToTray.default(true),
     closeToTray: trayPreferenceFields.closeToTray.default(false),
+    closeAction: trayPreferenceFields.closeAction.default('quit'),
     trayVisibility: trayPreferenceFields.trayVisibility.default('when-minimized')
   })
   .strict()
@@ -126,6 +129,33 @@ export const trayPreferencesPatchSchema = z.object(trayPreferenceFields).partial
 
 export type TrayPreferences = z.infer<typeof trayPreferencesSchema>
 export type TrayPreferencesPatch = z.infer<typeof trayPreferencesPatchSchema>
+
+export function normalizeStoredTrayPreferences(raw: unknown): TrayPreferences {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return trayPreferencesSchema.parse({})
+  }
+  const candidate = { ...(raw as Record<string, unknown>) }
+  if (candidate.closeAction === undefined && typeof candidate.closeToTray === 'boolean') {
+    candidate.closeAction = candidate.closeToTray ? 'tray' : 'quit'
+  } else if (typeof candidate.closeAction === 'string') {
+    candidate.closeToTray = candidate.closeAction === 'tray'
+  }
+  return trayPreferencesSchema.parse(candidate)
+}
+
+export function resolveTrayPreferences(current: TrayPreferences, rawPatch: unknown): TrayPreferences {
+  const patch = trayPreferencesPatchSchema.parse(rawPatch) as TrayPreferencesPatch
+  const next: TrayPreferences = {
+    ...current,
+    ...patch
+  }
+  if (patch.closeAction !== undefined) {
+    next.closeToTray = patch.closeAction === 'tray'
+  } else if (patch.closeToTray !== undefined) {
+    next.closeAction = patch.closeToTray ? 'tray' : 'quit'
+  }
+  return trayPreferencesSchema.parse(next)
+}
 
 export interface TrayState extends TrayPreferences {
   trayCreated: boolean

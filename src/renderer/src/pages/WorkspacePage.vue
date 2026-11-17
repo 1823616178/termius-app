@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   ArrowDown,
   ArrowLeft,
@@ -34,6 +34,7 @@ import {
 import { TERMINAL_THEMES, type TerminalThemeId } from '../services/terminal-themes'
 import {
   activeTab,
+  activateTab,
   bootstrap,
   closePane,
   closeTab,
@@ -43,6 +44,7 @@ import {
   dockTabToSplit,
   fontSize,
   getPaneContainer,
+  homeVisible,
   movePaneToSplit,
   openEditor,
   openLocal,
@@ -82,6 +84,14 @@ type PreviewInsets = {
 const draggedTab = ref('')
 const draggedPane = ref<DraggedPaneState | null>(null)
 const dropTargetTab = ref('')
+const tabDropPlacement = ref<'before' | 'after'>('before')
+const tabListRef = ref<HTMLElement>()
+const tabOverflow = ref(false)
+const canScrollTabsLeft = ref(false)
+const canScrollTabsRight = ref(false)
+let tabListObserver: ResizeObserver | undefined
+let tabScrollFrame = 0
+let tabScrollSpeed = 0
 const dropTargetTabbarEmpty = ref(false)
 const splitDropZone = ref<SplitDropZone | null>(null)
 const targetPaneToken = ref('')
@@ -94,6 +104,58 @@ const swordFormationIndex = ref(0)
 const welcomeIntroKey = ref(0)
 let dragBlockRaf = 0
 let tabHoverSwitchTimer = 0
+let tabBeforeDrag = ''
+let homeBeforeDrag = false
+
+function updateTabScroll() {
+  const el = tabListRef.value
+  if (!el) return
+  tabOverflow.value = el.scrollWidth > el.clientWidth + 1
+  canScrollTabsLeft.value = el.scrollLeft > 1
+  canScrollTabsRight.value = el.scrollLeft + el.clientWidth < el.scrollWidth - 1
+}
+
+function revealActiveTab() {
+  const el = tabListRef.value
+  const selected = el?.querySelector<HTMLElement>('[data-active="true"]')
+  if (!el || !selected) return
+  const bounds = el.getBoundingClientRect()
+  const item = selected.getBoundingClientRect()
+  if (item.left < bounds.left) el.scrollLeft -= bounds.left - item.left
+  else if (item.right > bounds.right) el.scrollLeft += item.right - bounds.right
+  updateTabScroll()
+}
+
+function scrollTabs(direction: -1 | 1) {
+  const el = tabListRef.value
+  if (el) el.scrollLeft += direction * Math.max(120, el.clientWidth * 0.7)
+}
+
+function stopTabAutoScroll() {
+  window.cancelAnimationFrame(tabScrollFrame)
+  tabScrollFrame = 0
+  tabScrollSpeed = 0
+}
+
+function autoScrollTabs(event: DragEvent) {
+  const el = tabListRef.value
+  if (!el || !isDraggingAny.value) return
+  const rect = el.getBoundingClientRect()
+  tabScrollSpeed = event.clientX < rect.left + 28 ? -7 : event.clientX > rect.right - 28 ? 7 : 0
+  if (!tabScrollSpeed) return stopTabAutoScroll()
+  if (tabScrollFrame) return
+  const tick = () => {
+    el.scrollLeft += tabScrollSpeed
+    tabScrollFrame = window.requestAnimationFrame(tick)
+  }
+  tabScrollFrame = window.requestAnimationFrame(tick)
+}
+
+watch([activeTab, () => tabs.value.map((tab) => tab.token).join(','), page], async () => {
+  await nextTick()
+  if (!isDraggingAny.value) revealActiveTab()
+  updateTabScroll()
+})
 
 function replaySwordIntro() {
   welcomeIntroKey.value += 1
@@ -180,6 +242,12 @@ function scheduleDragPointerBlock() {
     if (draggedTab.value || draggedPane.value) {
       dragPointerBlock.value = true
     }
+    // Wait until Chromium has captured the drag image before changing the view.
+    if (draggedTab.value && activeTab.value === draggedTab.value) {
+      const index = tabs.value.findIndex((tab) => tab.token === draggedTab.value)
+      const neighbor = tabs.value[index + 1] ?? tabs.value[index - 1]
+      if (neighbor) activeTab.value = neighbor.token
+    }
   })
 }
 
@@ -191,6 +259,7 @@ function clearTabHoverSwitchTimer() {
 }
 
 function endTabDrag() {
+  stopTabAutoScroll()
   if (dragBlockRaf) {
     window.cancelAnimationFrame(dragBlockRaf)
     dragBlockRaf = 0
@@ -204,14 +273,25 @@ function endTabDrag() {
   targetPaneToken.value = ''
   previewInsets.value = null
   dragPointerBlock.value = false
+  if (tabBeforeDrag && tabs.value.some((tab) => tab.token === tabBeforeDrag)) {
+    activeTab.value = tabBeforeDrag
+    homeVisible.value = homeBeforeDrag
+  }
+  tabBeforeDrag = ''
 }
 
 onMounted(() => {
   initSftpBridgeListeners()
+  tabListObserver = new ResizeObserver(() => {
+    updateTabScroll()
+    if (!isDraggingAny.value) revealActiveTab()
+  })
+  if (tabListRef.value) tabListObserver.observe(tabListRef.value)
 })
 
 onBeforeUnmount(() => {
   endTabDrag()
+  tabListObserver?.disconnect()
   disposeSftpBridgeListeners()
 })
 
@@ -313,6 +393,9 @@ function computePanePreviewInsets(tab: Tab, paneEl: HTMLElement, zone: SplitDrop
 }
 
 function onTabDragStart(event: DragEvent, tab: Tab) {
+  tabBeforeDrag = activeTab.value
+  homeBeforeDrag = homeVisible.value
+  homeVisible.value = false
   draggedTab.value = tab.token
   draggedPane.value = null
   dropTargetTab.value = ''
@@ -328,6 +411,7 @@ function onTabDragStart(event: DragEvent, tab: Tab) {
 }
 
 function onPaneHeaderDragStart(event: DragEvent, tab: Tab, pane: Pane) {
+  tabBeforeDrag = ''
   draggedPane.value = { tabToken: tab.token, paneToken: pane.token, title: pane.title }
   draggedTab.value = ''
   dropTargetTab.value = ''
@@ -345,6 +429,9 @@ function onPaneHeaderDragStart(event: DragEvent, tab: Tab, pane: Pane) {
 function onTabDragOver(event: DragEvent, targetToken: string) {
   const payload = resolveDragPayload(event)
   if (!payload) return
+  autoScrollTabs(event)
+  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+  tabDropPlacement.value = event.clientX < rect.left + rect.width / 2 ? 'before' : 'after'
   if (payload.kind === 'tab' && !draggedTab.value) draggedTab.value = payload.tabToken
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
   splitDropZone.value = null
@@ -353,9 +440,9 @@ function onTabDragOver(event: DragEvent, targetToken: string) {
   dropTargetTabbarEmpty.value = false
   if (dropTargetTab.value !== targetToken) {
     clearTabHoverSwitchTimer()
-    if (payload.kind === 'pane' && payload.tabToken !== targetToken) {
+    if (payload.tabToken !== targetToken && activeTab.value !== targetToken) {
       tabHoverSwitchTimer = window.setTimeout(() => {
-        if (draggedPane.value && dropTargetTab.value === targetToken) {
+        if (isDraggingAny.value && dropTargetTab.value === targetToken) {
           activeTab.value = targetToken
         }
       }, 420)
@@ -367,6 +454,7 @@ function onTabDragOver(event: DragEvent, targetToken: string) {
 function onTabListDragOver(event: DragEvent) {
   const payload = resolveDragPayload(event)
   if (!payload) return
+  autoScrollTabs(event)
   if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'
   clearTabHoverSwitchTimer()
   dropTargetTab.value = ''
@@ -374,6 +462,12 @@ function onTabListDragOver(event: DragEvent) {
   targetPaneToken.value = ''
   previewInsets.value = null
   dropTargetTabbarEmpty.value = true
+}
+
+function onTabListDragLeave(event: DragEvent) {
+  if (event.relatedTarget instanceof Node && tabListRef.value?.contains(event.relatedTarget)) return
+  dropTargetTabbarEmpty.value = false
+  stopTabAutoScroll()
 }
 
 function onTabListDrop(event: DragEvent) {
@@ -390,11 +484,10 @@ function onTabListDrop(event: DragEvent) {
 function onDropTab(event: DragEvent, targetToken: string) {
   const payload = resolveDragPayload(event)
   if (payload?.kind === 'tab') {
-    reorderTab(payload.tabToken, targetToken)
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
+    reorderTab(payload.tabToken, targetToken, event.clientX < rect.left + rect.width / 2 ? 'before' : 'after')
   } else if (payload?.kind === 'pane') {
-    if (payload.tabToken === targetToken) {
-      detachPaneToTab(payload.tabToken, payload.paneToken)
-    } else {
+    if (payload.tabToken !== targetToken) {
       movePaneToSplit(payload.tabToken, payload.paneToken, targetToken, 'right')
     }
   }
@@ -402,6 +495,7 @@ function onDropTab(event: DragEvent, targetToken: string) {
 }
 
 function onPaneDragOver(event: DragEvent, tab: Tab, pane: Pane) {
+  stopTabAutoScroll()
   const payload = resolveDragPayload(event)
   if (!payload) return
   if (payload.kind === 'tab' && !draggedTab.value) draggedTab.value = payload.tabToken
@@ -434,6 +528,10 @@ function onPaneDragOver(event: DragEvent, tab: Tab, pane: Pane) {
   }
   splitDropZone.value = zone
   previewInsets.value = computePanePreviewInsets(tab, paneEl, zone)
+  if (payload.kind === 'tab' && payload.tabToken === tab.token) {
+    splitDropZone.value = null
+    previewInsets.value = null
+  }
 }
 
 function onPaneDrop(event: DragEvent, tab: Tab, pane: Pane) {
@@ -451,7 +549,7 @@ function onPaneDrop(event: DragEvent, tab: Tab, pane: Pane) {
   }
   if (payload && zone) {
     if (payload.kind === 'tab') {
-      dockTabToSplit(payload.tabToken, tab.token, zone, pane.token)
+      if (dockTabToSplit(payload.tabToken, tab.token, zone, pane.token)) tabBeforeDrag = ''
     } else if (
       payload.tabToken !== tab.token ||
       wouldPaneMoveChangeLayout(tab, payload.paneToken, pane.token, zone)
@@ -463,6 +561,7 @@ function onPaneDrop(event: DragEvent, tab: Tab, pane: Pane) {
 }
 
 function onWorkspaceDragOver(event: DragEvent, tab: Tab) {
+  stopTabAutoScroll()
   const payload = resolveDragPayload(event)
   if (!payload) return
   if (payload.kind === 'tab' && !draggedTab.value) draggedTab.value = payload.tabToken
@@ -488,7 +587,7 @@ function onWorkspaceDragOver(event: DragEvent, tab: Tab) {
     splitDropZone.value = null
     return
   }
-  splitDropZone.value = zone
+  splitDropZone.value = payload.kind === 'tab' && payload.tabToken === tab.token ? null : zone
 }
 
 function onWorkspaceDragLeave(event: DragEvent) {
@@ -528,7 +627,7 @@ function onWorkspaceDrop(event: DragEvent, targetTabToken: string) {
   if (payload && zone && targetTab) {
     const anchorPane = targetPaneToken.value || undefined
     if (payload.kind === 'tab') {
-      dockTabToSplit(payload.tabToken, targetTabToken, zone, anchorPane)
+      if (dockTabToSplit(payload.tabToken, targetTabToken, zone, anchorPane)) tabBeforeDrag = ''
     } else if (
       payload.tabToken !== targetTabToken ||
       wouldPaneMoveChangeLayout(targetTab, payload.paneToken, targetPaneToken.value, zone)
@@ -582,9 +681,14 @@ function resizePanes(event: PointerEvent, tab: Tab) {
   el.addEventListener('lostpointercapture', finish)
 }
 
+function showWorkspaceSftp() {
+  homeVisible.value = false
+  toggleSftpPanel()
+}
+
 function resizeSftpPanel(event: PointerEvent) {
   const el = event.currentTarget as HTMLElement
-  const container = el.parentElement
+  const container = el.closest('.container_workspace_stage_body_base')
   if (!container) return
   el.setPointerCapture(event.pointerId)
   const update = (move: PointerEvent) => {
@@ -601,33 +705,44 @@ function resizeSftpPanel(event: PointerEvent) {
   el.addEventListener('pointerup', finish)
   el.addEventListener('lostpointercapture', finish)
 }
+
+function onTabListWheel(event: WheelEvent) {
+  const el = event.currentTarget as HTMLElement | null
+  if (!el || el.scrollWidth <= el.clientWidth) return
+  if (Math.abs(event.deltaY) > Math.abs(event.deltaX)) {
+    event.preventDefault()
+    el.scrollLeft += event.deltaY
+  }
+}
 </script>
 
 <template>
   <section v-show="page === 'workspace'" class="container_workspace_page_body_base">
     <header class="container_workspace_tabs_header_base">
       <div
+        ref="tabListRef"
         class="container_workspace_tabs_header_list"
         role="tablist"
         aria-label="终端会话"
         :data-detach-ready="dropTargetTabbarEmpty && Boolean(draggedPane) && canDetachDraggedPane"
         @dragover.prevent="onTabListDragOver($event)"
-        @dragleave="dropTargetTabbarEmpty = false"
+        @dragleave="onTabListDragLeave"
         @drop.prevent="onTabListDrop($event)"
+        @wheel="onTabListWheel($event)"
+        @scroll="updateTabScroll"
       >
         <div
           v-for="tab in tabs"
           :key="tab.token"
           :class="c('container_workspace_tabs_header_item', tab.token)"
-          :data-active="activeTab === tab.token"
+          :data-active="activeTab === tab.token && !homeVisible"
           :data-dragging="draggedTab === tab.token"
+          :data-drop-placement="draggedTab ? tabDropPlacement : undefined"
           :data-drop-target="
-            dropTargetTab === tab.token &&
-            draggedTab !== tab.token &&
-            !(draggedPane?.tabToken === tab.token && !canDetachDraggedPane)
+            dropTargetTab === tab.token && draggedTab !== tab.token && draggedPane?.tabToken !== tab.token
           "
           draggable="true"
-          title="拖动标签可排序；拖入下方终端工作区可触发四向磁吸分屏"
+          :title="`${tab.title} · 拖动排序；拖入其他会话的终端区域合并分屏`"
           @dragstart="onTabDragStart($event, tab)"
           @dragover.prevent.stop="onTabDragOver($event, tab.token)"
           @dragleave="dropTargetTab === tab.token && (dropTargetTab = '')"
@@ -638,8 +753,8 @@ function resizeSftpPanel(event: PointerEvent) {
             :class="c('container_workspace_tabs_header_select', tab.token)"
             type="button"
             role="tab"
-            :aria-selected="activeTab === tab.token"
-            @click="activeTab = tab.token"
+            :aria-selected="activeTab === tab.token && !homeVisible"
+            @click="activateTab(tab.token)"
           >
             <span
               :class="c('container_workspace_tabs_header_dot', tab.token)"
@@ -672,6 +787,26 @@ function resizeSftpPanel(event: PointerEvent) {
           + 释放拆分为独立标签
         </span>
       </div>
+      <button
+        v-if="tabOverflow"
+        class="container_workspace_tabs_header_scroll-left"
+        type="button"
+        aria-label="向左滚动页签"
+        :disabled="!canScrollTabsLeft"
+        @click="scrollTabs(-1)"
+      >
+        <ArrowLeft :size="14" />
+      </button>
+      <button
+        v-if="tabOverflow"
+        class="container_workspace_tabs_header_scroll-right"
+        type="button"
+        aria-label="向右滚动页签"
+        :disabled="!canScrollTabsRight"
+        @click="scrollTabs(1)"
+      >
+        <ArrowRight :size="14" />
+      </button>
       <div v-if="bootstrap?.shells.length" class="container_workspace_tabs_header_shell-select">
         <OrbitSelect
           :model-value="selectedShellId || bootstrap.shells[0]?.id"
@@ -733,7 +868,7 @@ function resizeSftpPanel(event: PointerEvent) {
         aria-label="SFTP 文件传输"
         title="展开或收起右侧 SFTP 文件管理面板"
         :aria-pressed="sftpDrawerOpen"
-        @click="toggleSftpPanel()"
+        @click="showWorkspaceSftp"
       >
         <FolderOpen :size="15" />
         <span v-if="activeTransferCount > 0" class="container_workspace_tabs_header_sftp-badge">
@@ -741,7 +876,7 @@ function resizeSftpPanel(event: PointerEvent) {
         </span>
       </button>
     </header>
-    <div v-if="!tabs.length && bootstrap" class="container_workspace_welcome_body_base">
+    <div v-if="(homeVisible || !tabs.length) && bootstrap" class="container_workspace_welcome_body_base">
       <div :key="welcomeIntroKey" class="container_workspace_welcome_body_atmosphere" aria-hidden="true">
         <span class="container_workspace_welcome_body_moon" />
         <span class="container_workspace_welcome_body_mountains-far" />
@@ -751,7 +886,7 @@ function resizeSftpPanel(event: PointerEvent) {
       <OrbitStage3D
         ref="stageRef"
         class="container_workspace_welcome_body_stage"
-        :active="!tabs.length && page === 'workspace'"
+        :active="(homeVisible || !tabs.length) && page === 'workspace'"
         :boost="ctaHovered"
         :instance="windowInstance('welcome')"
         :on-frame-rate="recordMotionFrameRate"
@@ -764,7 +899,7 @@ function resizeSftpPanel(event: PointerEvent) {
         </span>
         <span class="container_workspace_welcome_body_scene-state">{{ swordPhaseNote }}</span>
         <span class="container_workspace_welcome_body_view-hint">
-          左右拖拽环视 · 上下俯仰 · 滚轮缩放 · 双击复位
+          拖动剑尖调倾角 · 拖动空白环视 · 滚轮缩放 · 双击复位
         </span>
       </div>
       <div class="container_workspace_welcome_body_controls">
@@ -851,7 +986,7 @@ function resizeSftpPanel(event: PointerEvent) {
       </div>
       <BorderFlyingSword :instance="windowInstance('border')" />
     </div>
-    <div v-if="tabs.length" class="container_workspace_stage_body_base">
+    <div v-if="tabs.length" v-show="!homeVisible" class="container_workspace_stage_body_base">
       <div class="container_workspace_stage_body_panes">
         <div
           v-for="tab in tabs"
@@ -891,7 +1026,7 @@ function resizeSftpPanel(event: PointerEvent) {
                 :password="pane.password"
                 :retry-seq="pane.retrySeq ?? 0"
                 :auth-cancelled-seq="pane.authCancelledSeq ?? 0"
-                :visible="activeTab === tab.token && page === 'workspace'"
+                :visible="activeTab === tab.token && page === 'workspace' && !homeVisible"
                 :can-unsplit="tab.panes.length > 1"
                 :is-dragging="draggedPane?.paneToken === pane.token"
                 :font-size="fontSize"
@@ -927,7 +1062,7 @@ function resizeSftpPanel(event: PointerEvent) {
             />
           </template>
           <div
-            v-if="isDraggingAny && activeTab === tab.token"
+            v-if="isDraggingAny && activeTab === tab.token && splitDropZone"
             :class="c('container_workspace_split_overlay_base', tab.token)"
             :data-zone="splitDropZone ?? 'idle'"
             aria-hidden="true"
@@ -979,27 +1114,33 @@ function resizeSftpPanel(event: PointerEvent) {
           </div>
         </div>
       </div>
-      <div
-        v-if="sftpDrawerOpen"
-        class="container_workspace_stage_body_sftp-resizer"
-        role="separator"
-        tabindex="0"
-        aria-orientation="vertical"
-        aria-label="调整 SFTP 面板宽度"
-        :aria-valuenow="sftpPanelWidth"
-        :aria-valuemin="300"
-        :aria-valuemax="660"
-        @pointerdown="resizeSftpPanel"
-        @keydown.left.prevent="setSftpPanelWidth(sftpPanelWidth + 24)"
-        @keydown.right.prevent="setSftpPanelWidth(sftpPanelWidth - 24)"
-      />
-      <div
-        v-if="sftpDrawerOpen"
-        class="container_workspace_stage_body_sftp-dock"
-        :style="{ width: `${sftpPanelWidth}px` }"
+      <Transition
+        enter-active-class="container_workspace_sftp_motion_active"
+        leave-active-class="container_workspace_sftp_motion_active"
+        enter-from-class="container_workspace_sftp_motion_collapsed"
+        leave-to-class="container_workspace_sftp_motion_collapsed"
       >
-        <SftpPanel />
-      </div>
+        <div
+          v-if="sftpDrawerOpen"
+          class="container_workspace_stage_body_sftp-dock"
+          :style="{ width: `${sftpPanelWidth}px` }"
+        >
+          <div
+            class="container_workspace_stage_body_sftp-resizer"
+            role="separator"
+            tabindex="0"
+            aria-orientation="vertical"
+            aria-label="调整 SFTP 面板宽度"
+            :aria-valuenow="sftpPanelWidth"
+            :aria-valuemin="300"
+            :aria-valuemax="660"
+            @pointerdown="resizeSftpPanel"
+            @keydown.left.prevent="setSftpPanelWidth(sftpPanelWidth + 24)"
+            @keydown.right.prevent="setSftpPanelWidth(sftpPanelWidth - 24)"
+          />
+          <SftpPanel />
+        </div>
+      </Transition>
     </div>
   </section>
 </template>
@@ -1007,6 +1148,10 @@ function resizeSftpPanel(event: PointerEvent) {
 <style scoped lang="scss">
 .container_workspace_page_body_base {
   flex: 1;
+  min-width: 0;
+  width: 100%;
+  overflow: hidden;
+  container-type: inline-size;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1020,6 +1165,7 @@ function resizeSftpPanel(event: PointerEvent) {
   align-items: center;
   padding-right: 7px;
   > button {
+    flex-shrink: 0;
     width: 30px;
     padding: 5px;
     min-height: 26px;
@@ -1032,6 +1178,12 @@ function resizeSftpPanel(event: PointerEvent) {
   display: inline-flex;
   align-items: center;
   flex-shrink: 0;
+}
+@container (max-width: 760px) {
+  .container_workspace_tabs_header_shell-select,
+  .container_workspace_tabs_header_theme-select {
+    max-width: 100px;
+  }
 }
 .container_workspace_tabs_header_dot {
   width: 6px;
@@ -1054,9 +1206,29 @@ function resizeSftpPanel(event: PointerEvent) {
   flex: 1;
   min-width: 0;
   display: flex;
-  align-items: center;
+  align-items: stretch;
   height: 100%;
   overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  &::-webkit-scrollbar {
+    height: 4px;
+  }
+  &::-webkit-scrollbar-button {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+  &::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  &::-webkit-scrollbar-thumb {
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.22);
+  }
+  &:hover::-webkit-scrollbar-thumb {
+    background: var(--color-accent-primary-ring);
+  }
   &[data-detach-ready='true'] {
     background: var(--color-accent-secondary-soft);
     box-shadow: inset 0 0 0 1px var(--color-accent-secondary-ring);
@@ -1081,7 +1253,7 @@ function resizeSftpPanel(event: PointerEvent) {
   background: var(--color-accent-secondary-soft);
   white-space: nowrap;
   flex-shrink: 0;
-  pointer-events: none;
+  flex-grow: 1;
   transition:
     border-color 140ms ease,
     background 140ms ease,
@@ -1148,6 +1320,10 @@ function resizeSftpPanel(event: PointerEvent) {
       inset 3px 0 0 var(--color-accent-secondary),
       inset 0 0 18px var(--color-accent-secondary-soft);
     transform: translateX(2px);
+    &[data-drop-placement='after'] {
+      box-shadow: inset -3px 0 0 var(--color-accent-secondary);
+      transform: translateX(-2px);
+    }
   }
 }
 .container_workspace_tabs_header_split-badge {
@@ -1165,11 +1341,18 @@ function resizeSftpPanel(event: PointerEvent) {
 }
 .container_workspace_tabs_header_select {
   height: 100%;
+  min-height: 0;
+  padding: 0 8px;
   border-radius: 0;
   border: none;
   background: transparent;
   font-size: 12px;
-  min-width: 100px;
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  > svg {
+    flex-shrink: 0;
+  }
   justify-content: flex-start;
   &:hover:not(:disabled),
   &:active:not(:disabled) {
@@ -1181,14 +1364,18 @@ function resizeSftpPanel(event: PointerEvent) {
   }
 }
 .container_workspace_tabs_header_label {
+  min-width: 0;
   max-width: 150px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .container_workspace_tabs_header_close {
+  flex-shrink: 0;
   padding: 2px;
-  min-height: 20px;
+  width: 20px;
+  height: 20px;
+  min-height: 0;
 }
 .container_workspace_welcome_body_base {
   flex: 1;
@@ -1500,22 +1687,23 @@ function resizeSftpPanel(event: PointerEvent) {
 .container_workspace_welcome_body_formrail {
   position: absolute;
   z-index: 4;
-  top: 148px;
+  top: 164px;
   right: 38px;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 4px;
+  gap: 3px;
   animation: workspace-seal-unfold 620ms cubic-bezier(0.22, 1, 0.36, 1) 400ms both;
 }
 .container_workspace_welcome_body_formseal {
   position: relative;
   display: grid;
   place-items: center;
-  width: 24px;
-  height: 24px;
+  width: 22px;
+  height: 22px;
+  min-height: 22px;
   padding: 0;
-  font-size: 10px;
+  font-size: 9px;
   font-family: var(--font-display);
   color: var(--color-text-muted);
   background: color-mix(in srgb, var(--color-surface-1) 70%, transparent);
@@ -1756,9 +1944,25 @@ function resizeSftpPanel(event: PointerEvent) {
 .container_workspace_stage_body_sftp-dock {
   flex-shrink: 0;
   min-height: 0;
-  max-width: 65vw;
+  min-width: 0;
+  max-width: 60%;
   display: flex;
-  flex-direction: column;
+  overflow: hidden;
+  :deep(.container_workspace_sftp_panel_base) {
+    flex: 1;
+  }
+}
+.container_workspace_sftp_motion_active {
+  transition:
+    width 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 180ms ease,
+    transform 220ms ease;
+  pointer-events: none;
+}
+.container_workspace_sftp_motion_collapsed {
+  width: 0 !important;
+  opacity: 0;
+  transform: translateX(16px);
 }
 .container_workspace_panes_body_base {
   position: relative;

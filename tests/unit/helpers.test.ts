@@ -46,6 +46,7 @@ import {
   detachPaneToTab,
   dockTabToSplit,
   isPaneTokenMounted,
+  reorderTab,
   resolveSplitDropZone,
   splitEnteredPaneToken,
   tabs,
@@ -355,6 +356,15 @@ describe('shell discovery, redaction, SSH normalization, and UI helpers', () => 
       }
     ]
     activeTab.value = 'tab-a'
+
+    expect(dockTabToSplit('tab-a', 'tab-a', 'right')).toBe(false)
+    expect(tabs.value).toHaveLength(2)
+    expect(tabs.value[0]!.panes).toHaveLength(1)
+    reorderTab('tab-a', 'tab-b', 'before')
+    expect(tabs.value.map((tab) => tab.token)).toEqual(['tab-a', 'tab-b'])
+    reorderTab('tab-a', 'tab-b', 'after')
+    expect(tabs.value.map((tab) => tab.token)).toEqual(['tab-b', 'tab-a'])
+    reorderTab('tab-a', 'tab-b', 'before')
 
     expect(dockTabToSplit('tab-b', 'tab-a', 'left')).toBe(true)
     expect(tabs.value).toHaveLength(1)

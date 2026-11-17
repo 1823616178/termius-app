@@ -10,8 +10,10 @@ export interface MainSwordModel {
   glow: THREE.Sprite
 }
 
-const BLADE_BASE = -0.72
-const BLADE_TIP = 3.65
+export const MAIN_SWORD_PIVOT_Y = -0.72
+export const MAIN_SWORD_TIP_Y = 3.65
+const BLADE_BASE = MAIN_SWORD_PIVOT_Y
+const BLADE_TIP = MAIN_SWORD_TIP_Y
 const BLADE_TEXTURE_WIDTH = 0.56
 // Han-jian straight blade: edges stay near-parallel, convergence confined to the final ~12% so the point reads short.
 const BLADE_RINGS = [

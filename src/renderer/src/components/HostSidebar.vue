@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import {
   Plus,
   Search,
@@ -16,6 +16,7 @@ import {
 import { instanceClass } from '../../../shared/classes'
 import type { Host } from '../../../shared/contracts'
 import OrbitSelect from './OrbitSelect.vue'
+import { recentHostIds } from '../services/host-recency'
 import {
   bootstrap,
   connectHost,
@@ -44,6 +45,10 @@ const searchInput = ref<HTMLInputElement>()
 const listRef = ref<HTMLElement>()
 const scrollTop = ref(0)
 const viewportHeight = ref(420)
+watch(recentHostIds, () => {
+  scrollTop.value = 0
+  if (listRef.value) listRef.value.scrollTop = 0
+})
 let clickTimer: ReturnType<typeof setTimeout> | undefined
 
 const VIRTUAL_THRESHOLD = 150

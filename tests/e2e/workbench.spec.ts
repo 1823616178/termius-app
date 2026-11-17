@@ -237,6 +237,79 @@ test('secure empty workspace, semantic DOM and saved host persistence', async ({
   }
 })
 
+test('titlebar home icon returns to welcome and preserves terminal sessions', async ({ orbit }, info) => {
+  const { page } = orbit
+  const home = page.getByRole('button', { name: '返回首页', exact: true })
+  await expect(home).toBeVisible()
+  expect((await home.textContent())?.trim()).toBe('')
+  await expect(home).toHaveAttribute('aria-current', 'page')
+  expect(await home.evaluate((el) => getComputedStyle(el).getPropertyValue('-webkit-app-region'))).toBe(
+    'no-drag'
+  )
+  await page.getByRole('button', { name: '打开本地终端', exact: true }).click()
+  await expect(page.locator('.xterm-rows')).toContainText('PS ', { timeout: 15_000 })
+  await page.locator('.xterm-helper-textarea').focus()
+  await page.keyboard.type('Write-Output ("HOME_" + "PRESERVED")')
+  await page.keyboard.press('Enter')
+  await expect(page.locator('.xterm-rows')).toContainText('HOME_PRESERVED')
+  await home.click()
+  await expect(page.getByText('让连接，井然有序。')).toBeVisible()
+  await expect(page.locator('.xterm')).toHaveCount(1)
+  await expect(page.locator('.xterm')).toBeHidden()
+  await expect(page.getByRole('tab')).toHaveAttribute('aria-selected', 'false')
+  await page.screenshot({ path: info.outputPath('home-with-live-session.png') })
+  await checkClasses(page)
+  await page.getByRole('tab').click()
+  await expect(page.locator('.xterm-rows')).toBeVisible()
+  await expect(page.locator('.xterm-rows')).toContainText('HOME_PRESERVED')
+  await home.click()
+  await page.getByRole('button', { name: '工作台', exact: true }).click()
+  await expect(page.locator('.xterm-rows')).toBeVisible()
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await home.click()
+  await expect(page.getByText('让连接，井然有序。')).toBeVisible()
+  await page.keyboard.press('Control+Tab')
+  await expect(page.locator('.xterm-rows')).toBeVisible()
+  await expect(page.locator('.xterm-rows')).toContainText('HOME_PRESERVED')
+})
+
+test('connections move to the top on use, respect filters and persist after reload', async ({ orbit }) => {
+  const { page } = orbit
+  const server = await startMockSftpSshServer({ username: 'orbit-test', password: 'RecentPassword!9' })
+  try {
+    for (const name of ['Alpha', 'Bravo', 'Charlie'])
+      await createHost(page, name, server.port, server.password)
+    const names = page.locator('.container_hosts_list_row_name')
+    await expect(names).toHaveText(['Alpha', 'Bravo', 'Charlie'])
+    await page.getByRole('button', { name: '连接 Charlie', exact: true }).click()
+    const trust = page.getByRole('dialog', { name: '确认服务器身份' })
+    await expect(trust).toBeVisible()
+    await trust.getByRole('button', { name: '信任并继续' }).click()
+    await expect(page.getByText('运行中', { exact: true })).toHaveCount(1)
+    await page.getByRole('button', { name: '返回首页', exact: true }).click()
+    await expect(names).toHaveText(['Charlie', 'Alpha', 'Bravo'])
+    await page.getByRole('button', { name: '连接 Bravo', exact: true }).click()
+    await expect(page.getByText('运行中', { exact: true })).toHaveCount(2)
+    await expect(names).toHaveText(['Bravo', 'Charlie', 'Alpha'])
+    await page.getByRole('button', { name: '返回首页', exact: true }).click()
+    await page.getByRole('tab', { name: /Charlie/ }).click()
+    await expect(names).toHaveText(['Charlie', 'Bravo', 'Alpha'])
+    await page.getByRole('button', { name: '主机', exact: true }).click()
+    await expect(page.locator('.container_hosts_card_body_name')).toHaveText(['Charlie', 'Bravo', 'Alpha'])
+    const search = page.getByLabel('搜索主机', { exact: true })
+    await search.fill('a')
+    await expect(names).toHaveText(['Charlie', 'Bravo', 'Alpha'])
+    await search.fill('Bravo')
+    await expect(names).toHaveText(['Bravo'])
+    await search.clear()
+    await page.reload()
+    await expect(page.getByText('让连接，井然有序。')).toBeVisible()
+    await expect(names).toHaveText(['Charlie', 'Bravo', 'Alpha'])
+  } finally {
+    await server.close()
+  }
+})
+
 test('homepage sword realm, border flight, resize and motion tiers', async ({ orbit }, info) => {
   const { page, app } = orbit
   await instrumentMotionCanvas(page)
@@ -1108,6 +1181,14 @@ test('drag tab into workspace triggers animated split preview, lossless docking 
   await page.keyboard.press('Enter')
   await expect(page.locator('.xterm-rows').first()).toContainText('TAB_ONE_KEEP')
 
+  // Returning a tab to its own terminal is a no-op, never a new session.
+  await page
+    .locator('.container_workspace_tabs_header_item')
+    .dragTo(page.locator('.container_workspace_panes_body_pane'), { targetPosition: { x: 120, y: 120 } })
+  await expect(page.getByRole('tab')).toHaveCount(1)
+  await expect(page.locator('.xterm-rows')).toHaveCount(1)
+  await expect(page.locator('.container_workspace_split_overlay_base')).toBeHidden()
+
   await page.getByRole('button', { name: '本地终端', exact: true }).click()
   await page
     .locator('.container_local_profile_body_base')
@@ -1174,8 +1255,9 @@ test('drag tab into workspace triggers animated split preview, lossless docking 
   await cmdTabItem.dispatchEvent('dragend')
   await expect(overlay).not.toBeVisible()
 
-  // Perform real Chromium dragTo from second tab into right split zone of first workspace.
-  await cmdTabItem.dragTo(paneArea, {
+  // Drag the selected second tab: the first workspace must become the drop target automatically.
+  await page.getByRole('tab', { name: /命令提示符/ }).click()
+  await cmdTabItem.dragTo(page.locator('.container_workspace_stage_body_panes'), {
     targetPosition: { x: Math.round(paneBox.width * 0.82), y: Math.round(paneBox.height * 0.5) }
   })
 
@@ -1186,6 +1268,14 @@ test('drag tab into workspace triggers animated split preview, lossless docking 
   await expect(page.locator('.xterm-rows').nth(1)).toContainText('TAB_TWO_KEEP')
   await page.screenshot({ path: info.outputPath('drag-split-docked.png') })
   await checkClasses(page)
+
+  // A pane dropped back on its owning tab stays in that split.
+  await paneArea
+    .locator('.container_workspace_terminal_header_base')
+    .last()
+    .dragTo(page.locator('.container_workspace_tabs_header_item'), { sourcePosition: { x: 80, y: 16 } })
+  await expect(page.getByRole('tab')).toHaveCount(1)
+  await expect(page.locator('.xterm-rows')).toHaveCount(2)
 
   // Drag the right split pane's header over the left pane's left zone to verify preview & lossless swap.
   const visiblePanes = paneArea.locator('.container_workspace_panes_body_pane')
@@ -1274,6 +1364,57 @@ test('drag tab into workspace triggers animated split preview, lossless docking 
   await page.getByRole('button', { name: '关闭标签 命令提示符', exact: true }).click()
   await page.getByRole('button', { name: '关闭标签 Windows PowerShell', exact: true }).click()
   await expect(page.getByText('让连接，井然有序。')).toBeVisible()
+})
+
+test('selected tab drag previews adjacent and hovered terminals and restores selection on cancel', async ({
+  orbit
+}) => {
+  const { page } = orbit
+  for (let i = 0; i < 3; i++) {
+    await page.getByRole('button', { name: '新建本地会话', exact: true }).click()
+  }
+  const tabItems = page.locator('.container_workspace_tabs_header_item')
+  const tabButtons = page.getByRole('tab')
+  await expect(tabButtons).toHaveCount(3)
+
+  // The last tab falls back to its left neighbor; dragging over another tab switches targets.
+  await tabItems.nth(2).dispatchEvent('dragstart')
+  await expect(tabButtons.nth(1)).toHaveAttribute('aria-selected', 'true')
+  await tabItems.nth(0).dispatchEvent('dragover')
+  await expect(tabButtons.nth(0)).toHaveAttribute('aria-selected', 'true')
+  const paneArea = page.locator('.container_workspace_panes_body_base:visible')
+  await paneArea.evaluate((el) => {
+    const rect = el.getBoundingClientRect()
+    el.dispatchEvent(
+      new DragEvent('dragover', {
+        bubbles: true,
+        cancelable: true,
+        clientX: rect.left + rect.width * 0.5,
+        clientY: rect.top + rect.height * 0.1
+      })
+    )
+  })
+  await expect(paneArea.locator('.container_workspace_split_overlay_base')).toHaveAttribute(
+    'data-zone',
+    'top'
+  )
+  await tabItems.nth(2).dispatchEvent('dragend')
+  await expect(tabButtons.nth(2)).toHaveAttribute('aria-selected', 'true')
+  await expect(tabButtons).toHaveCount(3)
+  await expect(page.locator('.xterm')).toHaveCount(3)
+
+  // Other tabs prefer their right neighbor and cancellation keeps the original selection.
+  await tabButtons.nth(0).click()
+  await tabItems.nth(0).dispatchEvent('dragstart')
+  await expect(tabButtons.nth(1)).toHaveAttribute('aria-selected', 'true')
+  await tabItems.nth(0).dispatchEvent('dragend')
+  await expect(tabButtons.nth(0)).toHaveAttribute('aria-selected', 'true')
+
+  // Dragging an inactive tab does not replace the already visible target.
+  await tabItems.nth(2).dispatchEvent('dragstart')
+  await expect(tabButtons.nth(0)).toHaveAttribute('aria-selected', 'true')
+  await tabItems.nth(2).dispatchEvent('dragend')
+  await expect(tabButtons.nth(0)).toHaveAttribute('aria-selected', 'true')
 })
 
 test('activated tunnels & identities pages, horizontal host actions, sync write mode, and WuXing-Bagua UI themes', async ({
@@ -1386,8 +1527,17 @@ test('activated tunnels & identities pages, horizontal host actions, sync write 
     await expect(page.locator('.container_workspace_terminal_tunnel_proberes')).toContainText('ms', {
       timeout: 5000
     })
+    await page.locator('.container_workspace_terminal_tunnel_lport').fill(String(freePort))
+    await page.getByRole('button', { name: '添加转发', exact: true }).click()
+    await expect(page.locator('.container_workspace_terminal_tunnel_list')).toContainText(
+      `终端转发-L-${freePort}`
+    )
     await page.screenshot({ path: info.outputPath('terminal-tunnel-drawer.png') })
     await checkClasses(page)
+    await page.getByRole('button', { name: `删除 终端转发-L-${freePort}`, exact: true }).click()
+    await expect(page.locator('.container_workspace_terminal_tunnel_list')).not.toContainText(
+      `终端转发-L-${freePort}`
+    )
     await page.getByRole('button', { name: '关闭标签 Windows PowerShell', exact: true }).click()
   } finally {
     await new Promise<void>((resolve) => tcpProbeServer.close(() => resolve()))
@@ -1403,6 +1553,7 @@ test('background system tray icon appears on minimize and restores window cleanl
   expect(initialTray).toEqual({
     minimizeToTray: true,
     closeToTray: false,
+    closeAction: 'quit',
     trayVisibility: 'when-minimized',
     trayCreated: false,
     windowHiddenToTray: false
@@ -1475,9 +1626,7 @@ test('background system tray icon appears on minimize and restores window cleanl
       trayCreated: true,
       windowHiddenToTray: false
     })
-  await expect(page.locator('.container_settings_tray_header_badge')).toContainText(
-    '托盘图标已在右侧工具栏显示'
-  )
+  await expect(page.locator('.container_settings_tray_header_badge')).toContainText('托盘图标已显示')
   await page.screenshot({ path: info.outputPath('settings-tray-background.png') })
   await checkClasses(page)
 
@@ -1491,6 +1640,80 @@ test('background system tray icon appears on minimize and restores window cleanl
       trayCreated: false,
       windowHiddenToTray: false
     })
+
+  // Close button behavior selector: quit vs tray vs taskbar minimize
+  const closeGroup = page.getByRole('radiogroup', { name: '点击关闭按钮时的行为', exact: true })
+  await expect(closeGroup).toBeVisible()
+  const quitRadio = closeGroup.getByRole('radio', { name: /彻底关闭程序/ })
+  const trayRadio = closeGroup.getByRole('radio', { name: /最小化到后台托盘/ })
+  const taskbarRadio = closeGroup.getByRole('radio', { name: /最小化到任务栏/ })
+  await expect(quitRadio).toHaveAttribute('aria-checked', 'true')
+
+  // 1) Tray mode: clicking TitleBar close (×) hides window to system tray instead of exiting
+  await trayRadio.click()
+  await expect(trayRadio).toHaveAttribute('aria-checked', 'true')
+  await page.getByRole('button', { name: '关闭窗口', exact: true }).click()
+  await expect
+    .poll(async () => page.evaluate(() => window.orbit.tray.getState()))
+    .toMatchObject({
+      closeAction: 'tray',
+      closeToTray: true,
+      trayCreated: true,
+      windowHiddenToTray: true
+    })
+  await page.evaluate(() => window.orbit.window.restoreFromTray())
+  await expect
+    .poll(async () => page.evaluate(() => window.orbit.tray.getState()))
+    .toMatchObject({ windowHiddenToTray: false })
+
+  // 2) Taskbar mode: clicking TitleBar close (×) minimizes window to OS taskbar even with minimizeToTray=true
+  await taskbarRadio.click()
+  await expect(taskbarRadio).toHaveAttribute('aria-checked', 'true')
+  await expect
+    .poll(async () => page.evaluate(() => window.orbit.tray.getState()))
+    .toMatchObject({
+      closeAction: 'minimize',
+      closeToTray: false
+    })
+  await page.getByRole('button', { name: '关闭窗口', exact: true }).click()
+  await expect
+    .poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isMinimized() ?? false))
+    .toBe(true)
+  expect(await page.evaluate(() => window.orbit.tray.getState()).then((s) => s.windowHiddenToTray)).toBe(
+    false
+  )
+  await app.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows()[0]
+    win?.restore()
+    win?.focus()
+  })
+  await expect
+    .poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isMinimized() ?? true))
+    .toBe(false)
+
+  // 3) Reset back to quit mode and verify persisted selection + layout
+  await quitRadio.click()
+  await expect(quitRadio).toHaveAttribute('aria-checked', 'true')
+  await expect
+    .poll(async () => page.evaluate(() => window.orbit.tray.getState()))
+    .toMatchObject({
+      closeAction: 'quit',
+      closeToTray: false
+    })
+  await page.screenshot({ path: info.outputPath('settings-close-behavior.png') })
+  await checkClasses(page)
+
+  // 4) Quit mode: clicking TitleBar close (×) in a clean window exits the app cleanly
+  const quitDir = await mkdtemp(join(tmpdir(), 'orbit-close-quit-'))
+  const launchedQuit = await launch(quitDir)
+  try {
+    const closePromise = launchedQuit.app.waitForEvent('close', { timeout: 10_000 })
+    await launchedQuit.page.getByRole('button', { name: '关闭窗口', exact: true }).click()
+    await closePromise
+  } finally {
+    await stop(launchedQuit.app)
+    await rm(quitDir, { recursive: true, force: true })
+  }
 
   // Also verify WorkspacePage OrbitSelect menu (theme preset with color swatches) renders and switches cleanly
   await page
@@ -1598,6 +1821,7 @@ test('terminal right-side SFTP drawer browses, uploads, downloads, chmods, renam
     await page.getByRole('button', { name: '打开 SFTP 文件面板', exact: true }).click()
     const sftpAside = page.getByRole('complementary', { name: 'SFTP 文件管理', exact: true })
     await expect(sftpAside).toBeVisible()
+    await expect(page.locator('.container_workspace_stage_body_sftp-dock')).not.toHaveClass(/motion_active/)
 
     // Verify SFTP panel docks cleanly to the right of the terminal pane
     const terminalBox = await page.locator('.container_workspace_stage_body_panes').boundingBox()
@@ -1609,6 +1833,24 @@ test('terminal right-side SFTP drawer browses, uploads, downloads, chmods, renam
     await expect(sftpAside.getByText('readme.txt', { exact: true })).toBeVisible({ timeout: 10_000 })
     await expect(sftpAside.getByText('projects', { exact: true })).toBeVisible()
     await expect(sftpAside.getByText('.env', { exact: true })).toBeHidden()
+
+    // Terminal drags must not advertise file uploads.
+    await sftpAside.evaluate((el) => {
+      const dataTransfer = new DataTransfer()
+      dataTransfer.setData('text/plain', 'terminal-tab')
+      el.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer }))
+    })
+    await expect(sftpAside.locator('.container_workspace_sftp_drop_overlay')).toBeHidden()
+
+    const panelToggle = page.getByRole('button', { name: 'SFTP 文件传输', exact: true })
+    await panelToggle.click()
+    await expect(sftpAside).toBeHidden()
+    await panelToggle.click()
+    await expect(sftpAside.getByText('readme.txt', { exact: true })).toBeVisible()
+    const resizer = page.getByRole('separator', { name: '调整 SFTP 面板宽度' })
+    const widthBefore = Number(await resizer.getAttribute('aria-valuenow'))
+    await resizer.press('ArrowLeft')
+    await expect(resizer).toHaveAttribute('aria-valuenow', String(widthBefore + 24))
 
     await sftpAside.getByRole('button', { name: '显示隐藏文件', exact: true }).click()
     await expect(sftpAside.getByText('.env', { exact: true })).toBeVisible()
@@ -1739,4 +1981,160 @@ test('all twelve sword formations support orbit, zoom and reset', async ({ orbit
   await page.screenshot({ path: info.outputPath('formation-zoom.png') })
   await page.mouse.dblclick(x, y)
   await expect(stage).toHaveAttribute('data-ready', 'true')
+})
+
+test('hero sword tip tilts independently, clamps safely, cancels and resets after orbit and resize', async ({
+  orbit
+}, info) => {
+  const { page, app } = orbit
+  await page.evaluate(() => localStorage.setItem('orbit:motion-tier', 'full'))
+  await page.reload()
+  const stage = page.locator('[data-variant="welcome"]')
+  await expect(stage).toHaveAttribute('data-ready', 'true')
+  await page.getByRole('button', { name: '切换至春黎剑阵', exact: true }).click()
+  const tip = page.getByRole('button', { name: '调整主剑倾斜度', exact: true })
+  await expect(tip).toBeVisible()
+  const angle = async () => Number(await tip.getAttribute('data-tilt'))
+  const defaultAngle = await angle()
+  expect(await tip.evaluate((el) => getComputedStyle(el).transitionProperty)).not.toContain('transform')
+  expect(defaultAngle).toBeGreaterThan(15)
+  expect(defaultAngle).toBeLessThan(35)
+  await checkClasses(page)
+  await page.screenshot({ path: info.outputPath('hero-default-tilt.png') })
+
+  const start = (await tip.boundingBox())!
+  const startX = start.x + start.width / 2
+  const startY = start.y + start.height / 2
+  await page.mouse.move(startX, startY)
+  await page.mouse.down()
+  await expect(stage).toHaveAttribute('data-adjusting-sword', 'true')
+  await page.mouse.move(startX + 110, startY + 25, { steps: 14 })
+  await expect.poll(angle).toBeGreaterThan(defaultAngle + 8)
+  await page.mouse.up()
+  await expect(stage).toHaveAttribute('data-adjusting-sword', 'false')
+  const adjustedAngle = await angle()
+  await page.screenshot({ path: info.outputPath('hero-tip-dragged.png') })
+
+  // Formation switches retain the adjustment rather than replacing the main sword.
+  await page.getByRole('button', { name: '切换至九宫八卦剑阵', exact: true }).click()
+  expect(Math.abs((await angle()) - adjustedAngle)).toBeLessThan(8)
+  const next = (await tip.boundingBox())!
+  await page.mouse.move(next.x + 18, next.y + 18)
+  await page.mouse.down()
+  await expect(stage).toHaveAttribute('data-adjusting-sword', 'true')
+  await page.mouse.move(next.x + 280, next.y + 460, { steps: 12 })
+  await expect.poll(angle).toBeGreaterThanOrEqual(64.5)
+  expect(await angle()).toBeLessThanOrEqual(65.1)
+  await page.keyboard.press('Escape')
+  await page.mouse.up()
+  await expect(stage).toHaveAttribute('data-adjusting-sword', 'false')
+  await expect.poll(angle).toBeLessThan(60)
+
+  // Keyboard adjustment and double-click restore work on the tip itself.
+  await tip.focus()
+  const beforeKey = await angle()
+  await tip.press('Shift+ArrowRight')
+  await expect.poll(async () => Math.abs((await angle()) - beforeKey)).toBeGreaterThan(1)
+  const reset = (await tip.boundingBox())!
+  await page.mouse.dblclick(reset.x + 18, reset.y + 18)
+  await expect.poll(angle).toBeLessThan(35)
+
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(1100, 720))
+  const bounds = (await stage.boundingBox())!
+  const x = bounds.x + bounds.width * 0.8
+  const y = bounds.y + bounds.height * 0.65
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await page.mouse.move(x - 65, y - 20, { steps: 12 })
+  await expect(stage).toHaveAttribute('data-adjusting-sword', 'false')
+  await page.mouse.up()
+  await page.mouse.wheel(0, -120)
+  // Let the resize, orbit inertia and zoom settle before picking the moving tip.
+  await page.waitForTimeout(650)
+  await expect(tip).toBeVisible()
+  const sideTip = (await tip.boundingBox())!
+  await page.mouse.move(sideTip.x + 18, sideTip.y + 18)
+  await page.mouse.down()
+  await expect(stage).toHaveAttribute('data-adjusting-sword', 'true')
+  await page.mouse.move(sideTip.x + 75, sideTip.y + 30, { steps: 10 })
+  await page.mouse.up()
+  await expect(stage).toHaveAttribute('data-ready', 'true')
+  await page.screenshot({ path: info.outputPath('hero-tilt-side-resized.png') })
+})
+
+test('workspace tab bar scrolls horizontally on overflow without showing a vertical scrollbar', async ({
+  orbit
+}, info) => {
+  const { page } = orbit
+  const addTabBtn = page.getByRole('button', { name: '新建本地会话', exact: true })
+  for (let i = 0; i < 8; i++) {
+    await addTabBtn.click()
+  }
+  await expect(page.getByRole('tab')).toHaveCount(8)
+
+  const tabBarMetrics = await page.evaluate(() => {
+    const el = document.querySelector('.container_workspace_tabs_header_list') as HTMLElement
+    const cs = getComputedStyle(el)
+    return {
+      scrollWidth: el.scrollWidth,
+      clientWidth: el.clientWidth,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+      overflowX: cs.overflowX,
+      overflowY: cs.overflowY
+    }
+  })
+
+  expect(tabBarMetrics.overflowX).toBe('auto')
+  expect(tabBarMetrics.overflowY).toBe('hidden')
+  expect(tabBarMetrics.scrollWidth).toBeGreaterThan(tabBarMetrics.clientWidth)
+  expect(tabBarMetrics.scrollHeight).toBeLessThanOrEqual(tabBarMetrics.clientHeight)
+
+  await expect(page.getByRole('button', { name: '向左滚动页签' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: '向右滚动页签' })).toBeDisabled()
+  await page.keyboard.press('Control+Tab')
+  await expect(page.getByRole('tab').first()).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByRole('button', { name: '向左滚动页签' })).toBeDisabled()
+  await page.getByRole('button', { name: '向右滚动页签' }).click()
+  await expect(page.getByRole('button', { name: '向左滚动页签' })).toBeEnabled()
+  const bounds = await page.evaluate(() => {
+    const header = document.querySelector('.container_workspace_tabs_header_base')!.getBoundingClientRect()
+    const action = document.querySelector('.container_workspace_tabs_header_sftp')!.getBoundingClientRect()
+    return { headerRight: header.right, actionRight: action.right, viewport: window.innerWidth }
+  })
+  expect(bounds.headerRight).toBeLessThanOrEqual(bounds.viewport)
+  expect(bounds.actionRight).toBeLessThanOrEqual(bounds.headerRight)
+
+  // Verify mouse wheel vertical delta scrolls tab bar horizontally when overflowing
+  const tabListBox = await page.locator('.container_workspace_tabs_header_list').boundingBox()
+  expect(tabListBox).not.toBeNull()
+  await page.mouse.move(tabListBox!.x + tabListBox!.width / 2, tabListBox!.y + tabListBox!.height / 2)
+  await page.mouse.wheel(0, 180)
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (document.querySelector('.container_workspace_tabs_header_list') as HTMLElement).scrollLeft
+      )
+    )
+    .toBeGreaterThan(0)
+
+  await page.screenshot({ path: info.outputPath('tabbar-overflow.png') })
+  await orbit.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(960, 720))
+  await expect.poll(() => page.evaluate(() => window.innerWidth)).toBe(960)
+  const narrowBounds = await page.evaluate(() => {
+    const header = document.querySelector('.container_workspace_tabs_header_base')!.getBoundingClientRect()
+    const list = document.querySelector('.container_workspace_tabs_header_list')!.getBoundingClientRect()
+    const action = document.querySelector('.container_workspace_tabs_header_sftp')!.getBoundingClientRect()
+    return {
+      headerRight: header.right,
+      listWidth: list.width,
+      actionRight: action.right,
+      viewport: innerWidth
+    }
+  })
+  expect(narrowBounds.listWidth).toBeGreaterThan(120)
+  expect(narrowBounds.headerRight).toBeLessThanOrEqual(narrowBounds.viewport)
+  expect(narrowBounds.actionRight).toBeLessThanOrEqual(narrowBounds.headerRight)
+  await page.screenshot({ path: info.outputPath('tabbar-narrow.png') })
+  await checkClasses(page)
 })

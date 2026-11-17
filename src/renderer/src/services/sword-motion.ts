@@ -27,12 +27,12 @@ export interface SwordPose {
 export interface FormationMeta {
   name: string
   sub: string
-  link: 'none' | 'gates' | 'threads' | 'grid' | 'ring'
+  link: 'none' | 'threads' | 'grid' | 'ring'
   linkColor: 0 | 1 | 2
 }
 
 export const FORMATIONS: FormationMeta[] = [
-  { name: '诛仙剑阵', sub: '四门诛戮陷绝 · 杀意朝心', link: 'gates', linkColor: 2 },
+  { name: '诛仙剑阵', sub: '四门诛戮陷绝 · 杀意朝心', link: 'none', linkColor: 0 },
   { name: '大庚剑阵', sub: '庚金剑丝 · 隐匿穿空', link: 'threads', linkColor: 0 },
   { name: '春黎剑阵', sub: '幻术为基 · 春影重叠', link: 'none', linkColor: 1 },
   { name: '青蟠剑阵', sub: '青元高阶 · 蟠龙绕柱', link: 'none', linkColor: 1 },
@@ -68,6 +68,8 @@ export interface StageState {
   mainSwordY: number
   mainSwordSpin: number
   mainSwordInvert: number
+  mainSwordTiltX: number
+  mainSwordTiltZ: number
   mainSwordTremble: number
   mainSwordScale: number
   mainSwordGlow: number
@@ -1281,6 +1283,9 @@ export function sampleStageState(
     mainSwordY,
     mainSwordSpin,
     mainSwordInvert,
+    // Keep the planted opening intact; lean into the floating hero pose after rising.
+    mainSwordTiltX: compact ? 0.16 : lerp(0.08, 0.22, smoothstep(3.24, INTRO_SECONDS, t)),
+    mainSwordTiltZ: compact ? -0.26 : lerp(-0.12, -0.34, smoothstep(3.24, INTRO_SECONDS, t)),
     mainSwordTremble,
     mainSwordScale,
     mainSwordGlow: Math.max(
@@ -1567,7 +1572,6 @@ export function sampleFormationLinks(
     vertex++
   }
 
-  const linkHeart: Vec3 = { x: HEART_X, y: HEART_Y, z: -0.32 }
   const pA: Vec3 = { x: 0, y: 0, z: 0 }
   const pB: Vec3 = { x: 0, y: 0, z: 0 }
 
@@ -1575,14 +1579,7 @@ export function sampleFormationLinks(
     if (weight <= 0.01) return
     const meta = FORMATIONS[m]!
     const color = meta.linkColor
-    if (meta.link === 'gates') {
-      for (let g = 0; g < 4; g++) {
-        writeGateCenter(g, base, pA)
-        push(pA, linkHeart, weight, color)
-        writeGateCenter((g + 1) % 4, base, pB)
-        push(pA, pB, weight * 0.55, color)
-      }
-    } else if (meta.link === 'threads') {
+    if (meta.link === 'threads') {
       for (let k = 0; k < DAGENG_THREAD_COUNT; k++) {
         writeDagengEnds(k, pA, pB)
         push(pA, pB, weight * 0.62, color)

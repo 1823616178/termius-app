@@ -1,13 +1,17 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Minus, Square, Copy, X, Sparkles, Minimize2, ArrowUpCircle } from 'lucide-vue-next'
+import { Minus, Square, Copy, X, Sparkles, Minimize2, ArrowUpCircle, House } from 'lucide-vue-next'
 import orbitIcon from '../assets/orbit-icon.svg'
 import {
   bootstrap,
   cycleUiTheme,
+  goHome,
   hasVisibleUpdate,
+  homeVisible,
   maximized,
   openUpdateSettings,
+  page,
+  tabs,
   trayState,
   uiTheme,
   updateState
@@ -37,6 +41,16 @@ const updateBadgeText = computed(() => {
   }
   return ''
 })
+
+const closeButtonTitle = computed(() => {
+  if (trayState.value.closeAction === 'tray') {
+    return '点击关闭按钮将最小化到后台系统托盘（可在设置中修改）'
+  }
+  if (trayState.value.closeAction === 'minimize') {
+    return '点击关闭按钮将最小化到系统任务栏（可在设置中修改）'
+  }
+  return '彻底关闭并退出程序（可在设置中修改）'
+})
 </script>
 
 <template>
@@ -49,6 +63,16 @@ const updateBadgeText = computed(() => {
     <span class="container_app_brand_header_workspace">青冥道场</span>
     <span class="container_app_brand_header_badge">剑印 · {{ bootstrap?.versions.app ?? '0.1.0' }}</span>
     <div class="container_app_window_header_controls">
+      <button
+        class="container_app_window_header_home"
+        type="button"
+        title="返回首页"
+        aria-label="返回首页"
+        :aria-current="page === 'workspace' && (homeVisible || !tabs.length) ? 'page' : undefined"
+        @click="goHome"
+      >
+        <House :size="16" />
+      </button>
       <button
         v-if="hasVisibleUpdate"
         class="container_app_window_header_update"
@@ -107,6 +131,7 @@ const updateBadgeText = computed(() => {
       <button
         class="container_app_window_header_close"
         type="button"
+        :title="closeButtonTitle"
         aria-label="关闭窗口"
         @click="windowControls.close()"
       >
@@ -234,5 +259,9 @@ const updateBadgeText = computed(() => {
 .container_app_window_header_close:hover {
   background: var(--color-close-hover) !important;
   color: #ffffff;
+}
+.container_app_window_header_home[aria-current='page'] {
+  color: var(--color-accent-primary-hover);
+  background: var(--color-accent-primary-soft);
 }
 </style>

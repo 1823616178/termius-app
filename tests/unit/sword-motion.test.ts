@@ -112,7 +112,7 @@ describe('twelve named sword formations', () => {
   })
 
   it('emits formation-specific sword threads within capacity', () => {
-    expect(linkCountAt(2.5)).toBe(8)
+    expect(linkCountAt(2.5)).toBe(0)
     expect(linkCountAt(7.5)).toBe(24)
     expect(linkCountAt(12.5)).toBe(0)
     expect(linkCountAt(47.5)).toBe(22)
@@ -130,6 +130,22 @@ describe('twelve named sword formations', () => {
     expect(calm.gourdGlow).toBeGreaterThanOrEqual(6)
     for (const value of [climax.gourdTilt, climax.gourdPour, climax.corkLift, climax.vaporIntensity]) {
       expect(Number.isFinite(value)).toBe(true)
+    }
+  })
+
+  it('eases into a diagonal hero pose after the planted opening in every formation', () => {
+    const planted = sampleStageState(1, 1)
+    const rising = sampleStageState(3.5, 3.5)
+    expect(planted.mainSwordTiltX).toBeCloseTo(0.08)
+    expect(planted.mainSwordTiltZ).toBeCloseTo(-0.12)
+    const tiltOf = (state: typeof planted) =>
+      Math.acos(Math.cos(state.mainSwordTiltX) * Math.cos(state.mainSwordTiltZ))
+    for (let i = 0; i < FORMATIONS.length; i++) {
+      const floating = sampleStageState(i * MOVEMENT_SECONDS + 2.5, INTRO_SECONDS)
+      expect(tiltOf(floating)).toBeGreaterThan((20 * Math.PI) / 180)
+      expect(tiltOf(floating)).toBeLessThan((25 * Math.PI) / 180)
+      expect(tiltOf(rising)).toBeGreaterThan(tiltOf(planted))
+      expect(tiltOf(rising)).toBeLessThan(tiltOf(floating))
     }
   })
 

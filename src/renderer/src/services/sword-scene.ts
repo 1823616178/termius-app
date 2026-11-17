@@ -12,7 +12,13 @@ import {
   type GourdModel,
   type GroundImpactModel
 } from './sword-models'
-import { createMainSword, createXuanyuanInscriptionTexture, type MainSwordModel } from './xuanyuan-sword'
+import {
+  createMainSword,
+  createXuanyuanInscriptionTexture,
+  MAIN_SWORD_PIVOT_Y,
+  MAIN_SWORD_TIP_Y,
+  type MainSwordModel
+} from './xuanyuan-sword'
 import {
   createEmptyPose,
   DEPTH_FOCUS_Z,
@@ -49,11 +55,22 @@ export interface SwordScene {
   endOrbit(): void
   zoomBy(delta: number): void
   resetView(): void
+  projectSwordTip(target: SwordTipProjection): void
+  beginSwordTilt(xPixels: number, yPixels: number): boolean
+  moveSwordTilt(xPixels: number, yPixels: number): void
+  endSwordTilt(cancelled?: boolean): void
   update(options: SwordSceneOptions): void
   render(timeSeconds: number, introTimeSeconds?: number): string
   formationIndex(): number
   triggerPulse(): void
   dispose(releaseContext?: boolean): void
+}
+
+export interface SwordTipProjection {
+  x: number
+  y: number
+  visible: boolean
+  tiltDegrees: number
 }
 
 const UP = new THREE.Vector3(0, 1, 0)
@@ -74,6 +91,7 @@ const ORBIT_ZOOM_MIN = 0.55
 const ORBIT_ZOOM_MAX = 1.7
 const FLOOR_Y = -2.55
 const FLOOR_TICKS = 12
+const SWORD_TILT_LIMIT = (65 * Math.PI) / 180
 
 function deepenPose(pose: SwordPose, depth: FormationDepth, enabled: boolean): void {
   if (!enabled) return
@@ -513,6 +531,28 @@ function buildSwordScene(
   let disposed = false
   let viewWidth = 1
   let viewHeight = 1
+  let lastIntroTime = 0
+  let tiltingSword = false
+  const swordTilt = new THREE.Quaternion()
+  const swordBaseRotation = new THREE.Quaternion()
+  const tiltStartOffset = new THREE.Quaternion()
+  const tiltStartRotation = new THREE.Quaternion()
+  const tiltRotation = new THREE.Quaternion()
+  const tiltDelta = new THREE.Quaternion()
+  const inverseBase = new THREE.Quaternion()
+  const tiltPivot = new THREE.Vector3()
+  const tiltTip = new THREE.Vector3()
+  const tiltStartDirection = new THREE.Vector3()
+  const tiltDirection = new THREE.Vector3()
+  const tiltStartHit = new THREE.Vector3()
+  const tiltHit = new THREE.Vector3()
+  const tiltPlane = new THREE.Plane()
+  const tiltRay = new THREE.Raycaster()
+  const tiltNdc = new THREE.Vector2()
+  const tipScreen = new THREE.Vector3()
+  const hiltOffset = new THREE.Vector3()
+  const hiltWorld = new THREE.Vector3()
+  let tiltScale = 1
   const orbitPivot = new THREE.Vector3(HEART_X, HEART_Y - 0.1, -0.7)
   const framingNdc = new THREE.Vector3()
   const orbit = {
@@ -700,6 +740,82 @@ function buildSwordScene(
     orbit.targetYaw = Math.round(orbit.yaw / TAU) * TAU
     orbit.targetPitch = 0
     orbit.targetZoom = 1
+    endSwordTilt()
+    swordTilt.identity()
+  }
+
+  function projectSwordTip(target: SwordTipProjection): void {
+    mainSword.group.updateWorldMatrix(true, false)
+    tipScreen.set(0, MAIN_SWORD_TIP_Y, 0).applyMatrix4(mainSword.group.matrixWorld).project(camera)
+    target.x = ((tipScreen.x + 1) * viewWidth) / 2
+    target.y = ((1 - tipScreen.y) * viewHeight) / 2
+    tiltDirection.copy(UP).applyQuaternion(mainSword.group.quaternion)
+    target.tiltDegrees = Math.acos(clampValue(tiltDirection.y, -1, 1)) * (180 / Math.PI)
+    target.visible =
+      orbitEnabled() &&
+      lastIntroTime >= INTRO_SECONDS &&
+      tipScreen.z > -1 &&
+      tipScreen.z < 1 &&
+      target.x >= 16 &&
+      target.x <= viewWidth - 16 &&
+      target.y >= 16 &&
+      target.y <= viewHeight - 16
+  }
+
+  function intersectTiltPlane(x: number, y: number): boolean {
+    tiltNdc.set((x / viewWidth) * 2 - 1, 1 - (y / viewHeight) * 2)
+    tiltRay.setFromCamera(tiltNdc, camera)
+    return tiltRay.ray.intersectPlane(tiltPlane, tiltHit) !== null
+  }
+
+  function beginSwordTilt(x: number, y: number): boolean {
+    if (!orbitEnabled() || lastIntroTime < INTRO_SECONDS) return false
+    // Pick in CSS pixels so the narrow blade stays easy to grab at every zoom/DPR.
+    mainSword.group.updateWorldMatrix(true, false)
+    tiltTip.set(0, MAIN_SWORD_TIP_Y, 0).applyMatrix4(mainSword.group.matrixWorld)
+    tipScreen.copy(tiltTip).project(camera)
+    if (
+      tipScreen.z <= -1 ||
+      tipScreen.z >= 1 ||
+      Math.hypot(x - ((tipScreen.x + 1) * viewWidth) / 2, y - ((1 - tipScreen.y) * viewHeight) / 2) > 28
+    )
+      return false
+    tiltPivot.set(0, MAIN_SWORD_PIVOT_Y, 0).applyMatrix4(mainSword.group.matrixWorld)
+    camera.getWorldDirection(tiltDirection)
+    tiltPlane.setFromNormalAndCoplanarPoint(tiltDirection, tiltTip)
+    if (!intersectTiltPlane(x, y)) return false
+    tiltStartHit.copy(tiltHit)
+    tiltStartDirection.copy(tiltTip).sub(tiltPivot).normalize()
+    tiltStartRotation.copy(mainSword.group.quaternion)
+    tiltRotation.copy(tiltStartRotation)
+    tiltStartOffset.copy(swordTilt)
+    tiltScale = mainSword.group.scale.x
+    orbit.dragging = false
+    tiltingSword = true
+    return true
+  }
+
+  function moveSwordTilt(x: number, y: number): void {
+    if (!tiltingSword || !intersectTiltPlane(x, y)) return
+    tiltDirection.copy(tiltHit).sub(tiltStartHit).add(tiltTip).sub(tiltPivot)
+    if (tiltDirection.lengthSq() < 0.0001) return
+    tiltDirection.normalize()
+    // Keep the sword upright within a 65° cone, even if dragged across the hilt.
+    if (tiltDirection.y < Math.cos(SWORD_TILT_LIMIT)) {
+      const horizontal = Math.hypot(tiltDirection.x, tiltDirection.z)
+      if (horizontal < 0.0001) return
+      const gain = Math.sin(SWORD_TILT_LIMIT) / horizontal
+      tiltDirection.set(tiltDirection.x * gain, Math.cos(SWORD_TILT_LIMIT), tiltDirection.z * gain)
+    }
+    tiltDelta.setFromUnitVectors(tiltStartDirection, tiltDirection)
+    tiltRotation.copy(tiltStartRotation).premultiply(tiltDelta)
+  }
+
+  function endSwordTilt(cancelled = false): void {
+    if (!tiltingSword) return
+    tiltingSword = false
+    if (cancelled) swordTilt.copy(tiltStartOffset)
+    else swordTilt.copy(tiltRotation).multiply(inverseBase.copy(swordBaseRotation).invert())
   }
 
   function updateShockwave(
@@ -730,6 +846,8 @@ function buildSwordScene(
     if (disposed) return ''
     const time = Number.isFinite(timeSeconds) ? timeSeconds : 0
     const introTime = Number.isFinite(introTimeSeconds) ? Math.max(0, introTimeSeconds) : INTRO_SECONDS
+    lastIntroTime = introTime
+    if (introTime < INTRO_SECONDS) endSwordTilt(true)
     const dt = lastLoopTime > 0 ? Math.min(0.05, Math.max(0.001, Math.abs(time - lastLoopTime))) : 0.016
     lastLoopTime = time
 
@@ -763,7 +881,7 @@ function buildSwordScene(
       camera.clearViewOffset()
       camera.position.set(pointer.x * 0.32, stage.cameraY + pointer.y * 0.16, stage.cameraZ)
       camera.lookAt(0, 0.05, 0)
-    } else {
+    } else if (!tiltingSword) {
       // Reference framing: where the formation heart sits on screen with the classic fixed camera.
       camera.clearViewOffset()
       camera.position.set(pointer.x * 0.32, stage.cameraY + pointer.y * 0.16, stage.cameraZ)
@@ -973,10 +1091,11 @@ function buildSwordScene(
       0
     )
     mainSword.group.rotation.set(
-      0.08 + pointer.y * 0.08,
+      stage.mainSwordTiltX + pointer.y * 0.08,
       -0.18 + Math.sin(cycle) * 0.42 + pointer.x * 0.2 + stage.mainSwordSpin,
-      -0.12 + stage.mainSwordInvert + Math.sin(cycle * 2) * 0.04 + stage.mainSwordTremble
+      stage.mainSwordTiltZ + stage.mainSwordInvert + Math.sin(cycle * 2) * 0.04 + stage.mainSwordTremble
     )
+    swordBaseRotation.copy(mainSword.group.quaternion)
     const invertRatio = stage.mainSwordInvert / Math.PI
     const plantedDrape = introTime < IMPACT_SECONDS ? 0.12 : 0.88 + Math.sin(cycle * 5) * 0.12
     mainSword.tasselGroup.rotation.z =
@@ -984,6 +1103,21 @@ function buildSwordScene(
     mainSword.tasselGroup.rotation.x = invertRatio * (introTime < IMPACT_SECONDS ? 0.08 : 0.38)
     const mainScale = (compact ? 0.5 : 0.68) * stage.mainSwordScale * (1 + gather * 0.04 + pulse * 0.055)
     mainSword.group.scale.setScalar(mainScale)
+    if (tiltingSword) {
+      // Pin the hilt and camera while the tip follows the pointer in the screen plane.
+      mainSword.group.scale.setScalar(tiltScale)
+      mainSword.group.quaternion.copy(tiltRotation)
+      hiltOffset.set(0, MAIN_SWORD_PIVOT_Y * tiltScale, 0).applyQuaternion(tiltRotation)
+      mainSword.group.position.copy(tiltPivot).sub(hiltOffset)
+    } else if (!compact) {
+      hiltOffset.set(0, MAIN_SWORD_PIVOT_Y * mainScale, 0).applyQuaternion(swordBaseRotation)
+      hiltWorld.copy(mainSword.group.position).add(hiltOffset)
+      // Fade manual tilt out during the opening so the impact remains aligned with the ground.
+      tiltDelta.identity().slerp(swordTilt, THREE.MathUtils.smoothstep(introTime, 3.24, INTRO_SECONDS))
+      mainSword.group.quaternion.premultiply(tiltDelta)
+      hiltOffset.set(0, MAIN_SWORD_PIVOT_Y * mainScale, 0).applyQuaternion(mainSword.group.quaternion)
+      mainSword.group.position.copy(hiltWorld).sub(hiltOffset)
+    }
     mainSword.bladeMaterial.emissiveIntensity = 0.22 + stage.mainSwordGlow * 0.95 + (options.boost ? 0.24 : 0)
     mainSword.glow.material.opacity = 0.2 + stage.mainSwordGlow * 0.48 + (options.boost ? 0.14 : 0)
     mainSword.glow.scale.setScalar(4.8 + gather * 1.6 + pulse * 2.1 + ambientPulse * 0.8)
@@ -1202,6 +1336,10 @@ function buildSwordScene(
     endOrbit,
     zoomBy,
     resetView,
+    projectSwordTip,
+    beginSwordTilt,
+    moveSwordTilt,
+    endSwordTilt,
     dispose(releaseContext = true) {
       if (disposed) return
       disposed = true

@@ -10,7 +10,7 @@ import {
   Settings
 } from 'lucide-vue-next'
 import { computed } from 'vue'
-import { page, showHelp, syncStatus, tunnelStatuses } from '../stores/workbench'
+import { activateTab, activeTab, page, showHelp, syncStatus, tunnelStatuses } from '../stores/workbench'
 
 const activeTunnelCount = computed(
   () => Object.values(tunnelStatuses.value).filter((item) => item.active).length
@@ -38,7 +38,7 @@ const avatarTitle = computed(() => {
       :aria-current="page === 'workspace' ? 'page' : undefined"
       aria-label="工作台"
       title="工作台"
-      @click="page = 'workspace'"
+      @click="activeTab ? activateTab(activeTab) : (page = 'workspace')"
     >
       <Terminal :size="21" />
     </button>

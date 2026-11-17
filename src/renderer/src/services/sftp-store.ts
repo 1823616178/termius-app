@@ -14,6 +14,7 @@ import {
 } from '../../../shared/sftp'
 import { currentTab, focusedPane, hosts, notify, tabs, windowInstance } from '../stores/workbench'
 import { writeTerminalInputByToken } from './terminal-registry'
+import { markHostUsed } from './host-recency'
 
 export interface ActiveSftpContext {
   source: 'pane' | 'standalone'
@@ -227,6 +228,7 @@ export async function connectStandaloneSftpHost(host: Host, password?: string): 
     return
   }
   sftpPasswordPrompt.value = null
+  markHostUsed(host.id)
   sftpStandalone.value = { hostId: host.id, title: host.name, state: 'connecting' }
 
   const requestId = crypto.randomUUID()

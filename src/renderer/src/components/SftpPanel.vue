@@ -386,6 +386,15 @@ function onDragLeave(): void {
   if (dragDepth.value === 0) dragOverActive.value = false
 }
 
+function onDragOver(event: DragEvent): void {
+  const acceptsFiles = isReady.value && Boolean(event.dataTransfer?.types.includes('Files'))
+  dragOverActive.value = acceptsFiles
+  if (acceptsFiles && event.dataTransfer) {
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }
+}
+
 async function onDropFiles(event: DragEvent): Promise<void> {
   dragDepth.value = 0
   dragOverActive.value = false
@@ -442,7 +451,7 @@ function revealLocalFile(localPath: string): void {
     aria-label="SFTP 文件管理"
     @click="contextMenu = null"
     @dragenter.prevent="onDragEnter"
-    @dragover.prevent="dragOverActive = isReady"
+    @dragover="onDragOver"
     @dragleave.prevent="onDragLeave"
     @drop.prevent="onDropFiles"
   >
@@ -620,7 +629,7 @@ function revealLocalFile(localPath: string): void {
       <span class="container_workspace_sftp_filter_count">{{ visibleSftpEntries.length }} 项</span>
     </div>
 
-    <div class="container_workspace_sftp_body_main">
+    <div class="container_workspace_sftp_body_main" :aria-busy="sftpLoading">
       <div v-if="sftpPasswordPrompt" class="container_workspace_sftp_auth_box">
         <p class="container_workspace_sftp_auth_title">
           连接 {{ sftpPasswordPrompt.host.name }} ({{ sftpPasswordPrompt.host.username }}@{{
@@ -1120,6 +1129,41 @@ function revealLocalFile(localPath: string): void {
   border-left: 1px solid var(--color-border);
   font-size: 12px;
   color: var(--color-text-primary);
+}
+.container_workspace_sftp_body_main[aria-busy='true']::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 35%;
+  height: 2px;
+  background: var(--color-accent-primary);
+  animation: sftp-directory-loading 1s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+@keyframes sftp-directory-loading {
+  from {
+    transform: translateX(0);
+    opacity: 0.45;
+  }
+  to {
+    transform: translateX(185%);
+    opacity: 1;
+  }
+}
+.container_workspace_sftp_drop_overlay,
+.container_workspace_sftp_queue_list {
+  animation: sftp-content-enter 160ms ease-out;
+}
+@keyframes sftp-content-enter {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 .container_workspace_sftp_header_base {
   display: flex;

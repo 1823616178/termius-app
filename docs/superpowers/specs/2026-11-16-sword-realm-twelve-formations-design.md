@@ -74,7 +74,7 @@
 
 | # | 名称 | 副标 | 剪影 | 朝向 | 色彩倾向 | link |
 | --- | --- | --- | --- | --- | --- | --- |
-| 1 | 诛仙剑阵 | 四门诛戮陷绝 · 杀意朝心 | 四角密集剑簇＋四门朱线朝心 | 指向剑心 | 朱+金，门脉冲 | gates(朱) |
+| 1 | 诛仙剑阵 | 四门诛戮陷绝 · 杀意朝心 | 四角密集剑簇·剑锋朝心 | 指向剑心 | 朱+金，门脉冲 | none |
 | 2 | 大庚剑阵 | 庚金剑丝 · 隐匿穿空 | 12 条横贯剑丝，剑沿丝滑行 | 沿丝切线 | 高金、细长剑拉伸 | threads(金) |
 | 3 | 春黎剑阵 | 幻术为基 · 春影重叠 | 五臂花瓣螺旋＋幻影偏移 | 径向+切线混合 | 高玉（春绿） | none |
 | 4 | 青蟠剑阵 | 青元高阶 · 蟠龙绕柱 | 单条三圈蟠龙螺旋柱 | 螺旋切线偏上 | 高玉 | none |
@@ -141,7 +141,7 @@
 
 - `LINK_SEGMENT_CAPACITY=96`；预分配 `LineSegments`（position+color，DynamicDrawUsage），加法混合、`depthWrite=false`。
 - `sampleFormationLinks(gt, outPos, outWeights, outColorIdx)` 返回段数；仅 `full && !compact && count>0` 可见。
-- 生成器：gates=8（4 门→心＋4 门外框）、threads=24、grid=22（九宫格＋对角＋外八卦）、ring=10（外五角相生＋内五角星相克）。
+- 生成器：threads=24、grid=22（九宫格＋对角＋外八卦）、ring=10（外五角相生＋内五角星相克）。诛仙不设连线——早前的"四门→剑心/门间外框"朱色直线观感似辅助构造线，已移除；杀意朝心改由剑锋朝向、四门依次脉冲与剑身朱色承载。
 - 剑气尾迹：`TRAIL_COUNT=160`、`TRAIL_SEGMENTS=7` 合批为单个 `THREE.LineSegments`（仅 1 draw call，按剑体金/玉/朱实时着色）。
 - 过渡期同时输出主导式 `(1-fade)` 与邻式 `fade` 两组，顶点色=palette[colorIdx]*weight（加法下淡出=趋黑），`setDrawRange(0,count*2)`；`opacity=0.42+pulse*0.28+ambientPulse*0.1`。
 
@@ -166,7 +166,7 @@
 
 ## 9. 测试与验收（已执行）
 
-单元 `sword-motion.test.ts`（11 例）：核心与天幕实例上限 + 12 式；60s 周期/确定性/有限；十二式顺序命名；边界 ±0.02 位置差 <0.6（含 `60s→0s` 首尾回绕）；五九全周四象限覆盖（无缺角）；gather 包络与常驻 ambientPulse；连线段数 8/24/0/22/10 且 weight∈[0,1]；葫芦高潮 pour>0.3 / 平静 <0.3；春黎 lotus>0.9 + 六脉 volley>0.9 且 max stretch>1.4；插剑序章与 `*Into` 一致性断言；全循环与天幕剑海全有限。
+单元 `sword-motion.test.ts`（11 例）：核心与天幕实例上限 + 12 式；60s 周期/确定性/有限；十二式顺序命名；边界 ±0.02 位置差 <0.6（含 `60s→0s` 首尾回绕）；五九全周四象限覆盖（无缺角）；gather 包络与常驻 ambientPulse；连线段数 0/24/0/22/10 且 weight∈[0,1]；葫芦高潮 pour>0.3 / 平静 <0.3；春黎 lotus>0.9 + 六脉 volley>0.9 且 max stretch>1.4；插剑序章与 `*Into` 一致性断言；全循环与天幕剑海全有限。
 e2e：`即刻归宗`→诛仙；rail 12 格、点第 10 格→九宫八卦剑阵+`data-active`、截图 `sword-jiugong.png`、点回第 1 格→诛仙；上下文丢失恢复→诛仙；缩放/分档/边框飞剑与性能检测回归。
 
 ---

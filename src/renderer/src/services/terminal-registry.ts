@@ -43,6 +43,7 @@ interface RegistryEntry {
     nextScreenReaderMode: boolean,
     nextAppearance: TerminalAppearanceOptions
   ) => TerminalHandle
+  snapshot: () => { connected: boolean; state: Extract<TerminalEvent, { type: 'state' }> }
   dispose: () => void
 }
 
@@ -64,6 +65,18 @@ export function updateAllTerminalsAppearance(opts: TerminalAppearanceOptions): v
   for (const entry of registry.values()) {
     entry.applyAppearance(opts)
   }
+}
+
+/**
+ * Returns the live state of an already-connected terminal for this token, if any.
+ * Used by a freshly mounted pane (e.g. after a drag moved it to another parent) so it can
+ * resume the existing session without flashing the "connecting" UI.
+ */
+export function peekConnectedTerminal(
+  token: string
+): { state: Extract<TerminalEvent, { type: 'state' }> } | undefined {
+  const snap = registry.get(token)?.snapshot()
+  return snap?.connected ? { state: snap.state } : undefined
 }
 
 export function disposeTerminalByToken(token: string): void {
@@ -131,6 +144,7 @@ export function createTerminal(
   let disposed = false
   let finished = false
   let frame = 0
+  let resizeTimer: ReturnType<typeof setTimeout> | undefined
   let lastSize = ''
   let dprMedia: MediaQueryList | undefined
 
@@ -197,7 +211,12 @@ export function createTerminal(
   }
   watchDpr()
 
-  const observer = new ResizeObserver(scheduleFit)
+  // Panel transitions generate a size change every frame. Fit once they settle,
+  // avoiding repeated PTY resizes and scrollback reflow during the animation.
+  const observer = new ResizeObserver(() => {
+    clearTimeout(resizeTimer)
+    resizeTimer = setTimeout(scheduleFit, 60)
+  })
   observer.observe(element)
 
   let inputQueue: string[] = []
@@ -249,6 +268,8 @@ export function createTerminal(
   const detachHost = (hostElement: HTMLElement) => {
     if (disposed || currentElement !== hostElement) return
     observer.disconnect()
+    clearTimeout(resizeTimer)
+    cancelAnimationFrame(frame)
   }
 
   const dispose = () => {
@@ -257,6 +278,7 @@ export function createTerminal(
     connected = false
     inputQueue = []
     observer.disconnect()
+    clearTimeout(resizeTimer)
     dprMedia?.removeEventListener('change', onDprChange)
     cancelAnimationFrame(frame)
     input.dispose()
@@ -377,7 +399,9 @@ export function createTerminal(
               emitState({ type: 'state', state: 'error', message: '终端后台通道已关闭，请新建会话。' })
           })
           port.start()
-          terminal.focus()
+          // A resize before the port arrived was only applied locally.
+          lastSize = ''
+          scheduleFit()
         } catch (error) {
           if (session) await window.orbit.sessions.close(session.id).catch(() => {})
           throw error
@@ -406,12 +430,21 @@ export function createTerminal(
     observer.observe(nextElement)
     terminal.options.screenReaderMode = nextScreenReaderMode
     applyAppearance(nextAppearance)
-    emitState(lastState)
+    // Connected panes re-sync via getLastState() (silently) in the caller; replaying here would
+    // re-trigger side effects such as auth prompts on a pane that was merely moved.
+    if (!connected) emitState(lastState)
     scheduleFit()
     return handle
   }
 
-  registry.set(token, { terminal, writeInput: enqueueInput, applyAppearance, reattach, dispose })
+  registry.set(token, {
+    terminal,
+    writeInput: enqueueInput,
+    applyAppearance,
+    reattach,
+    snapshot: () => ({ connected, state: lastState }),
+    dispose
+  })
 
   return handle
 }

@@ -2,11 +2,11 @@ import { app, Menu, Tray, nativeImage, type BrowserWindow, type MenuItemConstruc
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
-  trayPreferencesPatchSchema,
+  normalizeStoredTrayPreferences,
+  resolveTrayPreferences,
   trayPreferencesSchema,
   type TrayAction,
   type TrayPreferences,
-  type TrayPreferencesPatch,
   type TrayState
 } from '../shared/contracts'
 
@@ -81,6 +81,7 @@ export class OrbitTrayManager {
   private readonly prefsPath: string
   private readonly callbacks: TrayCallbacks
   private readonly hiddenWindowIds = new Set<number>()
+  private readonly suppressNativeTrayUntil = new Map<number, number>()
   private prefs: TrayPreferences
   private tray: Tray | undefined
   private balloonShown = false
@@ -95,7 +96,7 @@ export class OrbitTrayManager {
     try {
       if (!existsSync(this.prefsPath)) return { ...DEFAULT_TRAY_PREFERENCES }
       const raw = JSON.parse(readFileSync(this.prefsPath, 'utf8'))
-      return trayPreferencesSchema.parse(raw)
+      return normalizeStoredTrayPreferences(raw)
     } catch {
       return { ...DEFAULT_TRAY_PREFERENCES }
     }
@@ -125,11 +126,7 @@ export class OrbitTrayManager {
   }
 
   updatePreferences(rawPatch: unknown): TrayState {
-    const patch = trayPreferencesPatchSchema.parse(rawPatch) as TrayPreferencesPatch
-    this.prefs = trayPreferencesSchema.parse({
-      ...this.prefs,
-      ...patch
-    })
+    this.prefs = resolveTrayPreferences(this.prefs, rawPatch)
     this.savePreferences()
     this.reconcileTrayVisibility()
     const state = this.getState()
@@ -241,12 +238,33 @@ export class OrbitTrayManager {
         }
       },
       {
-        label: '关闭窗口时隐藏到系统托盘',
-        type: 'checkbox',
-        checked: this.prefs.closeToTray,
-        click: (item) => {
-          this.updatePreferences({ closeToTray: item.checked })
-        }
+        label: '点击关闭按钮（×）时',
+        submenu: [
+          {
+            label: '彻底关闭并退出程序',
+            type: 'radio',
+            checked: this.prefs.closeAction === 'quit',
+            click: () => {
+              this.updatePreferences({ closeAction: 'quit' })
+            }
+          },
+          {
+            label: '最小化到后台系统托盘',
+            type: 'radio',
+            checked: this.prefs.closeAction === 'tray',
+            click: () => {
+              this.updatePreferences({ closeAction: 'tray' })
+            }
+          },
+          {
+            label: '最小化到系统任务栏',
+            type: 'radio',
+            checked: this.prefs.closeAction === 'minimize',
+            click: () => {
+              this.updatePreferences({ closeAction: 'minimize' })
+            }
+          }
+        ]
       },
       {
         label: '始终显示系统托盘图标',
@@ -318,7 +336,20 @@ export class OrbitTrayManager {
     }
   }
 
+  minimizeToTaskbar(win: BrowserWindow): void {
+    if (win.isDestroyed()) return
+    this.suppressNativeTrayUntil.set(win.id, Date.now() + 800)
+    if (!win.isMinimized()) {
+      win.minimize()
+    }
+  }
+
   handleNativeMinimize(win: BrowserWindow): void {
+    const suppressUntil = this.suppressNativeTrayUntil.get(win.id) ?? 0
+    if (Date.now() < suppressUntil) {
+      this.suppressNativeTrayUntil.delete(win.id)
+      return
+    }
     if (!this.prefs.minimizeToTray || this.hiddenWindowIds.has(win.id)) return
     setImmediate(() => {
       if (!win.isDestroyed() && this.prefs.minimizeToTray) {
@@ -328,6 +359,7 @@ export class OrbitTrayManager {
   }
 
   handleWindowShown(win: BrowserWindow): void {
+    this.suppressNativeTrayUntil.delete(win.id)
     if (!this.hiddenWindowIds.has(win.id)) return
     this.hiddenWindowIds.delete(win.id)
     win.setSkipTaskbar(false)
@@ -336,6 +368,7 @@ export class OrbitTrayManager {
   }
 
   handleWindowClosed(windowId: number): void {
+    this.suppressNativeTrayUntil.delete(windowId)
     if (!this.hiddenWindowIds.delete(windowId)) return
     this.reconcileTrayVisibility()
     this.emitState()

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   hostInputSchema,
+  normalizeStoredTrayPreferences,
   openSessionSchema,
+  resolveTrayPreferences,
   terminalInputSchema,
   trayPreferencesPatchSchema,
   trayPreferencesSchema
@@ -156,10 +158,12 @@ describe('host and IPC boundary validation', () => {
     ).toBe(true)
   })
 
-  it('validates background tray preferences and rejects unknown fields', () => {
-    expect(trayPreferencesSchema.parse({})).toEqual({
+  it('validates background tray and close button preferences cleanly', () => {
+    const defaults = trayPreferencesSchema.parse({})
+    expect(defaults).toEqual({
       minimizeToTray: true,
       closeToTray: false,
+      closeAction: 'quit',
       trayVisibility: 'when-minimized'
     })
     expect(
@@ -171,7 +175,32 @@ describe('host and IPC boundary validation', () => {
       closeToTray: true,
       trayVisibility: 'always'
     })
+    expect(resolveTrayPreferences(defaults, { closeAction: 'tray' })).toEqual({
+      minimizeToTray: true,
+      closeToTray: true,
+      closeAction: 'tray',
+      trayVisibility: 'when-minimized'
+    })
+    expect(resolveTrayPreferences(defaults, { closeAction: 'minimize' })).toEqual({
+      minimizeToTray: true,
+      closeToTray: false,
+      closeAction: 'minimize',
+      trayVisibility: 'when-minimized'
+    })
+    expect(resolveTrayPreferences(defaults, { closeToTray: true })).toEqual({
+      minimizeToTray: true,
+      closeToTray: true,
+      closeAction: 'tray',
+      trayVisibility: 'when-minimized'
+    })
+    expect(normalizeStoredTrayPreferences({ closeToTray: true })).toEqual({
+      minimizeToTray: true,
+      closeToTray: true,
+      closeAction: 'tray',
+      trayVisibility: 'when-minimized'
+    })
     expect(trayPreferencesSchema.safeParse({ trayVisibility: 'never' }).success).toBe(false)
+    expect(trayPreferencesSchema.safeParse({ closeAction: 'destroy' }).success).toBe(false)
     expect(trayPreferencesPatchSchema.safeParse({ extraFlag: true }).success).toBe(false)
   })
 })

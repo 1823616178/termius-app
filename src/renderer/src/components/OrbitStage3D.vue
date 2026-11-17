@@ -4,7 +4,7 @@ import { instanceClass } from '../../../shared/classes'
 import orbitIcon from '../assets/orbit-icon.svg'
 import { INTRO_SECONDS, MOVEMENT_SECONDS } from '../services/sword-motion'
 import { parseMotionTier, REDUCED_MOTION_REASON, type MotionTier } from '../services/motion-performance'
-import type { SwordScene, SwordSceneOptions } from '../services/sword-scene'
+import type { SwordScene, SwordSceneOptions, SwordTipProjection } from '../services/sword-scene'
 
 const props = withDefaults(
   defineProps<{
@@ -33,6 +33,9 @@ const emit = defineEmits<{
 
 const c = (base: string) => instanceClass(base, props.instance)
 const canvas = ref<HTMLCanvasElement | null>(null)
+const swordTipControl = ref<HTMLButtonElement | null>(null)
+const adjustingSword = ref(false)
+const tipProjection: SwordTipProjection = { x: 0, y: 0, visible: false, tiltDegrees: 0 }
 const reducedMotion = ref(false)
 const motionTier = ref<MotionTier>('off')
 const ready = ref(false)
@@ -92,6 +95,7 @@ function resizeScene(force = false): void {
   const height = element.clientHeight
   const dpr = window.devicePixelRatio || 1
   if (!force && width === lastWidth && height === lastHeight && dpr === lastDpr) return
+  cancelDrag()
   lastWidth = width
   lastHeight = height
   lastDpr = dpr
@@ -142,6 +146,13 @@ function renderCurrentFrame(): void {
   if (!scene || disposed) return
   try {
     const label = scene.render(elapsedSeconds, introSeconds)
+    if (swordTipControl.value) {
+      scene.projectSwordTip(tipProjection)
+      const control = swordTipControl.value
+      control.hidden = !tipProjection.visible
+      control.style.transform = `translate3d(${tipProjection.x}px, ${tipProjection.y}px, 0) translate(-50%, -50%)`
+      control.dataset.tilt = tipProjection.tiltDegrees.toFixed(1)
+    }
     reportPhase(label)
     reportFormation(scene.formationIndex())
   } catch (error) {
@@ -151,6 +162,7 @@ function renderCurrentFrame(): void {
 }
 
 function handleFailure(): void {
+  cancelDrag()
   stopLoop()
   scene?.dispose(false)
   scene = null
@@ -192,6 +204,7 @@ function tick(now: number): void {
 }
 
 function ensureRunning(): void {
+  if (!canAnimate()) cancelDrag()
   if (motionDisabled.value) {
     const reason = document.documentElement.dataset.motionReason
     reportPhase(
@@ -289,6 +302,7 @@ function handleVisibilityChange(): void {
 }
 
 function handleContextLost(event: Event): void {
+  cancelDrag()
   event.preventDefault()
   contextLost = true
   stopLoop()
@@ -333,7 +347,9 @@ function onPointerDown(event: PointerEvent): void {
   } catch {
     // Pointer capture is best-effort; dragging still works inside the stage.
   }
-  scene?.beginOrbit()
+  const rect = canvas.value!.getBoundingClientRect()
+  adjustingSword.value = scene!.beginSwordTilt(event.clientX - rect.left, event.clientY - rect.top)
+  if (!adjustingSword.value) scene?.beginOrbit()
   dragging.value = true
 }
 
@@ -341,32 +357,64 @@ function endDrag(event: PointerEvent): void {
   if (event.pointerId !== dragPointerId) return
   dragPointerId = -1
   dragging.value = false
-  suppressNextClick = dragDistance > DRAG_CLICK_THRESHOLD
+  suppressNextClick = adjustingSword.value || dragDistance > DRAG_CLICK_THRESHOLD
   try {
     ;(event.currentTarget as HTMLElement | null)?.releasePointerCapture(event.pointerId)
   } catch {
     // Capture may already be released by the browser.
   }
+  if (adjustingSword.value) scene?.endSwordTilt(event.type !== 'pointerup')
+  else scene?.endOrbit()
+  adjustingSword.value = false
+}
+
+function cancelDrag(): void {
+  if (dragPointerId === -1) return
+  const pointerId = dragPointerId
+  dragPointerId = -1
+  scene?.endSwordTilt(true)
   scene?.endOrbit()
+  dragging.value = false
+  adjustingSword.value = false
+  suppressNextClick = true
+  const host = canvas.value?.parentElement
+  if (host?.hasPointerCapture(pointerId)) host.releasePointerCapture(pointerId)
 }
 
 function onPointerMove(event: PointerEvent): void {
   const element = canvas.value
   if (!element || !scene || reducedMotion.value) return
+  const rect = element.getBoundingClientRect()
+  if (!rect.width || !rect.height) return
   if (event.pointerId === dragPointerId) {
     const dx = event.clientX - dragLastX
     const dy = event.clientY - dragLastY
     dragLastX = event.clientX
     dragLastY = event.clientY
     dragDistance += Math.hypot(dx, dy)
-    scene.orbitBy(dx, dy)
+    if (adjustingSword.value) scene.moveSwordTilt(event.clientX - rect.left, event.clientY - rect.top)
+    else scene.orbitBy(dx, dy)
   }
-  const rect = element.getBoundingClientRect()
-  if (!rect.width || !rect.height) return
+  if (adjustingSword.value) return
   scene.setPointer(
     ((event.clientX - rect.left) / rect.width - 0.5) * 2,
     -((event.clientY - rect.top) / rect.height - 0.5) * 2
   )
+}
+
+function onSwordTipKeydown(event: KeyboardEvent): void {
+  if (!canOrbit() || !['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return
+  event.preventDefault()
+  event.stopPropagation()
+  const step = event.shiftKey ? 24 : 8
+  const dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0
+  const dy = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0
+  scene!.projectSwordTip(tipProjection)
+  if (scene!.beginSwordTilt(tipProjection.x, tipProjection.y)) {
+    scene!.moveSwordTilt(tipProjection.x + dx, tipProjection.y + dy)
+    scene!.endSwordTilt()
+    renderCurrentFrame()
+  }
 }
 
 function onPointerLeave(): void {
@@ -376,6 +424,7 @@ function onPointerLeave(): void {
 function onWheel(event: WheelEvent): void {
   if (!canOrbit()) return
   event.preventDefault()
+  if (adjustingSword.value) return
   const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? lastHeight : 1
   scene?.zoomBy(event.deltaY * unit)
 }
@@ -384,8 +433,8 @@ function onStageDoubleClick(): void {
   if (canOrbit()) scene?.resetView()
 }
 
-function onStageClick(): void {
-  if (suppressNextClick) {
+function onStageClick(event: MouseEvent): void {
+  if (suppressNextClick || event.target === swordTipControl.value) {
     suppressNextClick = false
     return
   }
@@ -497,6 +546,7 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  cancelDrag()
   disposed = true
   stopLoop()
   attrObserver?.disconnect()
@@ -516,7 +566,8 @@ onBeforeUnmount(() => {
     :data-state="state"
     :data-ready="ready && !fallbackVisible"
     :data-dragging="dragging"
-    aria-hidden="true"
+    :data-adjusting-sword="adjustingSword"
+    :aria-hidden="variant === 'compact' ? true : undefined"
     @pointerdown="onPointerDown"
     @pointermove="onPointerMove"
     @pointerup="endDrag"
@@ -526,8 +577,24 @@ onBeforeUnmount(() => {
     @wheel="onWheel"
     @dblclick="onStageDoubleClick"
     @click="onStageClick"
+    @keydown.esc.prevent="cancelDrag"
   >
-    <canvas v-show="!fallbackVisible" ref="canvas" :class="c('container_workspace_orbit_body_canvas')" />
+    <canvas
+      v-show="!fallbackVisible"
+      ref="canvas"
+      :class="c('container_workspace_orbit_body_canvas')"
+      aria-hidden="true"
+    />
+    <button
+      v-if="variant === 'welcome' && !fallbackVisible"
+      ref="swordTipControl"
+      :class="c('container_workspace_orbit_body_sword-tip')"
+      type="button"
+      hidden
+      aria-label="调整主剑倾斜度"
+      title="按住剑尖拖动调整倾斜度 · 方向键微调 · 双击复位"
+      @keydown="onSwordTipKeydown"
+    />
     <img
       v-if="fallbackVisible"
       :class="c('container_workspace_orbit_body_fallback')"
@@ -555,6 +622,9 @@ onBeforeUnmount(() => {
     &[data-dragging='true'] {
       cursor: grabbing;
     }
+    &[data-adjusting-sword='true'] {
+      cursor: move;
+    }
   }
   &[data-variant='compact'] {
     width: 108px;
@@ -571,6 +641,53 @@ onBeforeUnmount(() => {
   }
   [data-variant='compact'] & {
     filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.45));
+  }
+}
+[class*='container_workspace_orbit_body_sword-tip'] {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  width: 36px;
+  height: 36px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: move;
+  touch-action: none;
+  // Screen tracking must not inherit the generic button transform transition.
+  transition: background 160ms ease;
+  &[hidden] {
+    display: none;
+  }
+  &::after {
+    content: '';
+    position: absolute;
+    inset: 10px;
+    border: 1px solid var(--color-accent-primary);
+    border-radius: 50%;
+    opacity: 0.45;
+    transition:
+      opacity 160ms ease,
+      transform 160ms ease;
+  }
+  &:hover:not(:disabled),
+  &:active:not(:disabled),
+  &:focus-visible {
+    background: var(--color-accent-primary-soft);
+    &::after {
+      opacity: 1;
+      transform: scale(1.3);
+    }
+  }
+  [data-adjusting-sword='true'] & {
+    background: var(--color-accent-primary-soft);
+    &::after {
+      opacity: 1;
+      transform: scale(1.3);
+    }
   }
 }
 [class*='container_workspace_orbit_body_fallback'] {

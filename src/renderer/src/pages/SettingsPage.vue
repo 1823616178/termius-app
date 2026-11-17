@@ -10,7 +10,7 @@ import {
   Rocket
 } from 'lucide-vue-next'
 import { instanceClass } from '../../../shared/classes'
-import type { TrayVisibilityMode } from '../../../shared/contracts'
+import type { CloseButtonAction, TrayVisibilityMode } from '../../../shared/contracts'
 import orbitIcon from '../assets/orbit-icon.svg'
 import OrbitSelect from '../components/OrbitSelect.vue'
 import { TERMINAL_THEMES, type CursorShape } from '../services/terminal-themes'
@@ -123,6 +123,24 @@ const motionStatusText = computed(() => {
 const trayVisibilityOptions = [
   { value: 'when-minimized', label: '仅最小化或收到后台时显示（推荐）' },
   { value: 'always', label: '程序运行期间始终显示图标' }
+]
+
+const closeActionOptions: { value: CloseButtonAction; label: string; desc: string }[] = [
+  {
+    value: 'quit',
+    label: '彻底关闭程序',
+    desc: '点击窗口右上角 × 时退出应用并结束连接'
+  },
+  {
+    value: 'tray',
+    label: '最小化到后台托盘',
+    desc: '隐藏窗口至系统托盘，保持 SSH、SFTP 与转发运行'
+  },
+  {
+    value: 'minimize',
+    label: '最小化到任务栏',
+    desc: '仅收起窗口到系统任务栏，不隐藏也不退出程序'
+  }
 ]
 
 function patchCustomColor(key: keyof typeof DEFAULT_CUSTOM_COLORS, value: string): void {
@@ -430,15 +448,23 @@ function resetCustomUiTheme(): void {
         />
         最小化时隐藏窗口并出现在右侧系统托盘（保持 SSH 会话、端口转发与同步后台运行）
       </label>
-      <label class="container_settings_tray_close_label">
-        <input
-          class="container_settings_tray_close_check"
-          type="checkbox"
-          :checked="trayState.closeToTray"
-          @change="updateTrayPreferences({ closeToTray: ($event.target as HTMLInputElement).checked })"
-        />
-        点击窗口关闭按钮（×）时最小化到后台系统托盘而不退出程序
-      </label>
+      <div class="container_settings_tray_close_group" role="radiogroup" aria-label="点击关闭按钮时的行为">
+        <span class="container_settings_tray_close_heading">点击窗口关闭按钮（×）时的行为</span>
+        <div class="container_settings_tray_close_grid">
+          <button
+            v-for="opt in closeActionOptions"
+            :key="opt.value"
+            :class="c('container_settings_tray_closeopt_base', opt.value)"
+            type="button"
+            role="radio"
+            :aria-checked="trayState.closeAction === opt.value"
+            @click="updateTrayPreferences({ closeAction: opt.value })"
+          >
+            <strong :class="c('container_settings_tray_closeopt_title', opt.value)">{{ opt.label }}</strong>
+            <span :class="c('container_settings_tray_closeopt_desc', opt.value)">{{ opt.desc }}</span>
+          </button>
+        </div>
+      </div>
       <label class="container_settings_tray_visibility_label">
         系统托盘图标显示时机
         <OrbitSelect
@@ -750,14 +776,63 @@ function resetCustomUiTheme(): void {
     color: #6ee7b7;
   }
 }
-.container_settings_tray_minimize_label,
-.container_settings_tray_close_label {
+.container_settings_tray_minimize_label {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-top: 12px;
   font-size: 13px;
   color: var(--color-text-secondary);
+}
+.container_settings_tray_close_group {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.container_settings_tray_close_heading {
+  font-size: 13px;
+  color: var(--color-text-primary);
+}
+.container_settings_tray_close_grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+[class*='container_settings_tray_closeopt_base'] {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 5px;
+  padding: 10px 12px;
+  text-align: left;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  background: var(--color-surface-1);
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    box-shadow 140ms ease;
+  &:hover {
+    border-color: var(--color-accent-primary-ring);
+    background: var(--color-surface-2);
+  }
+  &[aria-checked='true'] {
+    border-color: var(--color-accent-primary);
+    box-shadow: 0 0 0 1px var(--color-accent-primary-ring);
+    background: var(--color-accent-primary-soft);
+  }
+}
+[class*='container_settings_tray_closeopt_title'] {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+[class*='container_settings_tray_closeopt_desc'] {
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--color-text-muted);
 }
 .container_settings_tray_visibility_label {
   display: flex;

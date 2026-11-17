@@ -17,12 +17,14 @@ import {
   Sparkles,
   Square,
   TextSelect,
+  Trash2,
   X
 } from 'lucide-vue-next'
 import { instanceClass } from '../../../shared/classes'
 import { MAX_CLIPBOARD_BYTES, type TerminalEvent } from '../../../shared/contracts'
 import { matchTerminalShortcut, shouldInterceptInTerminal } from '../../../shared/shortcuts'
-import { createTerminal, type TerminalHandle } from '../services/terminal-registry'
+import { createTerminal, peekConnectedTerminal, type TerminalHandle } from '../services/terminal-registry'
+import { markHostUsed } from '../services/host-recency'
 import { buildShellColorizeCommand, cycleTerminalTheme, getTerminalTheme } from '../services/terminal-themes'
 import {
   activeTerminalDimensions,
@@ -39,6 +41,7 @@ import {
   probeConnectivity,
   probeResults,
   prompt,
+  removeSyncTunnel,
   saveSyncTunnel,
   syncTunnels,
   terminalTheme,
@@ -88,8 +91,9 @@ const paneRoot = ref<HTMLElement>()
 const surface = ref<HTMLElement>()
 const searchInput = ref<HTMLInputElement>()
 const pasteDialog = ref<HTMLDialogElement>()
+const resumedSession = peekConnectedTerminal(props.token)
 const status = ref<'connecting' | 'verifying' | 'authenticating' | 'running' | 'exited' | 'error'>(
-  'connecting'
+  resumedSession?.state.state ?? 'connecting'
 )
 const message = ref('')
 const lastErrorWasAuth = ref(false)
@@ -156,7 +160,7 @@ async function createAndStartPaneTunnel(): Promise<void> {
     enabled: false
   })
 }
-const hudMounted = ref(props.kind === 'ssh')
+const hudMounted = ref(props.kind === 'ssh' && !resumedSession)
 const hudFading = ref(false)
 let hudTimer: number | undefined
 
@@ -434,10 +438,14 @@ async function mountAndConnect() {
   disposeHandle()
   if (!surface.value) return
   lastErrorWasAuth.value = false
-  status.value = 'connecting'
-  message.value = ''
-  hudMounted.value = props.kind === 'ssh'
-  hudFading.value = false
+  // A pane remounted by drag/dock re-adopts its live session; don't flash the "connecting" UI.
+  const resuming = Boolean(peekConnectedTerminal(props.token))
+  if (!resuming) {
+    status.value = 'connecting'
+    message.value = ''
+    hudMounted.value = props.kind === 'ssh'
+    hudFading.value = false
+  }
 
   handle = createTerminal(props.token, surface.value, updateState, screenReader.value, {
     themeId: terminalTheme.value,
@@ -497,16 +505,21 @@ async function mountAndConnect() {
     return
   }
 
+  const connectingHandle = handle
   try {
     if (props.kind === 'local') {
       if (!props.profileId) throw new Error('缺少本地终端配置标识')
-      await handle.connect({ kind: 'local', profileId: props.profileId })
+      await connectingHandle.connect({ kind: 'local', profileId: props.profileId })
     } else {
       if (!props.hostId) throw new Error('缺少主机配置标识')
-      await handle.connect({ kind: 'ssh', hostId: props.hostId, password: props.password })
+      markHostUsed(props.hostId)
+      await connectingHandle.connect({ kind: 'ssh', hostId: props.hostId, password: props.password })
     }
+    if (handle !== connectingHandle) return
     emit('session', handle.getSessionId())
+    if (props.visible) handle.terminal.focus()
   } catch (error) {
+    if (handle !== connectingHandle) return
     const errorMessage = error instanceof Error ? error.message : '连接失败'
     if (props.kind === 'ssh' && props.hostId && errorMessage.includes('请输入本次连接密码')) {
       lastErrorWasAuth.value = true
@@ -524,7 +537,7 @@ async function mountAndConnect() {
       })
     }
   } finally {
-    emit('consumed')
+    if (handle === connectingHandle) emit('consumed')
   }
 }
 
@@ -872,6 +885,18 @@ onBeforeUnmount(() => {
             "
           >
             测端口
+          </button>
+          <button
+            :class="c('container_workspace_terminal_tunnel_del', t.id)"
+            type="button"
+            data-danger="true"
+            :disabled="Boolean(tunnelBusy[t.id])"
+            :aria-label="`删除 ${t.name}`"
+            title="删除转发规则"
+            @click="removeSyncTunnel(t.id)"
+          >
+            <Trash2 :size="11" />
+            删除
           </button>
         </div>
       </div>

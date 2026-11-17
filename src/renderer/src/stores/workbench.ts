@@ -18,6 +18,7 @@ import {
   type UpdateStatusSnapshot
 } from '../../../shared/updater'
 import { disposeTerminalByToken } from '../services/terminal-registry'
+import { loadHostRecency, markHostUsed, recentHostIds, sortHostsByRecency } from '../services/host-recency'
 import { TERMINAL_THEMES, type CursorShape, type TerminalThemeId } from '../services/terminal-themes'
 import {
   applyUiThemeToDocument,
@@ -85,6 +86,7 @@ export interface PromptState {
 export const bootstrap = ref<Bootstrap>()
 export const initError = ref('')
 export const page = ref<Page>('workspace')
+export const homeVisible = ref(false)
 export const query = ref('')
 export const group = ref('all')
 export const favorites = ref(false)
@@ -153,6 +155,7 @@ export const maximized = ref(false)
 export const trayState = ref<TrayState>({
   minimizeToTray: true,
   closeToTray: false,
+  closeAction: 'quit',
   trayVisibility: 'when-minimized',
   trayCreated: false,
   windowHiddenToTray: false
@@ -258,14 +261,17 @@ export function markSplitAnimation(paneToken: string): void {
 
 export const filteredHosts = computed(() => {
   const q = query.value.trim().toLowerCase()
-  return hosts.value.filter(
-    (host) =>
-      (!favorites.value || host.favorite) &&
-      (group.value === 'all' || host.group === group.value) &&
-      (!q ||
-        `${host.name} ${host.address}:${host.port} ${host.username} ${host.group} ${host.notes}`
-          .toLowerCase()
-          .includes(q))
+  return sortHostsByRecency(
+    hosts.value.filter(
+      (host) =>
+        (!favorites.value || host.favorite) &&
+        (group.value === 'all' || host.group === group.value) &&
+        (!q ||
+          `${host.name} ${host.address}:${host.port} ${host.username} ${host.group} ${host.notes}`
+            .toLowerCase()
+            .includes(q))
+    ),
+    recentHostIds.value
   )
 })
 
@@ -274,6 +280,21 @@ export const groups = computed(() =>
 )
 
 export const currentTab = computed(() => tabs.value.find((tab) => tab.token === activeTab.value))
+
+export function goHome(): void {
+  homeVisible.value = true
+  page.value = 'workspace'
+}
+
+export function activateTab(token: string): void {
+  const tab = tabs.value.find((item) => item.token === token)
+  if (!tab) return
+  activeTab.value = token
+  homeVisible.value = false
+  page.value = 'workspace'
+  const pane = tab.panes.find((item) => item.token === tab.focusedPaneToken) ?? tab.panes[0]
+  if (pane?.hostId) markHostUsed(pane.hostId)
+}
 
 export const focusedPane = computed(() => {
   const tab = currentTab.value
@@ -445,6 +466,7 @@ export function cycleUiTheme(): void {
 }
 
 export function loadSavedPreferences(): void {
+  loadHostRecency()
   try {
     const savedSize = Number(localStorage.getItem('orbit:font-size'))
     if (savedSize >= 10 && savedSize <= 24) fontSize.value = savedSize
@@ -906,6 +928,7 @@ export function addPane(pane: Pane, split = false, placement: 'before' | 'after'
     tabs.value.push(tab)
     activeTab.value = tab.token
   }
+  homeVisible.value = false
   page.value = 'workspace'
   return true
 }
@@ -988,10 +1011,8 @@ export function dockTabToSplit(
   const direction: Tab['direction'] = zone === 'top' || zone === 'bottom' ? 'vertical' : 'horizontal'
   const placement: 'before' | 'after' = zone === 'left' || zone === 'top' ? 'before' : 'after'
 
-  if (sourceTabToken === targetTabToken) {
-    activeTab.value = targetTabToken
-    return splitActivePane(direction, placement)
-  }
+  // Dropping a tab onto itself must never create another terminal session.
+  if (sourceTabToken === targetTabToken) return false
 
   const sourceTab = tabs.value.find((tab) => tab.token === sourceTabToken)
   const targetTab = tabs.value.find((tab) => tab.token === targetTabToken)
@@ -1189,21 +1210,22 @@ export function closeTab(id: string): void {
   if (activeTab.value === id) activeTab.value = tabs.value[Math.max(0, index - 1)]?.token ?? ''
 }
 
-export function reorderTab(sourceToken: string, targetToken: string): void {
+export function reorderTab(sourceToken: string, targetToken: string, placement?: 'before' | 'after'): void {
   if (!sourceToken || sourceToken === targetToken) return
   const sourceIndex = tabs.value.findIndex((tab) => tab.token === sourceToken)
   const targetIndex = tabs.value.findIndex((tab) => tab.token === targetToken)
   if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) return
   const [tab] = tabs.value.splice(sourceIndex, 1)
-  tabs.value.splice(targetIndex, 0, tab!)
+  const anchor = tabs.value.findIndex((item) => item.token === targetToken)
+  const insertAt = placement ? anchor + (placement === 'after' ? 1 : 0) : targetIndex
+  tabs.value.splice(insertAt, 0, tab!)
 }
 
 export function cycleTab(step: 1 | -1): void {
   if (!tabs.value.length) return
   const index = tabs.value.findIndex((tab) => tab.token === activeTab.value)
   const nextIndex = (index + step + tabs.value.length) % tabs.value.length
-  activeTab.value = tabs.value[nextIndex]!.token
-  page.value = 'workspace'
+  activateTab(tabs.value[nextIndex]!.token)
 }
 
 export async function confirmAction(password: string, savePassword = false): Promise<void> {
