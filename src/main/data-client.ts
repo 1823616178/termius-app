@@ -50,7 +50,12 @@ export class DataClient {
   async call<T>(method: string, ...args: unknown[]): Promise<T> {
     await this.ready
     const timeoutMs =
-      method === 'vaultCreate' || method === 'vaultUnlock' || method === 'syncPrepareRotate' ? 30_000 : 10_000
+      method === 'vaultCreate' ||
+      method === 'vaultUnlock' ||
+      method === 'vaultRecover' ||
+      method === 'syncPrepareRotate'
+        ? 30_000
+        : 10_000
     return new Promise<T>((resolve, reject) => {
       const id = randomUUID()
       const timer = setTimeout(() => {

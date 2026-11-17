@@ -42,6 +42,7 @@ const SYNC_TABLES_SQL = `
     keep_signed_in INTEGER NOT NULL DEFAULT 0,
     auto_sync INTEGER NOT NULL DEFAULT 1,
     write_mode TEXT NOT NULL DEFAULT 'realtime',
+    allow_insecure_http INTEGER NOT NULL DEFAULT 0,
     encrypted_refresh_token BLOB,
     encrypted_vault_key BLOB,
     device_id TEXT NOT NULL,
@@ -95,6 +96,7 @@ export interface SyncAccountRecord {
   keepSignedIn: boolean
   autoSync: boolean
   writeMode: 'realtime' | 'local-only'
+  allowInsecureHttp: boolean
   encryptedRefreshToken?: Uint8Array
   encryptedVaultKey?: Uint8Array
   deviceId: string
@@ -134,8 +136,18 @@ export interface SyncEvaluateOutput {
 export class Repository {
   private db: Database.Database
   private closed = false
+  private readonly stmtCache = new Map<string, Database.Statement>()
   private vaultKeys = new Map<string, Buffer>()
   private pendingRotatedKeys = new Map<string, { keyVersion: number; key: Buffer }>()
+
+  private stmt(sql: string): Database.Statement {
+    let cached = this.stmtCache.get(sql)
+    if (!cached) {
+      cached = this.db.prepare(sql)
+      this.stmtCache.set(sql, cached)
+    }
+    return cached
+  }
 
   constructor(path: string) {
     this.db = new Database(path)
@@ -216,13 +228,16 @@ export class Repository {
     if (!cols.some((c) => c.name === 'write_mode')) {
       this.db.exec("ALTER TABLE sync_accounts ADD COLUMN write_mode TEXT NOT NULL DEFAULT 'realtime'")
     }
+    if (!cols.some((c) => c.name === 'allow_insecure_http')) {
+      this.db.exec('ALTER TABLE sync_accounts ADD COLUMN allow_insecure_http INTEGER NOT NULL DEFAULT 0')
+    }
   }
 
   list(): Host[] {
     return (
-      this.db
-        .prepare('SELECT document, secret IS NOT NULL AS saved FROM hosts ORDER BY name COLLATE NOCASE')
-        .all() as { document: string; saved: number }[]
+      this.stmt(
+        'SELECT document, secret IS NOT NULL AS saved FROM hosts ORDER BY name COLLATE NOCASE'
+      ).all() as { document: string; saved: number }[]
     ).map((row) => {
       const parsed = JSON.parse(row.document) as Host
       return { ...parsed, keepalive: parsed.keepalive ?? 30, hasPassword: Boolean(row.saved) }
@@ -230,7 +245,7 @@ export class Repository {
   }
 
   get(id: string): { host: Host; secret?: Uint8Array } {
-    const row = this.db.prepare('SELECT document, secret FROM hosts WHERE id = ?').get(id) as
+    const row = this.stmt('SELECT document, secret FROM hosts WHERE id = ?').get(id) as
       | { document: string; secret?: Buffer }
       | undefined
     if (!row) throw new Error('主机已删除，请刷新列表。')
@@ -242,7 +257,7 @@ export class Repository {
   }
 
   private markSyncPending(): void {
-    this.db.prepare("UPDATE sync_accounts SET pending_changes = 1 WHERE id = 'primary'").run()
+    this.stmt("UPDATE sync_accounts SET pending_changes = 1 WHERE id = 'primary'").run()
   }
 
   save(raw: HostInput, encrypted?: Uint8Array): Host[] {
@@ -264,11 +279,9 @@ export class Repository {
         updatedAt: new Date().toISOString()
       }
       try {
-        this.db
-          .prepare(
-            'INSERT INTO hosts (id, name, document, secret) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, document=excluded.document, secret=excluded.secret'
-          )
-          .run(id, input.name, JSON.stringify(host), secret)
+        this.stmt(
+          'INSERT INTO hosts (id, name, document, secret) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET name=excluded.name, document=excluded.document, secret=excluded.secret'
+        ).run(id, input.name, JSON.stringify(host), secret)
       } catch (error) {
         if ((error as { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE')
           throw new Error('主机名称已存在，请使用其他名称。')
@@ -282,14 +295,14 @@ export class Repository {
 
   remove(id: string): Host[] {
     this.db.transaction(() => {
-      this.db.prepare('DELETE FROM hosts WHERE id = ?').run(id)
+      this.stmt('DELETE FROM hosts WHERE id = ?').run(id)
       this.markSyncPending()
     })()
     return this.list()
   }
 
   updateSecret(id: string, encrypted: Uint8Array): void {
-    const result = this.db.prepare('UPDATE hosts SET secret = ? WHERE id = ?').run(Buffer.from(encrypted), id)
+    const result = this.stmt('UPDATE hosts SET secret = ? WHERE id = ?').run(Buffer.from(encrypted), id)
     if (result.changes === 0) throw new Error('主机已删除，无法更新凭据。')
   }
 
@@ -297,11 +310,9 @@ export class Repository {
     address: string,
     port: number
   ): { fingerprint: string; algorithm: string; trustedAt?: string; source: string } | undefined {
-    return this.db
-      .prepare(
-        'SELECT fingerprint, algorithm, trusted_at AS trustedAt, source FROM known_hosts WHERE address = ? AND port = ?'
-      )
-      .get(address, port) as
+    return this.stmt(
+      'SELECT fingerprint, algorithm, trusted_at AS trustedAt, source FROM known_hosts WHERE address = ? AND port = ?'
+    ).get(address, port) as
       | { fingerprint: string; algorithm: string; trustedAt?: string; source: string }
       | undefined
   }
@@ -314,9 +325,8 @@ export class Repository {
     publicKey?: Uint8Array,
     source = 'local'
   ): void {
-    this.db
-      .prepare(
-        `INSERT INTO known_hosts (address, port, fingerprint, algorithm, public_key, trusted_at, source)
+    this.stmt(
+      `INSERT INTO known_hosts (address, port, fingerprint, algorithm, public_key, trusted_at, source)
          VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(address, port) DO UPDATE SET
            fingerprint = excluded.fingerprint,
@@ -324,24 +334,21 @@ export class Repository {
            public_key = excluded.public_key,
            trusted_at = excluded.trusted_at,
            source = excluded.source`
-      )
-      .run(
-        address,
-        port,
-        fingerprint,
-        algorithm,
-        publicKey ? Buffer.from(publicKey) : null,
-        new Date().toISOString(),
-        source
-      )
+    ).run(
+      address,
+      port,
+      fingerprint,
+      algorithm,
+      publicKey ? Buffer.from(publicKey) : null,
+      new Date().toISOString(),
+      source
+    )
   }
 
   knownHostsList(): KnownHostEntry[] {
-    const rows = this.db
-      .prepare(
-        'SELECT address, port, fingerprint, trusted_at AS trustedAt FROM known_hosts ORDER BY trusted_at DESC'
-      )
-      .all() as Array<{ address: string; port: number; fingerprint: string; trustedAt?: string }>
+    const rows = this.stmt(
+      'SELECT address, port, fingerprint, trusted_at AS trustedAt FROM known_hosts ORDER BY trusted_at DESC'
+    ).all() as Array<{ address: string; port: number; fingerprint: string; trustedAt?: string }>
     return rows.map((row) => ({
       hostKey: `${row.address}:${row.port}`,
       fingerprint: row.fingerprint,
@@ -355,16 +362,16 @@ export class Repository {
       const address = hostKey.slice(0, lastColon)
       const port = Number(hostKey.slice(lastColon + 1))
       if (Number.isInteger(port)) {
-        this.db.prepare('DELETE FROM known_hosts WHERE address = ? AND port = ?').run(address, port)
+        this.stmt('DELETE FROM known_hosts WHERE address = ? AND port = ?').run(address, port)
       }
     }
     return this.knownHostsList()
   }
 
   groupsList(): SyncGroup[] {
-    return this.db
-      .prepare('SELECT id, name, color, updated_at AS updatedAt FROM groups ORDER BY name COLLATE NOCASE')
-      .all() as SyncGroup[]
+    return this.stmt(
+      'SELECT id, name, color, updated_at AS updatedAt FROM groups ORDER BY name COLLATE NOCASE'
+    ).all() as SyncGroup[]
   }
 
   groupSave(raw: SyncGroupInput): SyncGroup[] {
@@ -372,16 +379,14 @@ export class Repository {
     const id = input.id ?? randomUUID()
     const updatedAt = new Date().toISOString()
     this.db.transaction(() => {
-      this.db
-        .prepare(
-          `INSERT INTO groups (id, name, color, updated_at, account_scope)
+      this.stmt(
+        `INSERT INTO groups (id, name, color, updated_at, account_scope)
            VALUES (?, ?, ?, ?, 'sync')
            ON CONFLICT(id) DO UPDATE SET
              name = excluded.name,
              color = excluded.color,
              updated_at = excluded.updated_at`
-        )
-        .run(id, input.name, input.color, updatedAt)
+      ).run(id, input.name, input.color, updatedAt)
       this.markSyncPending()
     })()
     return this.groupsList()
@@ -389,21 +394,19 @@ export class Repository {
 
   groupRemove(id: string): SyncGroup[] {
     this.db.transaction(() => {
-      this.db.prepare('UPDATE tunnels SET group_id = NULL WHERE group_id = ?').run(id)
-      this.db.prepare('DELETE FROM groups WHERE id = ?').run(id)
+      this.stmt('UPDATE tunnels SET group_id = NULL WHERE group_id = ?').run(id)
+      this.stmt('DELETE FROM groups WHERE id = ?').run(id)
       this.markSyncPending()
     })()
     return this.groupsList()
   }
 
   tunnelsList(): SyncTunnel[] {
-    const rows = this.db
-      .prepare(
-        `SELECT id, name, server_id, group_id, type, listen_host, listen_port, dest_host, dest_port,
+    const rows = this.stmt(
+      `SELECT id, name, server_id, group_id, type, listen_host, listen_port, dest_host, dest_port,
                 dest_server_id, auto_reconnect, enabled, updated_at
          FROM tunnels ORDER BY name COLLATE NOCASE`
-      )
-      .all() as Array<{
+    ).all() as Array<{
       id: string
       name: string
       server_id: string
@@ -442,22 +445,21 @@ export class Repository {
     const updatedAt = new Date().toISOString()
     this.db.transaction(() => {
       if (input.id) {
-        const existing = this.db.prepare('SELECT type FROM tunnels WHERE id = ?').get(input.id) as
+        const existing = this.stmt('SELECT type FROM tunnels WHERE id = ?').get(input.id) as
           | { type: string }
           | undefined
         if (existing && existing.type !== 'L' && existing.type !== 'R' && existing.type !== 'D') {
           throw new Error('该隧道为其他客户端写入的未知只读类型，当前版本仅保留不修改。')
         }
       }
-      const serverExists = this.db.prepare('SELECT 1 FROM hosts WHERE id = ?').get(input.serverId)
+      const serverExists = this.stmt('SELECT 1 FROM hosts WHERE id = ?').get(input.serverId)
       if (!serverExists) throw new Error('关联的 SSH 主机不存在，请先创建或选择有效主机。')
       if (input.groupId) {
-        const groupExists = this.db.prepare('SELECT 1 FROM groups WHERE id = ?').get(input.groupId)
+        const groupExists = this.stmt('SELECT 1 FROM groups WHERE id = ?').get(input.groupId)
         if (!groupExists) throw new Error('关联的分组不存在。')
       }
-      this.db
-        .prepare(
-          `INSERT INTO tunnels (
+      this.stmt(
+        `INSERT INTO tunnels (
              id, name, server_id, group_id, type, listen_host, listen_port, dest_host, dest_port,
              dest_server_id, auto_reconnect, enabled, updated_at, account_scope
            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sync')
@@ -474,22 +476,21 @@ export class Repository {
              auto_reconnect = excluded.auto_reconnect,
              enabled = excluded.enabled,
              updated_at = excluded.updated_at`
-        )
-        .run(
-          id,
-          input.name,
-          input.serverId,
-          input.groupId ?? null,
-          input.type,
-          input.listenHost,
-          input.listenPort,
-          input.destHost,
-          input.destPort,
-          input.destServerId ?? null,
-          input.autoReconnect ? 1 : 0,
-          input.enabled ? 1 : 0,
-          updatedAt
-        )
+      ).run(
+        id,
+        input.name,
+        input.serverId,
+        input.groupId ?? null,
+        input.type,
+        input.listenHost,
+        input.listenPort,
+        input.destHost,
+        input.destPort,
+        input.destServerId ?? null,
+        input.autoReconnect ? 1 : 0,
+        input.enabled ? 1 : 0,
+        updatedAt
+      )
       this.markSyncPending()
     })()
     return this.tunnelsList()
@@ -497,14 +498,14 @@ export class Repository {
 
   tunnelRemove(id: string): SyncTunnel[] {
     this.db.transaction(() => {
-      this.db.prepare('DELETE FROM tunnels WHERE id = ?').run(id)
+      this.stmt('DELETE FROM tunnels WHERE id = ?').run(id)
       this.markSyncPending()
     })()
     return this.tunnelsList()
   }
 
   syncAccountGet(id = 'primary'): SyncAccountRecord | undefined {
-    const row = this.db.prepare('SELECT * FROM sync_accounts WHERE id = ?').get(id) as
+    const row = this.stmt('SELECT * FROM sync_accounts WHERE id = ?').get(id) as
       | {
           id: string
           server_url: string
@@ -513,6 +514,7 @@ export class Repository {
           keep_signed_in: number
           auto_sync: number
           write_mode?: string | null
+          allow_insecure_http?: number | null
           encrypted_refresh_token: Buffer | null
           encrypted_vault_key?: Buffer | null
           device_id: string
@@ -541,6 +543,7 @@ export class Repository {
       keepSignedIn: Boolean(row.keep_signed_in),
       autoSync: Boolean(row.auto_sync),
       writeMode: row.write_mode === 'local-only' ? 'local-only' : 'realtime',
+      allowInsecureHttp: Boolean(row.allow_insecure_http),
       encryptedRefreshToken: row.encrypted_refresh_token ?? undefined,
       encryptedVaultKey: row.encrypted_vault_key ?? undefined,
       deviceId: row.device_id,
@@ -569,6 +572,7 @@ export class Repository {
     keepSignedIn: boolean
     autoSync: boolean
     writeMode?: 'realtime' | 'local-only'
+    allowInsecureHttp?: boolean
     encryptedRefreshToken?: Uint8Array | null
     encryptedVaultKey?: Uint8Array | null
     deviceId: string
@@ -607,6 +611,8 @@ export class Repository {
           ? Buffer.from(existing.encryptedVaultKey)
           : null
     const nextWriteMode: 'realtime' | 'local-only' = patch.writeMode ?? existing?.writeMode ?? 'realtime'
+    const nextAllowInsecureHttp =
+      patch.allowInsecureHttp !== undefined ? patch.allowInsecureHttp : (existing?.allowInsecureHttp ?? false)
     const nextBase = resetCursor
       ? null
       : patch.baseDocCipher !== undefined
@@ -618,88 +624,82 @@ export class Repository {
           : null
     const updatedAt = new Date().toISOString()
 
-    this.db
-      .prepare(
-        `INSERT INTO sync_accounts (
-           id, server_url, email, remember_email, keep_signed_in, auto_sync, write_mode,
-           encrypted_refresh_token, encrypted_vault_key, device_id, device_name, vault_id, key_version,
-           sync_passwords, sync_private_keys, last_revision, last_etag, last_sync_at,
-           base_doc_cipher, pending_changes, read_only_remote_schema, remote_schema_version,
-           doc_extra, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           server_url = excluded.server_url,
-           email = excluded.email,
-           remember_email = excluded.remember_email,
-           keep_signed_in = excluded.keep_signed_in,
-           auto_sync = excluded.auto_sync,
-           write_mode = excluded.write_mode,
-           encrypted_refresh_token = excluded.encrypted_refresh_token,
-           encrypted_vault_key = excluded.encrypted_vault_key,
-           device_id = excluded.device_id,
-           device_name = excluded.device_name,
-           vault_id = excluded.vault_id,
-           key_version = excluded.key_version,
-           sync_passwords = excluded.sync_passwords,
-           sync_private_keys = excluded.sync_private_keys,
-           last_revision = excluded.last_revision,
-           last_etag = excluded.last_etag,
-           last_sync_at = excluded.last_sync_at,
-           base_doc_cipher = excluded.base_doc_cipher,
-           pending_changes = excluded.pending_changes,
-           read_only_remote_schema = excluded.read_only_remote_schema,
-           remote_schema_version = excluded.remote_schema_version,
-           doc_extra = excluded.doc_extra,
-           updated_at = excluded.updated_at`
-      )
-      .run(
-        id,
-        patch.serverUrl,
-        patch.email,
-        patch.rememberEmail ? 1 : 0,
-        patch.keepSignedIn ? 1 : 0,
-        patch.autoSync ? 1 : 0,
-        nextWriteMode,
-        nextToken,
-        nextVaultKey,
-        patch.deviceId,
-        patch.deviceName,
-        patch.vaultId !== undefined ? patch.vaultId : (existing?.vaultId ?? null),
-        patch.keyVersion ?? existing?.keyVersion ?? 1,
-        (patch.syncPasswords ?? existing?.syncPasswords ?? false) ? 1 : 0,
-        (patch.syncPrivateKeys ?? existing?.syncPrivateKeys ?? false) ? 1 : 0,
-        resetCursor
-          ? null
-          : patch.lastRevision !== undefined
-            ? patch.lastRevision
-            : (existing?.lastRevision ?? null),
-        resetCursor ? null : patch.lastEtag !== undefined ? patch.lastEtag : (existing?.lastEtag ?? null),
-        resetCursor
-          ? null
-          : patch.lastSyncAt !== undefined
-            ? patch.lastSyncAt
-            : (existing?.lastSyncAt ?? null),
-        nextBase,
-        (patch.pendingChanges ?? existing?.pendingChanges ?? false) ? 1 : 0,
-        (resetCursor ? false : (patch.readOnlyRemoteSchema ?? existing?.readOnlyRemoteSchema ?? false))
-          ? 1
-          : 0,
-        resetCursor
-          ? null
-          : patch.remoteSchemaVersion !== undefined
-            ? patch.remoteSchemaVersion
-            : (existing?.remoteSchemaVersion ?? null),
-        resetCursor
-          ? null
-          : patch.docExtra !== undefined
-            ? patch.docExtra
-              ? JSON.stringify(patch.docExtra)
-              : null
-            : existing?.docExtra
-              ? JSON.stringify(existing.docExtra)
-              : null,
-        updatedAt
-      )
+    this.stmt(
+      `INSERT INTO sync_accounts (
+         id, server_url, email, remember_email, keep_signed_in, auto_sync, write_mode, allow_insecure_http,
+         encrypted_refresh_token, encrypted_vault_key, device_id, device_name, vault_id, key_version,
+         sync_passwords, sync_private_keys, last_revision, last_etag, last_sync_at,
+         base_doc_cipher, pending_changes, read_only_remote_schema, remote_schema_version,
+         doc_extra, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         server_url = excluded.server_url,
+         email = excluded.email,
+         remember_email = excluded.remember_email,
+         keep_signed_in = excluded.keep_signed_in,
+         auto_sync = excluded.auto_sync,
+         write_mode = excluded.write_mode,
+         allow_insecure_http = excluded.allow_insecure_http,
+         encrypted_refresh_token = excluded.encrypted_refresh_token,
+         encrypted_vault_key = excluded.encrypted_vault_key,
+         device_id = excluded.device_id,
+         device_name = excluded.device_name,
+         vault_id = excluded.vault_id,
+         key_version = excluded.key_version,
+         sync_passwords = excluded.sync_passwords,
+         sync_private_keys = excluded.sync_private_keys,
+         last_revision = excluded.last_revision,
+         last_etag = excluded.last_etag,
+         last_sync_at = excluded.last_sync_at,
+         base_doc_cipher = excluded.base_doc_cipher,
+         pending_changes = excluded.pending_changes,
+         read_only_remote_schema = excluded.read_only_remote_schema,
+         remote_schema_version = excluded.remote_schema_version,
+         doc_extra = excluded.doc_extra,
+         updated_at = excluded.updated_at`
+    ).run(
+      id,
+      patch.serverUrl,
+      patch.email,
+      patch.rememberEmail ? 1 : 0,
+      patch.keepSignedIn ? 1 : 0,
+      patch.autoSync ? 1 : 0,
+      nextWriteMode,
+      nextAllowInsecureHttp ? 1 : 0,
+      nextToken,
+      nextVaultKey,
+      patch.deviceId,
+      patch.deviceName,
+      patch.vaultId !== undefined ? patch.vaultId : (existing?.vaultId ?? null),
+      patch.keyVersion ?? existing?.keyVersion ?? 1,
+      (patch.syncPasswords ?? existing?.syncPasswords ?? false) ? 1 : 0,
+      (patch.syncPrivateKeys ?? existing?.syncPrivateKeys ?? false) ? 1 : 0,
+      resetCursor
+        ? null
+        : patch.lastRevision !== undefined
+          ? patch.lastRevision
+          : (existing?.lastRevision ?? null),
+      resetCursor ? null : patch.lastEtag !== undefined ? patch.lastEtag : (existing?.lastEtag ?? null),
+      resetCursor ? null : patch.lastSyncAt !== undefined ? patch.lastSyncAt : (existing?.lastSyncAt ?? null),
+      nextBase,
+      (patch.pendingChanges ?? existing?.pendingChanges ?? false) ? 1 : 0,
+      (resetCursor ? false : (patch.readOnlyRemoteSchema ?? existing?.readOnlyRemoteSchema ?? false)) ? 1 : 0,
+      resetCursor
+        ? null
+        : patch.remoteSchemaVersion !== undefined
+          ? patch.remoteSchemaVersion
+          : (existing?.remoteSchemaVersion ?? null),
+      resetCursor
+        ? null
+        : patch.docExtra !== undefined
+          ? patch.docExtra
+            ? JSON.stringify(patch.docExtra)
+            : null
+          : existing?.docExtra
+            ? JSON.stringify(existing.docExtra)
+            : null,
+      updatedAt
+    )
     return this.syncAccountGet(id)!
   }
 
@@ -709,22 +709,20 @@ export class Repository {
     const existing = this.syncAccountGet(id)
     if (!existing) return undefined
     const clearEmail = opts.clearEmail ?? !existing.rememberEmail
-    this.db
-      .prepare(
-        `UPDATE sync_accounts
+    this.stmt(
+      `UPDATE sync_accounts
          SET encrypted_refresh_token = NULL,
              encrypted_vault_key = NULL,
              keep_signed_in = 0,
              email = CASE WHEN ? THEN '' ELSE email END,
              updated_at = ?
          WHERE id = ?`
-      )
-      .run(clearEmail ? 1 : 0, new Date().toISOString(), id)
+    ).run(clearEmail ? 1 : 0, new Date().toISOString(), id)
     return this.syncAccountGet(id)
   }
 
   syncListSecretBlobs(): Array<{ id: string; secret: Uint8Array }> {
-    return this.db.prepare('SELECT id, secret FROM hosts WHERE secret IS NOT NULL').all() as Array<{
+    return this.stmt('SELECT id, secret FROM hosts WHERE secret IS NOT NULL').all() as Array<{
       id: string
       secret: Buffer
     }>
@@ -783,9 +781,12 @@ export class Repository {
     this.vaultLock(accountId)
     this.vaultKeys.set(accountId, key)
     const vaultId = input.metadata.id ?? this.syncAccountGet(accountId)?.vaultId ?? null
-    this.db
-      .prepare('UPDATE sync_accounts SET vault_id = ?, key_version = ?, updated_at = ? WHERE id = ?')
-      .run(vaultId, input.metadata.keyVersion, new Date().toISOString(), accountId)
+    this.stmt('UPDATE sync_accounts SET vault_id = ?, key_version = ?, updated_at = ? WHERE id = ?').run(
+      vaultId,
+      input.metadata.keyVersion,
+      new Date().toISOString(),
+      accountId
+    )
     return true
   }
 
@@ -800,9 +801,12 @@ export class Repository {
     this.vaultLock(accountId)
     this.vaultKeys.set(accountId, res.vaultKey)
     const vaultId = input.metadata.id ?? this.syncAccountGet(accountId)?.vaultId ?? null
-    this.db
-      .prepare('UPDATE sync_accounts SET vault_id = ?, key_version = ?, updated_at = ? WHERE id = ?')
-      .run(vaultId, input.metadata.keyVersion, new Date().toISOString(), accountId)
+    this.stmt('UPDATE sync_accounts SET vault_id = ?, key_version = ?, updated_at = ? WHERE id = ?').run(
+      vaultId,
+      input.metadata.keyVersion,
+      new Date().toISOString(),
+      accountId
+    )
     return { updatedEnvelope: res.updatedEnvelope }
   }
 
@@ -812,11 +816,9 @@ export class Repository {
     accountId = 'primary'
   ): LocalSyncSource {
     const account = this.syncAccountGet(accountId)
-    const hostRows = this.db
-      .prepare(
-        'SELECT document, secret IS NOT NULL AS saved, sync_extras FROM hosts ORDER BY name COLLATE NOCASE'
-      )
-      .all() as Array<{ document: string; saved: number; sync_extras: string | null }>
+    const hostRows = this.stmt(
+      'SELECT document, secret IS NOT NULL AS saved, sync_extras FROM hosts ORDER BY name COLLATE NOCASE'
+    ).all() as Array<{ document: string; saved: number; sync_extras: string | null }>
     const hosts = hostRows.map((row) => {
       const parsed = JSON.parse(row.document) as Host
       const syncExtras = row.sync_extras ? (JSON.parse(row.sync_extras) as HostSyncExtras) : undefined
@@ -827,7 +829,7 @@ export class Repository {
         syncExtras
       }
     })
-    const knownRows = this.db.prepare('SELECT address, port, fingerprint FROM known_hosts').all() as Array<{
+    const knownRows = this.stmt('SELECT address, port, fingerprint FROM known_hosts').all() as Array<{
       address: string
       port: number
       fingerprint: string
@@ -839,9 +841,9 @@ export class Repository {
 
     const groups = this.groupsList()
     const groupExtras: Record<string, Record<string, unknown>> = {}
-    for (const row of this.db
-      .prepare('SELECT id, unknown_extra FROM groups WHERE unknown_extra IS NOT NULL')
-      .all() as Array<{
+    for (const row of this.stmt(
+      'SELECT id, unknown_extra FROM groups WHERE unknown_extra IS NOT NULL'
+    ).all() as Array<{
       id: string
       unknown_extra: string
     }>) {
@@ -850,9 +852,9 @@ export class Repository {
 
     const tunnels = this.tunnelsList()
     const tunnelExtras: Record<string, Record<string, unknown>> = {}
-    for (const row of this.db
-      .prepare('SELECT id, unknown_extra FROM tunnels WHERE unknown_extra IS NOT NULL')
-      .all() as Array<{
+    for (const row of this.stmt(
+      'SELECT id, unknown_extra FROM tunnels WHERE unknown_extra IS NOT NULL'
+    ).all() as Array<{
       id: string
       unknown_extra: string
     }>) {
@@ -892,11 +894,9 @@ export class Repository {
     if (input.remoteEnvelope) {
       const decrypted = decryptSyncDocument(vaultKey, account.vaultId, input.remoteEnvelope)
       if (decrypted.readOnlySchema) {
-        this.db
-          .prepare(
-            'UPDATE sync_accounts SET read_only_remote_schema = 1, remote_schema_version = ?, updated_at = ? WHERE id = ?'
-          )
-          .run(decrypted.schemaVersion, new Date().toISOString(), accountId)
+        this.stmt(
+          'UPDATE sync_accounts SET read_only_remote_schema = 1, remote_schema_version = ?, updated_at = ? WHERE id = ?'
+        ).run(decrypted.schemaVersion, new Date().toISOString(), accountId)
         return {
           readOnlySchema: true,
           remoteSchemaVersion: decrypted.schemaVersion,
@@ -1053,23 +1053,21 @@ export class Repository {
     if (oldKey) oldKey.fill(0)
     this.vaultKeys.set(accountId, pending.key)
     this.pendingRotatedKeys.delete(accountId)
-    this.db
-      .prepare(
-        `UPDATE sync_accounts
+    this.stmt(
+      `UPDATE sync_accounts
          SET key_version = ?, sync_passwords = ?, last_revision = ?, last_etag = ?,
              last_sync_at = ?, base_doc_cipher = ?, pending_changes = 0, updated_at = ?
          WHERE id = ?`
-      )
-      .run(
-        input.keyVersion,
-        input.syncPasswords ? 1 : 0,
-        input.revision,
-        input.etag,
-        new Date().toISOString(),
-        Buffer.from(input.baseDocCipher),
-        new Date().toISOString(),
-        accountId
-      )
+    ).run(
+      input.keyVersion,
+      input.syncPasswords ? 1 : 0,
+      input.revision,
+      input.etag,
+      new Date().toISOString(),
+      Buffer.from(input.baseDocCipher),
+      new Date().toISOString(),
+      accountId
+    )
   }
 
   syncCancelRotate(accountId = 'primary'): void {
@@ -1143,12 +1141,12 @@ export class Repository {
 
     this.db.transaction(() => {
       for (const deletedId of input.deletedHostIds) {
-        this.db.prepare('DELETE FROM hosts WHERE id = ?').run(deletedId)
+        this.stmt('DELETE FROM hosts WHERE id = ?').run(deletedId)
       }
 
-      const selectExisting = this.db.prepare('SELECT id, secret FROM hosts WHERE id = ?')
-      const selectByName = this.db.prepare('SELECT id FROM hosts WHERE name = ? COLLATE NOCASE AND id != ?')
-      const upsertHost = this.db.prepare(
+      const selectExisting = this.stmt('SELECT id, secret FROM hosts WHERE id = ?')
+      const selectByName = this.stmt('SELECT id FROM hosts WHERE name = ? COLLATE NOCASE AND id != ?')
+      const upsertHost = this.stmt(
         `INSERT INTO hosts (id, name, document, secret, sync_extras, account_scope)
          VALUES (?, ?, ?, ?, ?, 'sync')
          ON CONFLICT(id) DO UPDATE SET
@@ -1189,9 +1187,9 @@ export class Repository {
         )
       }
 
-      this.db.prepare('DELETE FROM tunnels').run()
-      this.db.prepare('DELETE FROM groups').run()
-      const insertGroup = this.db.prepare(
+      this.stmt('DELETE FROM tunnels').run()
+      this.stmt('DELETE FROM groups').run()
+      const insertGroup = this.stmt(
         `INSERT INTO groups (id, name, color, updated_at, unknown_extra, account_scope)
          VALUES (?, ?, ?, ?, ?, 'sync')`
       )
@@ -1204,7 +1202,7 @@ export class Repository {
           group.unknownExtra ? JSON.stringify(group.unknownExtra) : null
         )
       }
-      const insertTunnel = this.db.prepare(
+      const insertTunnel = this.stmt(
         `INSERT INTO tunnels (
            id, name, server_id, group_id, type, listen_host, listen_port, dest_host, dest_port,
            dest_server_id, auto_reconnect, enabled, updated_at, unknown_extra, account_scope
@@ -1229,8 +1227,8 @@ export class Repository {
         )
       }
 
-      const checkKnown = this.db.prepare('SELECT 1 FROM known_hosts WHERE address = ? AND port = ?')
-      const insertKnown = this.db.prepare(
+      const checkKnown = this.stmt('SELECT 1 FROM known_hosts WHERE address = ? AND port = ?')
+      const insertKnown = this.stmt(
         `INSERT INTO known_hosts (address, port, fingerprint, algorithm, public_key, trusted_at, source)
          VALUES (?, ?, ?, 'sync', NULL, ?, 'sync')`
       )
@@ -1240,9 +1238,8 @@ export class Repository {
         }
       }
 
-      this.db
-        .prepare(
-          `UPDATE sync_accounts
+      this.stmt(
+        `UPDATE sync_accounts
            SET sync_passwords = ?,
                sync_private_keys = ?,
                last_revision = ?,
@@ -1255,18 +1252,17 @@ export class Repository {
                doc_extra = ?,
                updated_at = ?
            WHERE id = ?`
-        )
-        .run(
-          input.nextPreferences.syncPasswords ? 1 : 0,
-          input.nextPreferences.syncPrivateKeys ? 1 : 0,
-          input.revision,
-          input.etag,
-          nowIso,
-          input.baseDocCipher ? Buffer.from(input.baseDocCipher) : null,
-          input.docExtra ? JSON.stringify(input.docExtra) : null,
-          nowIso,
-          accountId
-        )
+      ).run(
+        input.nextPreferences.syncPasswords ? 1 : 0,
+        input.nextPreferences.syncPrivateKeys ? 1 : 0,
+        input.revision,
+        input.etag,
+        nowIso,
+        input.baseDocCipher ? Buffer.from(input.baseDocCipher) : null,
+        input.docExtra ? JSON.stringify(input.docExtra) : null,
+        nowIso,
+        accountId
+      )
     })()
 
     return {
@@ -1285,24 +1281,22 @@ export class Repository {
   }): void {
     const accountId = input.accountId ?? 'primary'
     const nowIso = new Date().toISOString()
-    this.db
-      .prepare(
-        `UPDATE sync_accounts
+    this.stmt(
+      `UPDATE sync_accounts
          SET last_revision = ?,
              last_etag = ?,
              base_doc_cipher = ?,
              doc_extra = ?,
              updated_at = ?
          WHERE id = ?`
-      )
-      .run(
-        input.revision,
-        input.etag,
-        input.baseDocCipher ? Buffer.from(input.baseDocCipher) : null,
-        input.docExtra ? JSON.stringify(input.docExtra) : null,
-        nowIso,
-        accountId
-      )
+    ).run(
+      input.revision,
+      input.etag,
+      input.baseDocCipher ? Buffer.from(input.baseDocCipher) : null,
+      input.docExtra ? JSON.stringify(input.docExtra) : null,
+      nowIso,
+      accountId
+    )
   }
 
   close(): void {
@@ -1312,6 +1306,7 @@ export class Repository {
     this.vaultKeys.clear()
     for (const item of this.pendingRotatedKeys.values()) item.key.fill(0)
     this.pendingRotatedKeys.clear()
+    this.stmtCache.clear()
     this.db.close()
   }
 }

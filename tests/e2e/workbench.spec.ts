@@ -1038,11 +1038,20 @@ test('E2EE sync lifecycle, keepSignedIn rotation, recovery key, conflict UI and 
     await expect(page.getByRole('heading', { name: '端到端加密远程同步' })).toBeVisible()
     await checkClasses(page)
 
-    // Register new account with keepSignedIn checked
+    // Verify non-loopback HTTP shows plaintext risk warning and blocks submit until opted in
     await page.getByRole('button', { name: '注册新账号', exact: true }).click()
-    await page.getByPlaceholder('https://sync.example.com').fill(server.url)
+    await page.getByPlaceholder('https://sync.example.com').fill('http://192.168.10.20:8080')
+    await expect(page.locator('.container_sync_account_body_http-warn')).toBeVisible()
+    await expect(page.locator('.container_sync_account_body_insecure-check')).not.toBeChecked()
+    await checkClasses(page)
     await page.getByPlaceholder('name@example.com').fill(email)
     await page.locator('.container_sync_account_body_password-input').fill('AccountPass123!')
+    await page.getByRole('button', { name: '注册并连接', exact: true }).click()
+    await expect(page.locator('.container_sync_alert_body_error-text')).toContainText('HTTPS')
+
+    // Register new account with loopback server URL and keepSignedIn checked
+    await page.getByPlaceholder('https://sync.example.com').fill(server.url)
+    await expect(page.locator('.container_sync_account_body_http-warn')).toHaveCount(0)
     await page.locator('.container_sync_account_body_keep-check').check()
     await page.getByRole('button', { name: '注册并连接', exact: true }).click()
     await expect(page.getByText(email, { exact: true })).toBeVisible()

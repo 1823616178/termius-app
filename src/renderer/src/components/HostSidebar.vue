@@ -12,7 +12,7 @@ import {
   ShieldCheck,
   PanelLeftClose,
   PanelLeftOpen
-} from 'lucide-vue-next'
+} from '@lucide/vue'
 import { instanceClass } from '../../../shared/classes'
 import type { Host } from '../../../shared/contracts'
 import OrbitSelect from './OrbitSelect.vue'

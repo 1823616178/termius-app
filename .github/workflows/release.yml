@@ -114,6 +114,7 @@ jobs:
           yarn format:check
           yarn typecheck
           yarn check:classes
+          yarn check:arch
           yarn test
 
       - name: Align package.json version with release tag
@@ -177,6 +178,7 @@ jobs:
           yarn format:check
           yarn typecheck
           yarn check:classes
+          yarn check:arch
           yarn test
 
       - name: Align package.json version with release tag

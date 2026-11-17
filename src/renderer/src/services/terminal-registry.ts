@@ -1,9 +1,38 @@
-import { Terminal } from '@xterm/xterm'
-import { FitAddon } from '@xterm/addon-fit'
-import { SearchAddon } from '@xterm/addon-search'
-import { WebLinksAddon } from '@xterm/addon-web-links'
+import type { Terminal } from '@xterm/xterm'
+import type { SearchAddon } from '@xterm/addon-search'
 import type { OpenSessionInput, SessionInfo, TerminalEvent } from '../../../shared/contracts'
 import { getTerminalTheme, type CursorShape, type TerminalThemeId } from './terminal-themes'
+
+interface XtermModules {
+  Terminal: typeof import('@xterm/xterm').Terminal
+  FitAddon: typeof import('@xterm/addon-fit').FitAddon
+  SearchAddon: typeof import('@xterm/addon-search').SearchAddon
+  WebLinksAddon: typeof import('@xterm/addon-web-links').WebLinksAddon
+}
+
+let xtermModulesPromise: Promise<XtermModules> | undefined
+
+function loadXtermModules(): Promise<XtermModules> {
+  if (!xtermModulesPromise) {
+    xtermModulesPromise = Promise.all([
+      import('@xterm/xterm'),
+      import('@xterm/addon-fit'),
+      import('@xterm/addon-search'),
+      import('@xterm/addon-web-links')
+    ])
+      .then(([xtermPkg, fitPkg, searchPkg, webLinksPkg]) => ({
+        Terminal: xtermPkg.Terminal,
+        FitAddon: fitPkg.FitAddon,
+        SearchAddon: searchPkg.SearchAddon,
+        WebLinksAddon: webLinksPkg.WebLinksAddon
+      }))
+      .catch((error) => {
+        xtermModulesPromise = undefined
+        throw error
+      })
+  }
+  return xtermModulesPromise
+}
 
 export interface TerminalAppearanceOptions {
   themeId: TerminalThemeId
@@ -90,16 +119,21 @@ export function writeTerminalInputByToken(token: string, data: string): boolean 
   return true
 }
 
-export function createTerminal(
+export async function createTerminal(
   token: string,
   element: HTMLElement,
   onState: (event: Extract<TerminalEvent, { type: 'state' }>) => void,
   initialScreenReaderMode = false,
   initialAppearance: TerminalAppearanceOptions = DEFAULT_APPEARANCE
-): TerminalHandle {
-  const existing = registry.get(token)
-  if (existing) {
-    return existing.reattach(element, onState, initialScreenReaderMode, initialAppearance)
+): Promise<TerminalHandle> {
+  const existingBeforeLoad = registry.get(token)
+  if (existingBeforeLoad) {
+    return existingBeforeLoad.reattach(element, onState, initialScreenReaderMode, initialAppearance)
+  }
+  const { Terminal, FitAddon, SearchAddon, WebLinksAddon } = await loadXtermModules()
+  const existingAfterLoad = registry.get(token)
+  if (existingAfterLoad) {
+    return existingAfterLoad.reattach(element, onState, initialScreenReaderMode, initialAppearance)
   }
   const preset = getTerminalTheme(initialAppearance.themeId)
   const terminal = new Terminal({

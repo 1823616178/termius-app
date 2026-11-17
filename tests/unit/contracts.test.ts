@@ -3,12 +3,14 @@ import {
   hostInputSchema,
   normalizeStoredTrayPreferences,
   openSessionSchema,
+  resolveKeepaliveIntervalMs,
   resolveTrayPreferences,
   terminalInputSchema,
   trayPreferencesPatchSchema,
   trayPreferencesSchema
 } from '../../src/shared/contracts'
 import {
+  isInsecureHttpSyncUrl,
   syncLoginInputSchema,
   syncRegisterInputSchema,
   syncVaultRecoverInputSchema,
@@ -106,14 +108,41 @@ describe('host and IPC boundary validation', () => {
     expect(terminalInputSchema.safeParse({ type: 'input', data: 'a'.repeat(65537) }).success).toBe(false)
     expect(terminalInputSchema.safeParse({ type: 'resize', cols: 0, rows: 0 }).success).toBe(false)
   })
-  it('accepts HTTP and HTTPS sync server URLs while rejecting unsupported protocols and credentials', () => {
-    expect(validateSyncServerUrl('http://192.168.1.50:8787///')).toBe('http://192.168.1.50:8787')
+  it('resolves SSH keepalive interval milliseconds with 0 disabling keepalive', () => {
+    expect(resolveKeepaliveIntervalMs(undefined)).toBe(30_000)
+    expect(resolveKeepaliveIntervalMs(0)).toBe(0)
+    expect(resolveKeepaliveIntervalMs(-5)).toBe(0)
+    expect(resolveKeepaliveIntervalMs(45)).toBe(45_000)
+    expect(resolveKeepaliveIntervalMs(9999)).toBe(3_600_000)
+  })
+
+  it('requires HTTPS or loopback HTTP by default for sync URLs and allows explicit opt-in for non-loopback HTTP', () => {
     expect(validateSyncServerUrl('https://sync.example.com/')).toBe('https://sync.example.com')
+    expect(validateSyncServerUrl('http://127.0.0.1:8787///')).toBe('http://127.0.0.1:8787')
+    expect(validateSyncServerUrl('http://localhost:8787/')).toBe('http://localhost:8787')
+    expect(validateSyncServerUrl('http://[::1]:8787/')).toBe('http://[::1]:8787')
+    expect(isInsecureHttpSyncUrl('http://192.168.1.50:8787')).toBe(true)
+    expect(isInsecureHttpSyncUrl('http://127.0.0.1:8787')).toBe(false)
+    expect(isInsecureHttpSyncUrl('https://sync.example.com')).toBe(false)
+
+    expect(() => validateSyncServerUrl('http://192.168.1.50:8787///')).toThrow('HTTPS')
+    expect(validateSyncServerUrl('http://192.168.1.50:8787///', { allowInsecureHttp: true })).toBe(
+      'http://192.168.1.50:8787'
+    )
+
+    expect(
+      syncLoginInputSchema.safeParse({
+        serverUrl: 'http://sync.internal:8080/',
+        email: 'User@Example.com',
+        password: 'Password123'
+      }).success
+    ).toBe(false)
     expect(
       syncLoginInputSchema.parse({
         serverUrl: 'http://sync.internal:8080/',
         email: 'User@Example.com',
-        password: 'Password123'
+        password: 'Password123',
+        allowInsecureHttp: true
       }).serverUrl
     ).toBe('http://sync.internal:8080')
     expect(() => validateSyncServerUrl('ftp://sync.example.com')).toThrow(

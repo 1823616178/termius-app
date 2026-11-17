@@ -1,14 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import {
-  ShieldCheck,
-  Minimize2,
-  RefreshCw,
-  Download,
-  ExternalLink,
-  FolderOpen,
-  Rocket
-} from 'lucide-vue-next'
+import { ShieldCheck, Minimize2, RefreshCw, Download, ExternalLink, FolderOpen, Rocket } from '@lucide/vue'
 import { instanceClass } from '../../../shared/classes'
 import type { CloseButtonAction, TrayVisibilityMode } from '../../../shared/contracts'
 import orbitIcon from '../assets/orbit-icon.svg'

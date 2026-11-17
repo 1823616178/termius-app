@@ -15,7 +15,7 @@ import {
   Play,
   Square,
   FolderPlus
-} from 'lucide-vue-next'
+} from '@lucide/vue'
 import { instanceClass } from '../../../shared/classes'
 import type { Host } from '../../../shared/contracts'
 import type { SyncTunnel } from '../../../shared/sync'

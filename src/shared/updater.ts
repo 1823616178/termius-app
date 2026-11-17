@@ -1,4 +1,7 @@
 import { z } from 'zod'
+import { isHttpsOrLoopbackUrl } from './network'
+
+export { isLoopbackHostname } from './network'
 
 export const DEFAULT_UPDATE_REPOSITORY = {
   owner: '1823616178',
@@ -332,13 +335,6 @@ export function parseSha256Sums(content: string): Map<string, string> {
   return result
 }
 
-export function isLoopbackHostname(hostname: string): boolean {
-  const normalized = hostname.toLowerCase()
-  return (
-    normalized === '127.0.0.1' || normalized === 'localhost' || normalized === '::1' || normalized === '[::1]'
-  )
-}
-
 export function validateUpdateSourceUrl(rawUrl: string, allowedOverrideOrigin?: string): string {
   const trimmed = rawUrl.trim()
   if (!trimmed) throw new Error('更新地址不能为空')
@@ -347,9 +343,7 @@ export function validateUpdateSourceUrl(rawUrl: string, allowedOverrideOrigin?: 
     throw new Error('出于安全限制，更新地址不能包含账号凭据')
   }
   const matchesOverride =
-    Boolean(allowedOverrideOrigin) &&
-    parsed.origin === allowedOverrideOrigin &&
-    (parsed.protocol === 'https:' || (parsed.protocol === 'http:' && isLoopbackHostname(parsed.hostname)))
+    Boolean(allowedOverrideOrigin) && parsed.origin === allowedOverrideOrigin && isHttpsOrLoopbackUrl(parsed)
 
   if (parsed.protocol === 'http:') {
     if (!matchesOverride) {

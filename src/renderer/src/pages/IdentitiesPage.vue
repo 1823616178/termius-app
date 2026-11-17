@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { KeyRound, FolderKanban, ShieldAlert, Trash2, Plus, RefreshCw, Pencil } from 'lucide-vue-next'
+import { KeyRound, FolderKanban, ShieldAlert, Trash2, Plus, RefreshCw, Pencil } from '@lucide/vue'
 import { instanceClass } from '../../../shared/classes'
 import type { SyncGroup } from '../../../shared/sync'
 import {

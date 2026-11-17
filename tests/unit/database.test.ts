@@ -210,6 +210,14 @@ describe('Repository persistence and migrations', () => {
       // Removing referenced group cleanly unlinks tunnel.groupId
       repo.groupRemove(groups[0]!.id)
       expect(repo.tunnelsList()[0]!.groupId).toBeNull()
+
+      // Repeated queries reuse cached prepared statements cleanly across mutations
+      expect(repo.list()).toHaveLength(1)
+      expect(repo.get(hostId).host.name).toBe('Legacy-V2')
+      expect(repo.knownHostsList()).toEqual([])
+      repo.trust('example.test', 22, 'SHA256:abc', 'ssh-ed25519')
+      expect(repo.known('example.test', 22)?.fingerprint).toBe('SHA256:abc')
+      expect(repo.knownHostsList()).toHaveLength(1)
     } finally {
       repo.close()
     }

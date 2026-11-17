@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { RefreshCw, Check, X } from 'lucide-vue-next'
+import { defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { RefreshCw, Check, X } from '@lucide/vue'
 import { matchAppShortcut } from '../../shared/shortcuts'
 import TitleBar from './components/TitleBar.vue'
 import NavRail from './components/NavRail.vue'
@@ -8,15 +8,16 @@ import HostSidebar from './components/HostSidebar.vue'
 import StatusBar from './components/StatusBar.vue'
 import ShortcutsModal from './components/ShortcutsModal.vue'
 import WorkspacePage from './pages/WorkspacePage.vue'
-import HostsPage from './pages/HostsPage.vue'
-import LocalPage from './pages/LocalPage.vue'
-import TunnelsPage from './pages/TunnelsPage.vue'
-import IdentitiesPage from './pages/IdentitiesPage.vue'
-import SyncPage from './pages/SyncPage.vue'
-import SettingsPage from './pages/SettingsPage.vue'
 import OrbitStage3D from './components/OrbitStage3D.vue'
 import HostEditor from './components/HostEditor.vue'
 import ActionDialog from './components/ActionDialog.vue'
+
+const HostsPage = defineAsyncComponent(() => import('./pages/HostsPage.vue'))
+const LocalPage = defineAsyncComponent(() => import('./pages/LocalPage.vue'))
+const TunnelsPage = defineAsyncComponent(() => import('./pages/TunnelsPage.vue'))
+const IdentitiesPage = defineAsyncComponent(() => import('./pages/IdentitiesPage.vue'))
+const SyncPage = defineAsyncComponent(() => import('./pages/SyncPage.vue'))
+const SettingsPage = defineAsyncComponent(() => import('./pages/SettingsPage.vue'))
 import { updateAllTerminalsAppearance } from './services/terminal-registry'
 import {
   applyVisualPreferences,
@@ -172,13 +173,15 @@ onBeforeUnmount(() => {
           <OrbitStage3D variant="welcome" state="connecting" instance="app-boot" />
           <span class="container_app_loading_body_text">正在凝神开启青冥剑阁工作区…</span>
         </div>
-        <WorkspacePage />
-        <HostsPage />
-        <LocalPage />
-        <TunnelsPage />
-        <IdentitiesPage />
-        <SyncPage />
-        <SettingsPage />
+        <template v-else>
+          <WorkspacePage />
+          <HostsPage v-if="page === 'hosts'" />
+          <LocalPage v-if="page === 'local'" />
+          <TunnelsPage v-if="page === 'tunnels'" />
+          <IdentitiesPage v-if="page === 'identities'" />
+          <SyncPage v-if="page === 'sync'" />
+          <SettingsPage v-if="page === 'settings'" />
+        </template>
       </main>
     </div>
     <StatusBar />

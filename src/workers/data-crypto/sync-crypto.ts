@@ -1,6 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, hkdf as hkdfCallback, randomBytes } from 'node:crypto'
 import { promisify } from 'node:util'
-import { argon2idSync } from './argon2id'
+import { runArgon2id } from './kdf-client'
 import {
   MAX_SYNC_DOCUMENT_BYTES,
   SYNC_A2_ITERATIONS,
@@ -160,16 +160,20 @@ export async function derivePasswordKek(
   }
   const salt = decodeBase64Flexible(saltB64)
   if (salt.length < 8 || salt.length > 64) throw new Error('Argon2id Salt 长度无效')
-  return Buffer.from(
-    argon2idSync({
-      password: Buffer.from(masterPassword, 'utf8'),
+  const passwordBytes = Buffer.from(masterPassword, 'utf8')
+  try {
+    const derived = await runArgon2id({
+      password: passwordBytes,
       salt,
       memoryKiB: kdf.memory,
       passes: kdf.iterations,
       parallelism: kdf.parallelism,
       tagLength: SYNC_A2_TAG_LENGTH
     })
-  )
+    return Buffer.from(derived)
+  } finally {
+    passwordBytes.fill(0)
+  }
 }
 
 async function wrapVaultKeyWithPassword(

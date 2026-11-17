@@ -418,6 +418,15 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@lucide/vue@npm:1.70.0":
+  version: 1.70.0
+  resolution: "@lucide/vue@npm:1.70.0"
+  peerDependencies:
+    vue: ">=3.0.1"
+  checksum: 10c0/8d1676e5fd94621e1bfcfcfdbb0e87a673cdf832ce8a586ef8904c0c7b88b10a48a0e3b3da379c2e120571d2b841f1e8505537d63e4a24949371f24316377967
+  languageName: node
+  linkType: hard
+
 "@malept/cross-spawn-promise@npm:^2.0.0":
   version: 2.0.0
   resolution: "@malept/cross-spawn-promise@npm:2.0.0"
@@ -2418,6 +2427,7 @@ __metadata:
   resolution: "graphite-orbit@workspace:."
   dependencies:
     "@electron/rebuild": "npm:4.2.1"
+    "@lucide/vue": "npm:1.70.0"
     "@playwright/test": "npm:1.65.0"
     "@types/better-sqlite3": "npm:9.6.0"
     "@types/node": "npm:24.10.1"
@@ -2433,7 +2443,6 @@ __metadata:
     electron: "npm:45.3.1"
     electron-builder: "npm:26.18.0"
     electron-vite: "npm:6.0.0"
-    lucide-vue-next: "npm:1.0.0"
     node-pty: "npm:1.1.0"
     prettier: "npm:3.6.2"
     sass: "npm:1.108.2"
@@ -2904,15 +2913,6 @@ __metadata:
   dependencies:
     yallist: "npm:^4.0.0"
   checksum: 10c0/cb53e582785c48187d7a188d3379c181b5ca2a9c78d2bce3e7dee36f32761d1c42983da3fe12b55cb74e1779fa94cdc2e5367c028a9b35317184ede0c07a30a9
-  languageName: node
-  linkType: hard
-
-"lucide-vue-next@npm:1.0.0":
-  version: 1.0.0
-  resolution: "lucide-vue-next@npm:1.0.0"
-  peerDependencies:
-    vue: ">=3.0.1"
-  checksum: 10c0/28f6a7d83e5d06db34006214f1ee3fe2c67ba0ca58f6e8af0d9032c495bb419f5c632b2db66e10ba90a6376e9f8aa913bc2e56be7c3aa06089d6ad2a472d93aa
   languageName: node
   linkType: hard
 

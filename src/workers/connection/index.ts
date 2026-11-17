@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { Client, type ClientChannel } from 'ssh2'
+import { resolveKeepaliveIntervalMs } from '../../shared/contracts'
 import { terminalChannel } from '../terminal-channel'
 import { handleSftpRequest, type SftpSessionState, type SftpWorkerRequest } from './sftp-handler'
 
@@ -250,7 +251,7 @@ process.parentPort?.on('message', ({ data, ports }) => {
       tryKeyboard: secretPassword !== undefined,
       agent: agentSocket,
       readyTimeout: 0,
-      keepaliveInterval: 30_000,
+      keepaliveInterval: resolveKeepaliveIntervalMs(data.host.keepalive),
       keepaliveCountMax: 3,
       hostVerifier: (key: Buffer, callback: (accept: boolean) => void) => {
         clearTimeout(deadline)

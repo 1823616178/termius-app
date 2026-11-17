@@ -19,7 +19,6 @@ import { existsSync, mkdirSync } from 'node:fs'
 import { lstat, readdir } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { randomUUID } from 'node:crypto'
-import { pathToFileURL } from 'node:url'
 import { z } from 'zod'
 import {
   IPC,
@@ -42,6 +41,7 @@ import {
   sftpRevealLocalSchema,
   sftpSessionSchema,
   sftpUploadSchema,
+  trayPreferencesPatchSchema,
   tunnelToggleSchema,
   type Bootstrap,
   type EncryptionBackend,
@@ -58,21 +58,28 @@ import {
 } from '../shared/sftp'
 import {
   syncGroupInputSchema,
+  syncLoginInputSchema,
+  syncPreferencesUpdateSchema,
+  syncRegisterInputSchema,
   syncResolveConflictsSchema,
   syncTunnelInputSchema,
+  syncVaultCreateInputSchema,
+  syncVaultRecoverInputSchema,
+  syncVaultUnlockInputSchema,
   type SyncGroup,
   type SyncStatusSnapshot,
   type SyncTunnel
 } from '../shared/sync'
 import { DataClient } from './data-client'
 import { DiagnosticLog } from './diagnostics'
+import { authorizeSender, createIpcRegistrar, isTrustedRendererUrl } from './ipc-auth'
 import { discoverShells } from './shells'
 import { SyncService } from './sync-service'
 import { OrbitTrayManager } from './tray-manager'
 import { probeTcpConnectivity, TunnelRuntimeManager } from './tunnel-network'
 import { OrbitUpdateService } from './update-service'
 import { lookupOpenSshKnownHost } from './openssh-known-hosts'
-import type { UpdateStatusSnapshot } from '../shared/updater'
+import { updatePreferencesPatchSchema, type UpdateStatusSnapshot } from '../shared/updater'
 
 function resolveEncryptionBackend(): EncryptionBackend {
   if (process.platform === 'win32') return 'dpapi'
@@ -130,27 +137,16 @@ const rendererPath = join(__dirname, '../renderer/index.html')
 const rendererUrl = process.env.ELECTRON_RENDERER_URL
 
 function trustedUrl(url: string): boolean {
-  try {
-    return rendererUrl
-      ? new URL(url).origin === new URL(rendererUrl).origin
-      : url.split(/[?#]/)[0] === pathToFileURL(rendererPath).href
-  } catch {
-    return false
-  }
+  return isTrustedRendererUrl(url, { rendererUrl, rendererPath })
 }
 
 function authorize(event: IpcMainInvokeEvent | IpcMainEvent): BrowserWindow {
-  const owner = BrowserWindow.fromWebContents(event.sender)
-  if (
-    !owner ||
-    !windows.has(owner.id) ||
-    event.sender !== owner.webContents ||
-    event.senderFrame !== event.sender.mainFrame ||
-    !trustedUrl(event.senderFrame.url)
-  ) {
-    throw new Error('未授权的请求来源')
-  }
-  return owner
+  return authorizeSender(event, {
+    getOwner: (sender) => BrowserWindow.fromWebContents(sender as Electron.WebContents),
+    hasWindow: (id) => windows.has(id),
+    getMainFrame: (sender) => (sender as Electron.WebContents).mainFrame,
+    urlConfig: { rendererUrl, rendererPath }
+  })
 }
 
 function rejectPendingSftpForSession(sessionId: string, reason: string): void {
@@ -389,50 +385,80 @@ function registerSessionSecurity(): void {
 }
 
 function registerIpc(): void {
-  ipcMain.handle(IPC.clipboardRead, async (event) => {
-    const owner = authorize(event)
-    if (!owner.isFocused()) throw new Error('请先聚焦工作台窗口')
-    const text = await clipboard.readText()
-    if (Buffer.byteLength(text, 'utf8') > MAX_CLIPBOARD_BYTES)
-      throw new Error('剪贴板文本超过 1 MiB 限制，请分批粘贴。')
-    return text
-  })
-  ipcMain.handle(IPC.clipboardWrite, (event, raw) => {
-    const owner = authorize(event)
-    if (!owner.isFocused()) throw new Error('请先聚焦工作台窗口')
-    const text = z
-      .string()
-      .refine((v) => Buffer.byteLength(v, 'utf8') <= MAX_CLIPBOARD_BYTES, '复制内容超过 1 MiB 限制')
-      .parse(raw)
-    return clipboard.writeText(text)
-  })
-  ipcMain.handle(IPC.openExternal, async (event, raw) => {
-    const owner = authorize(event)
-    if (!owner.isFocused()) throw new Error('请先聚焦工作台窗口')
-    const urlText = z.string().min(1).max(2048).parse(raw)
-    let parsed: URL
-    try {
-      parsed = new URL(urlText)
-    } catch {
-      throw new Error('无效的链接地址')
-    }
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      throw new Error('出于安全限制，仅允许在浏览器中打开 http/https 链接。')
-    }
-    const { response } = await dialog.showMessageBox(owner, {
-      type: 'question',
-      title: '打开外部链接？',
-      message: '确认在系统默认浏览器中打开此终端链接？',
-      detail: parsed.href,
-      buttons: ['取消', '在浏览器中打开'],
-      defaultId: 0,
-      cancelId: 0,
-      noLink: true
+  const ipc = createIpcRegistrar(ipcMain, authorize)
+  const clipboardWriteSchema = z
+    .string()
+    .refine((v) => Buffer.byteLength(v, 'utf8') <= MAX_CLIPBOARD_BYTES, '复制内容超过 1 MiB 限制')
+  const openExternalSchema = z.string().min(1).max(2048)
+  const revokeDeviceSchema = z.string().min(1).max(200)
+  const revisionSchema = z.string().regex(/^\d+$/, '无效版本号').max(32)
+  const trustDecisionSchema = z.object({ id: idSchema, accept: z.boolean() }).strict()
+  const windowActionSchema = z.enum(['minimize', 'maximize', 'close', 'hide-to-tray', 'restore-from-tray'])
+  const defaultTrayState = {
+    minimizeToTray: true,
+    closeToTray: false,
+    closeAction: 'quit' as const,
+    trayVisibility: 'when-minimized' as const,
+    trayCreated: false,
+    windowHiddenToTray: false
+  }
+  const requireUpdateService = (): OrbitUpdateService => {
+    if (!updateService) throw new Error('更新服务尚未就绪')
+    return updateService
+  }
+  const handleSftp = <TSchema extends z.ZodType<Record<string, unknown> & { sessionId: string }>>(
+    channel: string,
+    schema: TSchema,
+    action: string,
+    timeoutMs?: number
+  ): void => {
+    ipc.handleSchema(channel, schema, (input, owner) => {
+      const { sessionId, ...rest } = input
+      return callSftpWorker(owner, sessionId, { action, ...rest }, timeoutMs)
     })
-    if (response === 1) await shell.openExternal(parsed.href)
+  }
+
+  ipc.handle(
+    IPC.clipboardRead,
+    async () => {
+      const text = await clipboard.readText()
+      if (Buffer.byteLength(text, 'utf8') > MAX_CLIPBOARD_BYTES)
+        throw new Error('剪贴板文本超过 1 MiB 限制，请分批粘贴。')
+      return text
+    },
+    { requireFocused: true }
+  )
+  ipc.handleSchema(IPC.clipboardWrite, clipboardWriteSchema, (text) => clipboard.writeText(text), {
+    requireFocused: true
   })
-  ipcMain.handle(IPC.bootstrap, async (event) => {
-    const owner = authorize(event)
+  ipc.handleSchema(
+    IPC.openExternal,
+    openExternalSchema,
+    async (urlText, owner) => {
+      let parsed: URL
+      try {
+        parsed = new URL(urlText)
+      } catch {
+        throw new Error('无效的链接地址')
+      }
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new Error('出于安全限制，仅允许在浏览器中打开 http/https 链接。')
+      }
+      const { response } = await dialog.showMessageBox(owner, {
+        type: 'question',
+        title: '打开外部链接？',
+        message: '确认在系统默认浏览器中打开此终端链接？',
+        detail: parsed.href,
+        buttons: ['取消', '在浏览器中打开'],
+        defaultId: 0,
+        cancelId: 0,
+        noLink: true
+      })
+      if (response === 1) await shell.openExternal(parsed.href)
+    },
+    { requireFocused: true }
+  )
+  ipc.handle(IPC.bootstrap, async (owner) => {
     const [hosts, groups, tunnels, sync] = await Promise.all([
       repository.call<Host[]>('list'),
       repository.call<SyncGroup[]>('groupsList'),
@@ -451,14 +477,7 @@ function registerIpc(): void {
       encryptionAvailable: await isEncryptionUsable(),
       encryptionBackend: resolveEncryptionBackend(),
       maximized: owner.isMaximized(),
-      tray: trayManager?.getState() ?? {
-        minimizeToTray: true,
-        closeToTray: false,
-        closeAction: 'quit',
-        trayVisibility: 'when-minimized',
-        trayCreated: false,
-        windowHiddenToTray: false
-      },
+      tray: trayManager?.getState() ?? defaultTrayState,
       update: updateService!.getState(),
       versions: {
         app: app.getVersion(),
@@ -469,14 +488,11 @@ function registerIpc(): void {
       }
     } satisfies Bootstrap
   })
-  ipcMain.handle(IPC.shellsRefresh, async (event) => {
-    authorize(event)
+  ipc.handle(IPC.shellsRefresh, async () => {
     profiles = await discoverShells()
     return profiles
   })
-  ipcMain.handle(IPC.hostSave, async (event, raw) => {
-    authorize(event)
-    const input = hostInputSchema.parse(raw)
+  ipc.handleSchema(IPC.hostSave, hostInputSchema, async (input) => {
     let encrypted: Buffer | undefined
     if (input.password && input.savePassword && input.auth === 'password') {
       if (!(await isEncryptionUsable())) {
@@ -493,41 +509,31 @@ function registerIpc(): void {
     syncService.scheduleAutoSync(true)
     return hosts
   })
-  ipcMain.handle(IPC.hostRemove, async (event, raw) => {
-    authorize(event)
-    const id = idSchema.parse(raw)
+  ipc.handleSchema(IPC.hostRemove, idSchema, async (id) => {
     syncService.markLocalMutation()
     const hosts = await repository.call<Host[]>('remove', id)
     syncService.scheduleAutoSync(true)
     return hosts
   })
-  ipcMain.handle(IPC.groupSave, async (event, raw) => {
-    authorize(event)
-    const input = syncGroupInputSchema.parse(raw)
+  ipc.handleSchema(IPC.groupSave, syncGroupInputSchema, async (input) => {
     syncService.markLocalMutation()
     const groups = await repository.call<SyncGroup[]>('groupSave', input)
     syncService.scheduleAutoSync(true)
     return groups
   })
-  ipcMain.handle(IPC.groupRemove, async (event, raw) => {
-    authorize(event)
-    const id = idSchema.parse(raw)
+  ipc.handleSchema(IPC.groupRemove, idSchema, async (id) => {
     syncService.markLocalMutation()
     const groups = await repository.call<SyncGroup[]>('groupRemove', id)
     syncService.scheduleAutoSync(true)
     return groups
   })
-  ipcMain.handle(IPC.tunnelSave, async (event, raw) => {
-    authorize(event)
-    const input = syncTunnelInputSchema.parse(raw)
+  ipc.handleSchema(IPC.tunnelSave, syncTunnelInputSchema, async (input) => {
     syncService.markLocalMutation()
     const tunnels = await repository.call<SyncTunnel[]>('tunnelSave', input)
     syncService.scheduleAutoSync(true)
     return tunnels
   })
-  ipcMain.handle(IPC.tunnelRemove, async (event, raw) => {
-    authorize(event)
-    const id = idSchema.parse(raw)
+  ipc.handleSchema(IPC.tunnelRemove, idSchema, async (id) => {
     await tunnelRuntime.stop(id)
     syncService.markLocalMutation()
     const tunnels = await repository.call<SyncTunnel[]>('tunnelRemove', id)
@@ -535,14 +541,11 @@ function registerIpc(): void {
     trayManager?.refresh()
     return tunnels
   })
-  ipcMain.handle(IPC.tunnelStatuses, async (event) => {
-    authorize(event)
+  ipc.handle(IPC.tunnelStatuses, async () => {
     const tunnels = await repository.call<SyncTunnel[]>('tunnelsList')
     return tunnelRuntime.listStatuses(tunnels)
   })
-  ipcMain.handle(IPC.tunnelToggle, async (event, raw) => {
-    authorize(event)
-    const { id, active } = tunnelToggleSchema.parse(raw)
+  ipc.handleSchema(IPC.tunnelToggle, tunnelToggleSchema, async ({ id, active }) => {
     const tunnels = await repository.call<SyncTunnel[]>('tunnelsList')
     const tunnel = tunnels.find((item) => item.id === id)
     if (!tunnel) throw new Error('端口转发规则不存在，请刷新列表。')
@@ -566,95 +569,37 @@ function registerIpc(): void {
     trayManager?.refresh()
     return tunnelRuntime.listStatuses(updatedTunnels)
   })
-  ipcMain.handle(IPC.netProbe, async (event, raw) => {
-    authorize(event)
-    const input = netProbeSchema.parse(raw)
-    return probeTcpConnectivity(input)
-  })
-  ipcMain.handle(IPC.portCheck, async (event, raw) => {
-    authorize(event)
-    const input = portCheckSchema.parse(raw)
-    return tunnelRuntime.checkLocalPort(input)
-  })
-  ipcMain.handle(IPC.knownHostsList, async (event) => {
-    authorize(event)
-    return repository.call<KnownHostEntry[]>('knownHostsList')
-  })
-  ipcMain.handle(IPC.knownHostsRemove, async (event, raw) => {
-    authorize(event)
-    const { hostKey } = knownHostRemoveSchema.parse(raw)
-    return repository.call<KnownHostEntry[]>('knownHostsRemove', hostKey)
-  })
-  ipcMain.handle(IPC.syncStatus, (event) => {
-    authorize(event)
-    return syncService.getStatus()
-  })
-  ipcMain.handle(IPC.syncDefaults, (event) => {
-    authorize(event)
-    return syncService.getDefaults()
-  })
-  ipcMain.handle(IPC.syncRegister, (event, raw) => {
-    authorize(event)
-    return syncService.register(raw)
-  })
-  ipcMain.handle(IPC.syncLogin, (event, raw) => {
-    authorize(event)
-    return syncService.login(raw)
-  })
-  ipcMain.handle(IPC.syncLogout, (event) => {
-    authorize(event)
-    return syncService.logout()
-  })
-  ipcMain.handle(IPC.syncVaultCreate, (event, raw) => {
-    authorize(event)
-    return syncService.createVault(raw)
-  })
-  ipcMain.handle(IPC.syncVaultUnlock, (event, raw) => {
-    authorize(event)
-    return syncService.unlockVault(raw)
-  })
-  ipcMain.handle(IPC.syncVaultRecover, (event, raw) => {
-    authorize(event)
-    return syncService.recoverVault(raw)
-  })
-  ipcMain.handle(IPC.syncVaultLock, (event) => {
-    authorize(event)
-    return syncService.lockVault()
-  })
-  ipcMain.handle(IPC.syncRun, (event) => {
-    authorize(event)
-    return syncService.syncNow()
-  })
-  ipcMain.handle(IPC.syncResolveConflicts, (event, raw) => {
-    authorize(event)
-    const { resolutions } = syncResolveConflictsSchema.parse(raw)
-    return syncService.resolveConflicts(resolutions)
-  })
-  ipcMain.handle(IPC.syncUpdatePreferences, (event, raw) => {
-    authorize(event)
-    return syncService.updatePreferences(raw)
-  })
-  ipcMain.handle(IPC.syncListDevices, (event) => {
-    authorize(event)
-    return syncService.listDevices()
-  })
-  ipcMain.handle(IPC.syncRevokeDevice, (event, raw) => {
-    authorize(event)
-    const deviceId = z.string().min(1).max(200).parse(raw)
-    return syncService.revokeDevice(deviceId)
-  })
-  ipcMain.handle(IPC.syncListRevisions, (event) => {
-    authorize(event)
-    return syncService.listRevisions()
-  })
-  ipcMain.handle(IPC.syncRestoreRevision, (event, raw) => {
-    authorize(event)
-    const revision = z.string().regex(/^\d+$/, '无效版本号').max(32).parse(raw)
-    return syncService.restoreRevision(revision)
-  })
-  ipcMain.handle(IPC.sessionOpen, async (event, raw) => {
-    const owner = authorize(event)
-    const input = openSessionSchema.parse(raw)
+  ipc.handleSchema(IPC.netProbe, netProbeSchema, (input) => probeTcpConnectivity(input))
+  ipc.handleSchema(IPC.portCheck, portCheckSchema, (input) => tunnelRuntime.checkLocalPort(input))
+  ipc.handle(IPC.knownHostsList, () => repository.call<KnownHostEntry[]>('knownHostsList'))
+  ipc.handleSchema(IPC.knownHostsRemove, knownHostRemoveSchema, ({ hostKey }) =>
+    repository.call<KnownHostEntry[]>('knownHostsRemove', hostKey)
+  )
+  ipc.handle(IPC.syncStatus, () => syncService.getStatus())
+  ipc.handle(IPC.syncDefaults, () => syncService.getDefaults())
+  ipc.handleSchema(IPC.syncRegister, syncRegisterInputSchema, (input) => syncService.register(input))
+  ipc.handleSchema(IPC.syncLogin, syncLoginInputSchema, (input) => syncService.login(input))
+  ipc.handle(IPC.syncLogout, () => syncService.logout())
+  ipc.handleSchema(IPC.syncVaultCreate, syncVaultCreateInputSchema, (input) => syncService.createVault(input))
+  ipc.handleSchema(IPC.syncVaultUnlock, syncVaultUnlockInputSchema, (input) => syncService.unlockVault(input))
+  ipc.handleSchema(IPC.syncVaultRecover, syncVaultRecoverInputSchema, (input) =>
+    syncService.recoverVault(input)
+  )
+  ipc.handle(IPC.syncVaultLock, () => syncService.lockVault())
+  ipc.handle(IPC.syncRun, () => syncService.syncNow())
+  ipc.handleSchema(IPC.syncResolveConflicts, syncResolveConflictsSchema, ({ resolutions }) =>
+    syncService.resolveConflicts(resolutions)
+  )
+  ipc.handleSchema(IPC.syncUpdatePreferences, syncPreferencesUpdateSchema, (input) =>
+    syncService.updatePreferences(input)
+  )
+  ipc.handle(IPC.syncListDevices, () => syncService.listDevices())
+  ipc.handleSchema(IPC.syncRevokeDevice, revokeDeviceSchema, (deviceId) => syncService.revokeDevice(deviceId))
+  ipc.handle(IPC.syncListRevisions, () => syncService.listRevisions())
+  ipc.handleSchema(IPC.syncRestoreRevision, revisionSchema, (revision) =>
+    syncService.restoreRevision(revision)
+  )
+  ipc.handleSchema(IPC.sessionOpen, openSessionSchema, async (input, owner) => {
     if (sessions.size + pendingSessionOpens >= MAX_SESSIONS)
       throw new Error(`最多同时打开 ${MAX_SESSIONS} 个会话，请先关闭不再使用的会话。`)
     pendingSessionOpens++
@@ -699,14 +644,10 @@ function registerIpc(): void {
       pendingSessionOpens--
     }
   })
-  ipcMain.handle(IPC.sessionClose, (event, raw) => {
-    const owner = authorize(event)
-    const id = idSchema.parse(raw)
+  ipc.handleSchema(IPC.sessionClose, idSchema, (id, owner) => {
     if (sessions.get(id)?.owner === owner.id) closeSession(id)
   })
-  ipcMain.handle(IPC.trust, async (event, raw) => {
-    const owner = authorize(event)
-    const { id, accept } = z.object({ id: idSchema, accept: z.boolean() }).strict().parse(raw)
+  ipc.handleSchema(IPC.trust, trustDecisionSchema, async ({ id, accept }, owner) => {
     const request = challenges.get(id)
     if (!request || sessions.get(id)?.owner !== owner.id) throw new Error('主机校验请求已过期，请重新连接。')
     challenges.delete(id)
@@ -714,104 +655,37 @@ function registerIpc(): void {
       await repository.call('trust', request.address, request.port, request.fingerprint, request.algorithm)
     workers.get('ssh')?.postMessage({ type: 'verify', id, accept })
   })
-  ipcMain.handle(IPC.sftpHome, (event, raw) => {
-    const owner = authorize(event)
-    const { sessionId } = sftpSessionSchema.parse(raw)
-    return callSftpWorker(owner, sessionId, { action: 'home' })
-  })
-  ipcMain.handle(IPC.sftpList, (event, raw) => {
-    const owner = authorize(event)
-    const { sessionId, path } = sftpPathRequestSchema.parse(raw)
-    return callSftpWorker(owner, sessionId, { action: 'list', path })
-  })
-  ipcMain.handle(IPC.sftpStat, (event, raw) => {
-    const owner = authorize(event)
-    const { sessionId, path } = sftpPathRequestSchema.parse(raw)
-    return callSftpWorker(owner, sessionId, { action: 'stat', path })
-  })
-  ipcMain.handle(IPC.sftpCollectTree, (event, raw) => {
-    const owner = authorize(event)
-    const { sessionId, path } = sftpPathRequestSchema.parse(raw)
-    return callSftpWorker(owner, sessionId, { action: 'collectTree', path }, 60_000)
-  })
-  ipcMain.handle(IPC.sftpMkdir, (event, raw) => {
-    const owner = authorize(event)
-    const { sessionId, path } = sftpPathRequestSchema.parse(raw)
-    return callSftpWorker(owner, sessionId, { action: 'mkdir', path })
-  })
-  ipcMain.handle(IPC.sftpRename, (event, raw) => {
-    const owner = authorize(event)
-    const { sessionId, oldPath, newPath } = sftpRenameSchema.parse(raw)
-    return callSftpWorker(owner, sessionId, { action: 'rename', oldPath, newPath })
-  })
-  ipcMain.handle(IPC.sftpChmod, (event, raw) => {
-    const owner = authorize(event)
-    const { sessionId, path, mode } = sftpChmodSchema.parse(raw)
-    return callSftpWorker(owner, sessionId, { action: 'chmod', path, mode })
-  })
-  ipcMain.handle(IPC.sftpDelete, (event, raw) => {
-    const owner = authorize(event)
-    const { sessionId, path, recursive } = sftpDeleteSchema.parse(raw)
-    return callSftpWorker(owner, sessionId, { action: 'delete', path, recursive }, 120_000)
-  })
-  ipcMain.handle(IPC.sftpUpload, (event, raw) => {
-    const owner = authorize(event)
-    const input = sftpUploadSchema.parse(raw)
-    return callSftpWorker(
-      owner,
-      input.sessionId,
-      {
-        action: 'upload',
-        transferId: input.transferId,
-        localPath: input.localPath,
-        remotePath: input.remotePath,
-        conflict: input.conflict
-      },
-      0
-    )
-  })
-  ipcMain.handle(IPC.sftpDownload, (event, raw) => {
-    const owner = authorize(event)
-    const input = sftpDownloadSchema.parse(raw)
-    return callSftpWorker(
-      owner,
-      input.sessionId,
-      {
-        action: 'download',
-        transferId: input.transferId,
-        remotePath: input.remotePath,
-        localPath: input.localPath,
-        conflict: input.conflict
-      },
-      0
-    )
-  })
-  ipcMain.handle(IPC.sftpCancelTransfer, (event, raw) => {
-    const owner = authorize(event)
-    const { sessionId, transferId } = sftpCancelTransferSchema.parse(raw)
+  handleSftp(IPC.sftpHome, sftpSessionSchema, 'home')
+  handleSftp(IPC.sftpList, sftpPathRequestSchema, 'list')
+  handleSftp(IPC.sftpStat, sftpPathRequestSchema, 'stat')
+  handleSftp(IPC.sftpCollectTree, sftpPathRequestSchema, 'collectTree', 60_000)
+  handleSftp(IPC.sftpMkdir, sftpPathRequestSchema, 'mkdir')
+  handleSftp(IPC.sftpRename, sftpRenameSchema, 'rename')
+  handleSftp(IPC.sftpChmod, sftpChmodSchema, 'chmod')
+  handleSftp(IPC.sftpDelete, sftpDeleteSchema, 'delete', 120_000)
+  handleSftp(IPC.sftpUpload, sftpUploadSchema, 'upload', 0)
+  handleSftp(IPC.sftpDownload, sftpDownloadSchema, 'download', 0)
+  ipc.handleSchema(IPC.sftpCancelTransfer, sftpCancelTransferSchema, ({ sessionId, transferId }, owner) => {
     const session = sessions.get(sessionId)
     if (session && session.owner === owner.id && session.kind === 'ssh') {
       workers.get('ssh')?.postMessage({ type: 'sftp:cancel', sessionId, transferId })
     }
   })
-  ipcMain.handle(IPC.sftpPickUploadFiles, async (event) => {
-    const owner = authorize(event)
+  ipc.handle(IPC.sftpPickUploadFiles, async (owner) => {
     const res = await dialog.showOpenDialog(owner, {
       title: '选择要上传的本地文件',
       properties: ['openFile', 'multiSelections']
     })
     return res.canceled ? [] : res.filePaths
   })
-  ipcMain.handle(IPC.sftpPickUploadDirs, async (event) => {
-    const owner = authorize(event)
+  ipc.handle(IPC.sftpPickUploadDirs, async (owner) => {
     const res = await dialog.showOpenDialog(owner, {
       title: '选择要上传的本地文件夹',
       properties: ['openDirectory', 'multiSelections']
     })
     return res.canceled ? [] : res.filePaths
   })
-  ipcMain.handle(IPC.sftpPickDownloadDir, async (event) => {
-    const owner = authorize(event)
+  ipc.handle(IPC.sftpPickDownloadDir, async (owner) => {
     const res = await dialog.showOpenDialog(owner, {
       title: '选择本地保存目录',
       defaultPath: app.getPath('downloads'),
@@ -819,9 +693,7 @@ function registerIpc(): void {
     })
     return res.canceled ? null : (res.filePaths[0] ?? null)
   })
-  ipcMain.handle(IPC.sftpPickDownloadFile, async (event, raw) => {
-    const owner = authorize(event)
-    const { defaultName } = sftpPickDownloadFileSchema.parse(raw)
+  ipc.handleSchema(IPC.sftpPickDownloadFile, sftpPickDownloadFileSchema, async ({ defaultName }, owner) => {
     const safeName = sanitizeDownloadFilename(defaultName)
     const res = await dialog.showSaveDialog(owner, {
       title: '保存远端文件到本地',
@@ -829,82 +701,34 @@ function registerIpc(): void {
     })
     return res.canceled ? null : (res.filePath ?? null)
   })
-  ipcMain.handle(IPC.sftpExpandLocalUploads, async (event, raw) => {
-    authorize(event)
-    const { localPaths } = sftpExpandLocalSchema.parse(raw)
-    return expandLocalUploadPaths(localPaths)
-  })
-  ipcMain.handle(IPC.sftpRevealLocal, (event, raw) => {
-    authorize(event)
-    const { localPath } = sftpRevealLocalSchema.parse(raw)
+  ipc.handleSchema(IPC.sftpExpandLocalUploads, sftpExpandLocalSchema, ({ localPaths }) =>
+    expandLocalUploadPaths(localPaths)
+  )
+  ipc.handleSchema(IPC.sftpRevealLocal, sftpRevealLocalSchema, ({ localPath }) => {
     if (!existsSync(localPath)) return false
     shell.showItemInFolder(localPath)
     return true
   })
-  ipcMain.handle(IPC.trayState, (event) => {
-    authorize(event)
-    return (
-      trayManager?.getState() ?? {
-        minimizeToTray: true,
-        closeToTray: false,
-        closeAction: 'quit',
-        trayVisibility: 'when-minimized',
-        trayCreated: false,
-        windowHiddenToTray: false
-      }
-    )
-  })
-  ipcMain.handle(IPC.trayUpdatePreferences, (event, raw) => {
-    authorize(event)
+  ipc.handle(IPC.trayState, () => trayManager?.getState() ?? defaultTrayState)
+  ipc.handleSchema(IPC.trayUpdatePreferences, trayPreferencesPatchSchema, (patch) => {
     if (!trayManager) throw new Error('系统托盘尚未就绪')
-    return trayManager.updatePreferences(raw)
+    return trayManager.updatePreferences(patch)
   })
-  ipcMain.handle(IPC.updateState, (event) => {
-    authorize(event)
-    if (!updateService) throw new Error('更新服务尚未就绪')
-    return updateService.getState()
-  })
-  ipcMain.handle(IPC.updateCheck, (event) => {
-    authorize(event)
-    if (!updateService) throw new Error('更新服务尚未就绪')
-    return updateService.checkForUpdates({ silent: false })
-  })
-  ipcMain.handle(IPC.updateDownload, (event) => {
-    authorize(event)
-    if (!updateService) throw new Error('更新服务尚未就绪')
-    return updateService.downloadUpdate()
-  })
-  ipcMain.handle(IPC.updateCancelDownload, (event) => {
-    authorize(event)
-    if (!updateService) throw new Error('更新服务尚未就绪')
-    return updateService.cancelDownload()
-  })
-  ipcMain.handle(IPC.updateInstall, (event) => {
-    authorize(event)
-    if (!updateService) throw new Error('更新服务尚未就绪')
-    return updateService.installUpdate()
-  })
-  ipcMain.handle(IPC.updateRevealFile, (event) => {
-    authorize(event)
-    if (!updateService) throw new Error('更新服务尚未就绪')
-    return updateService.revealDownloadedFile()
-  })
-  ipcMain.handle(IPC.updateOpenReleasePage, (event) => {
-    authorize(event)
-    if (!updateService) throw new Error('更新服务尚未就绪')
-    return updateService.openReleasePage()
-  })
-  ipcMain.handle(IPC.updateUpdatePreferences, (event, raw) => {
-    authorize(event)
-    if (!updateService) throw new Error('更新服务尚未就绪')
-    return updateService.updatePreferences(raw)
-  })
-  ipcMain.handle(IPC.windowIsMaximized, (event) => {
-    const owner = authorize(event)
-    return owner.isMaximized()
-  })
-  ipcMain.on(IPC.window, (event, action) => {
-    const owner = authorize(event)
+  ipc.handle(IPC.updateState, () => requireUpdateService().getState())
+  ipc.handle(IPC.updateCheck, () => requireUpdateService().checkForUpdates({ silent: false }))
+  ipc.handle(IPC.updateDownload, () => requireUpdateService().downloadUpdate())
+  ipc.handle(IPC.updateCancelDownload, () => requireUpdateService().cancelDownload())
+  ipc.handle(IPC.updateInstall, () => requireUpdateService().installUpdate())
+  ipc.handle(IPC.updateRevealFile, () => requireUpdateService().revealDownloadedFile())
+  ipc.handle(IPC.updateOpenReleasePage, () => requireUpdateService().openReleasePage())
+  ipc.handleSchema(IPC.updateUpdatePreferences, updatePreferencesPatchSchema, (patch) =>
+    requireUpdateService().updatePreferences(patch)
+  )
+  ipc.handle(IPC.windowIsMaximized, (owner) => owner.isMaximized())
+  ipc.on(IPC.window, (rawAction, owner) => {
+    const parsed = windowActionSchema.safeParse(rawAction)
+    if (!parsed.success) return
+    const action = parsed.data
     if (action === 'minimize') {
       if (trayManager?.getPreferences().minimizeToTray) trayManager.minimizeToTray(owner)
       else owner.minimize()

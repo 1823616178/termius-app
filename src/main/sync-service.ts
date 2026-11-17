@@ -11,6 +11,7 @@ import {
   syncVaultCreateInputSchema,
   syncVaultRecoverInputSchema,
   syncVaultUnlockInputSchema,
+  validateSyncServerUrl,
   type SyncConfigFormDefaults,
   type SyncConflict,
   type SyncConflictResolutionItem,
@@ -128,8 +129,16 @@ export class SyncService {
       const account = this.account
       if (!account || !account.keepSignedIn || !account.encryptedRefreshToken) {
         if (account?.encryptedRefreshToken && !account.keepSignedIn) {
-          this.account = await this.repository.call<SyncAccountRecord | undefined>('syncAccountClearAuth')
+          this.account = await this.repository.call<SyncAccountRecord>('syncAccountClearAuth')
         }
+        this.emitStatus(this.buildStatus())
+        return
+      }
+      try {
+        validateSyncServerUrl(account.serverUrl, { allowInsecureHttp: account.allowInsecureHttp })
+      } catch (error) {
+        await this.clearLocalAuthState()
+        this.lastError = error instanceof Error ? error.message : '同步服务器地址未通过安全校验，请重新登录。'
         this.emitStatus(this.buildStatus())
         return
       }
@@ -182,6 +191,7 @@ export class SyncService {
     const encryptionAvailable = await isSystemEncryptionAvailable()
     return {
       serverUrl: this.account?.serverUrl ?? '',
+      allowInsecureHttp: this.account?.allowInsecureHttp ?? false,
       email: this.account?.rememberEmail ? (this.account.email ?? '') : '',
       rememberEmail: this.account?.rememberEmail ?? true,
       keepSignedIn: this.account?.keepSignedIn ?? false,
@@ -476,6 +486,10 @@ export class SyncService {
 
       this.account = await this.repository.call<SyncAccountRecord>('syncAccountUpsert', {
         serverUrl: input.serverUrl ?? this.account.serverUrl,
+        allowInsecureHttp:
+          input.serverUrl !== undefined
+            ? Boolean(input.allowInsecureHttp)
+            : (input.allowInsecureHttp ?? this.account.allowInsecureHttp),
         email: this.account.email,
         rememberEmail: input.rememberEmail ?? this.account.rememberEmail,
         keepSignedIn: input.keepSignedIn ?? this.account.keepSignedIn,
@@ -724,6 +738,7 @@ export class SyncService {
     }>(input.serverUrl, endpoint, {
       method: 'POST',
       withAuth: false,
+      allowInsecureHttp: Boolean(input.allowInsecureHttp),
       body: requestBody
     })
 
@@ -743,6 +758,7 @@ export class SyncService {
 
     this.account = await this.repository.call<SyncAccountRecord>('syncAccountUpsert', {
       serverUrl: input.serverUrl,
+      allowInsecureHttp: Boolean(input.allowInsecureHttp),
       email: authRes.user?.email ?? input.email,
       rememberEmail: input.rememberEmail,
       keepSignedIn: input.keepSignedIn,
@@ -1259,6 +1275,7 @@ export class SyncService {
       headers?: Record<string, string>
       withAuth: boolean
       allowRetryAuth?: boolean
+      allowInsecureHttp?: boolean
     }
   ): Promise<T> {
     const { data } = await this.requestJsonWithMeta<T>(serverUrl, path, opts)
@@ -1274,9 +1291,13 @@ export class SyncService {
       headers?: Record<string, string>
       withAuth: boolean
       allowRetryAuth?: boolean
+      allowInsecureHttp?: boolean
     }
   ): Promise<{ data: T; etag: string | null }> {
-    const url = `${serverUrl}${path}`
+    const validatedServerUrl = validateSyncServerUrl(serverUrl, {
+      allowInsecureHttp: opts.allowInsecureHttp ?? this.account?.allowInsecureHttp ?? false
+    })
+    const url = `${validatedServerUrl}${path}`
     const allowRetryAuth = opts.allowRetryAuth ?? true
 
     for (let retry = 0; retry <= MAX_RETRY_429; retry++) {
@@ -1400,6 +1421,7 @@ export class SyncService {
     return {
       phase,
       serverUrl: acc?.serverUrl ?? '',
+      allowInsecureHttp: acc?.allowInsecureHttp ?? false,
       email: acc?.rememberEmail || signedIn ? (acc?.email ?? '') : '',
       rememberEmail: acc?.rememberEmail ?? true,
       keepSignedIn: acc?.keepSignedIn ?? false,

@@ -1,4 +1,5 @@
 import { Repository } from './database'
+import { shutdownKdfWorker } from './kdf-client'
 const repository = new Repository(process.argv[2]!)
 
 const ALLOWED_METHODS = new Set<keyof Repository>([
@@ -39,8 +40,11 @@ const ALLOWED_METHODS = new Set<keyof Repository>([
 
 process.parentPort.on('message', ({ data }) => {
   if (data.type === 'shutdown') {
-    repository.close()
-    process.exit(0)
+    void shutdownKdfWorker().finally(() => {
+      repository.close()
+      process.exit(0)
+    })
+    return
   }
   const { id, method, args } = data
   void (async () => {

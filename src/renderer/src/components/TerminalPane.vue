@@ -10,16 +10,12 @@ import {
   GripVertical,
   Network,
   Palette,
-  Play,
-  Plus,
   RotateCw,
   Search,
   Sparkles,
-  Square,
   TextSelect,
-  Trash2,
   X
-} from 'lucide-vue-next'
+} from '@lucide/vue'
 import { instanceClass } from '../../../shared/classes'
 import { MAX_CLIPBOARD_BYTES, type TerminalEvent } from '../../../shared/contracts'
 import { matchTerminalShortcut, shouldInterceptInTerminal } from '../../../shared/shortcuts'
@@ -28,7 +24,6 @@ import { markHostUsed } from '../services/host-recency'
 import { buildShellColorizeCommand, cycleTerminalTheme, getTerminalTheme } from '../services/terminal-themes'
 import {
   activeTerminalDimensions,
-  checkPortOccupancy,
   copyOnSelect,
   cursorBlink,
   cursorStyle,
@@ -37,26 +32,13 @@ import {
   isPaneTokenMounted,
   lineHeight,
   notify,
-  portCheckResults,
-  probeConnectivity,
-  probeResults,
   prompt,
-  removeSyncTunnel,
-  saveSyncTunnel,
   syncTunnels,
   terminalTheme,
-  toggleTunnelRuntime,
-  tunnelBusy,
   tunnelStatuses
 } from '../stores/workbench'
-import OrbitSelect from './OrbitSelect.vue'
 import OrbitStage3D from './OrbitStage3D.vue'
-
-const quickFwdTypeOptions = [
-  { value: 'L', label: '-L 本地转发' },
-  { value: 'R', label: '-R 远端转发' },
-  { value: 'D', label: '-D SOCKS5' }
-]
+import TerminalTunnelDrawer from './TerminalTunnelDrawer.vue'
 
 const props = defineProps<{
   token: string
@@ -98,12 +80,6 @@ const status = ref<'connecting' | 'verifying' | 'authenticating' | 'running' | '
 const message = ref('')
 const lastErrorWasAuth = ref(false)
 const tunnelDrawerOpen = ref(false)
-const quickFwdType = ref<'L' | 'R' | 'D'>('L')
-const quickFwdListenPort = ref(1080)
-const quickFwdDestHost = ref('127.0.0.1')
-const quickFwdDestPort = ref(8080)
-const probeHostInput = ref('')
-const probePortInput = ref(22)
 
 const paneHost = computed(() =>
   props.hostId ? hosts.value.find((item) => item.id === props.hostId) : undefined
@@ -114,52 +90,6 @@ const paneTunnels = computed(() =>
 const activePaneTunnelCount = computed(
   () => paneTunnels.value.filter((t) => tunnelStatuses.value[t.id]?.active).length
 )
-
-watch(
-  paneHost,
-  (h) => {
-    if (h) {
-      probeHostInput.value = h.address
-      probePortInput.value = h.port
-    } else if (!probeHostInput.value) {
-      probeHostInput.value = '127.0.0.1'
-      probePortInput.value = 22
-    }
-  },
-  { immediate: true }
-)
-
-async function runPaneConnectivityTest(): Promise<void> {
-  const target = probeHostInput.value.trim() || paneHost.value?.address || '127.0.0.1'
-  const port = Number(probePortInput.value) || paneHost.value?.port || 22
-  const res = await probeConnectivity(target, port, `pane:${props.token}`)
-  notify(res.reachable ? `${target}:${port} 连通 (${res.latencyMs} ms)` : res.message)
-}
-
-async function runPanePortCheck(): Promise<void> {
-  const res = await checkPortOccupancy('127.0.0.1', Number(quickFwdListenPort.value), `pane:${props.token}`)
-  notify(res.message)
-}
-
-async function createAndStartPaneTunnel(): Promise<void> {
-  const sid = props.hostId ?? hosts.value[0]?.id
-  if (!sid) {
-    notify('请先在主机库添加 SSH 服务器再创建端口转发')
-    return
-  }
-  await saveSyncTunnel({
-    name: `终端转发-${quickFwdType.value}-${quickFwdListenPort.value}`,
-    serverId: sid,
-    groupId: null,
-    type: quickFwdType.value,
-    listenHost: '127.0.0.1',
-    listenPort: Number(quickFwdListenPort.value),
-    destHost: quickFwdType.value === 'D' ? '127.0.0.1' : quickFwdDestHost.value.trim() || '127.0.0.1',
-    destPort: quickFwdType.value === 'D' ? 0 : Number(quickFwdDestPort.value),
-    autoReconnect: true,
-    enabled: false
-  })
-}
 const hudMounted = ref(props.kind === 'ssh' && !resumedSession)
 const hudFading = ref(false)
 let hudTimer: number | undefined
@@ -178,6 +108,8 @@ const contextMenu = ref<{ x: number; y: number } | null>(null)
 const hasSelection = ref(false)
 
 let handle: TerminalHandle | undefined
+let mountSeq = 0
+let unmounted = false
 let resizeSub: { dispose: () => void } | undefined
 let selectionSub: { dispose: () => void } | undefined
 let searchSub: { dispose: () => void } | undefined
@@ -428,6 +360,7 @@ function detachSubscriptions() {
 }
 
 function disposeHandle() {
+  mountSeq += 1
   detachSubscriptions()
   handle?.dispose()
   handle = undefined
@@ -436,7 +369,9 @@ function disposeHandle() {
 
 async function mountAndConnect() {
   disposeHandle()
-  if (!surface.value) return
+  const targetSurface = surface.value
+  if (!targetSurface || unmounted) return
+  const seq = mountSeq
   lastErrorWasAuth.value = false
   // A pane remounted by drag/dock re-adopts its live session; don't flash the "connecting" UI.
   const resuming = Boolean(peekConnectedTerminal(props.token))
@@ -447,66 +382,76 @@ async function mountAndConnect() {
     hudFading.value = false
   }
 
-  handle = createTerminal(props.token, surface.value, updateState, screenReader.value, {
-    themeId: terminalTheme.value,
-    fontSize: props.fontSize,
-    lineHeight: lineHeight.value,
-    cursorStyle: cursorStyle.value,
-    cursorBlink: cursorBlink.value
-  })
-  const alreadyConnected = handle.isConnected()
-  if (alreadyConnected) {
-    updateState(handle.getLastState(), true)
-  }
-  dims.value = handle.getDimensions()
-  if (props.visible) activeTerminalDimensions.value = dims.value
-
-  resizeSub = handle.terminal.onResize(({ cols, rows }) => {
-    dims.value = { cols, rows }
-    if (props.visible) activeTerminalDimensions.value = { cols, rows }
-  })
-  selectionSub = handle.terminal.onSelectionChange(() => {
-    hasSelection.value = Boolean(handle?.terminal.hasSelection())
-    if (copyOnSelect.value && hasSelection.value) {
-      copySelection()
-    }
-  })
-  searchSub = handle.search.onDidChangeResults(({ resultIndex, resultCount }) => {
-    searchMeta.value = { index: resultIndex, count: resultCount }
-  })
-
-  handle.terminal.attachCustomKeyEventHandler((event) => {
-    if (shouldInterceptInTerminal(event)) return false
-    const action = matchTerminalShortcut(event)
-    if (!action) return true
-    if (action === 'copy') {
-      event.preventDefault()
-      copySelection()
-      return false
-    }
-    if (action === 'paste') {
-      event.preventDefault()
-      void pasteClipboard()
-      return false
-    }
-    if (action === 'search') {
-      event.preventDefault()
-      void toggleSearch()
-      return false
-    }
-    return true
-  })
-
-  if (alreadyConnected) {
-    emit('session', handle.getSessionId())
-    handle.refresh()
-    await nextTick()
-    if (props.visible) handle.terminal.focus()
-    return
-  }
-
-  const connectingHandle = handle
+  let connectingHandle: TerminalHandle | undefined
   try {
+    const created = await createTerminal(props.token, targetSurface, updateState, screenReader.value, {
+      themeId: terminalTheme.value,
+      fontSize: props.fontSize,
+      lineHeight: lineHeight.value,
+      cursorStyle: cursorStyle.value,
+      cursorBlink: cursorBlink.value
+    })
+    if (unmounted || seq !== mountSeq || surface.value !== targetSurface) {
+      if (isPaneTokenMounted(props.token)) {
+        created.detachHost(targetSurface)
+      } else {
+        created.dispose()
+      }
+      return
+    }
+    handle = created
+    connectingHandle = created
+    const alreadyConnected = handle.isConnected()
+    if (alreadyConnected) {
+      updateState(handle.getLastState(), true)
+    }
+    dims.value = handle.getDimensions()
+    if (props.visible) activeTerminalDimensions.value = dims.value
+
+    resizeSub = handle.terminal.onResize(({ cols, rows }) => {
+      dims.value = { cols, rows }
+      if (props.visible) activeTerminalDimensions.value = { cols, rows }
+    })
+    selectionSub = handle.terminal.onSelectionChange(() => {
+      hasSelection.value = Boolean(handle?.terminal.hasSelection())
+      if (copyOnSelect.value && hasSelection.value) {
+        copySelection()
+      }
+    })
+    searchSub = handle.search.onDidChangeResults(({ resultIndex, resultCount }) => {
+      searchMeta.value = { index: resultIndex, count: resultCount }
+    })
+
+    handle.terminal.attachCustomKeyEventHandler((event) => {
+      if (shouldInterceptInTerminal(event)) return false
+      const action = matchTerminalShortcut(event)
+      if (!action) return true
+      if (action === 'copy') {
+        event.preventDefault()
+        copySelection()
+        return false
+      }
+      if (action === 'paste') {
+        event.preventDefault()
+        void pasteClipboard()
+        return false
+      }
+      if (action === 'search') {
+        event.preventDefault()
+        void toggleSearch()
+        return false
+      }
+      return true
+    })
+
+    if (alreadyConnected) {
+      emit('session', handle.getSessionId())
+      handle.refresh()
+      await nextTick()
+      if (props.visible) handle.terminal.focus()
+      return
+    }
+
     if (props.kind === 'local') {
       if (!props.profileId) throw new Error('缺少本地终端配置标识')
       await connectingHandle.connect({ kind: 'local', profileId: props.profileId })
@@ -519,7 +464,7 @@ async function mountAndConnect() {
     emit('session', handle.getSessionId())
     if (props.visible) handle.terminal.focus()
   } catch (error) {
-    if (handle !== connectingHandle) return
+    if (connectingHandle && handle !== connectingHandle) return
     const errorMessage = error instanceof Error ? error.message : '连接失败'
     if (props.kind === 'ssh' && props.hostId && errorMessage.includes('请输入本次连接密码')) {
       lastErrorWasAuth.value = true
@@ -537,7 +482,7 @@ async function mountAndConnect() {
       })
     }
   } finally {
-    if (handle === connectingHandle) emit('consumed')
+    if (connectingHandle && handle === connectingHandle) emit('consumed')
   }
 }
 
@@ -617,6 +562,8 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  unmounted = true
+  mountSeq += 1
   if (hudTimer) window.clearTimeout(hudTimer)
   surface.value?.removeEventListener('paste', interceptPaste, true)
   window.removeEventListener('click', closeContextMenu)
@@ -767,140 +714,7 @@ onBeforeUnmount(() => {
         <X :size="14" />
       </button>
     </header>
-    <div v-if="tunnelDrawerOpen" :class="c('container_workspace_terminal_tunnel_drawer')">
-      <div :class="c('container_workspace_terminal_tunnel_proberow')">
-        <span :class="c('container_workspace_terminal_tunnel_label')">连通/端口检测</span>
-        <input
-          v-model="probeHostInput"
-          :class="c('container_workspace_terminal_tunnel_probehost')"
-          type="text"
-          placeholder="目标地址"
-        />
-        <input
-          v-model.number="probePortInput"
-          :class="c('container_workspace_terminal_tunnel_probeport')"
-          type="number"
-          min="1"
-          max="65535"
-        />
-        <button
-          :class="c('container_workspace_terminal_tunnel_probebtn')"
-          type="button"
-          @click="runPaneConnectivityTest"
-        >
-          测试连通
-        </button>
-        <button
-          :class="c('container_workspace_terminal_tunnel_checkport')"
-          type="button"
-          @click="runPanePortCheck"
-        >
-          测本地端口 {{ quickFwdListenPort }}
-        </button>
-        <span v-if="probeResults[`pane:${token}`]" :class="c('container_workspace_terminal_tunnel_proberes')">
-          {{ probeResults[`pane:${token}`]?.message }}
-        </span>
-        <span
-          v-if="portCheckResults[`pane:${token}`]"
-          :class="c('container_workspace_terminal_tunnel_portres')"
-        >
-          {{ portCheckResults[`pane:${token}`]?.message }}
-        </span>
-      </div>
-      <div :class="c('container_workspace_terminal_tunnel_quickadd')">
-        <OrbitSelect
-          :model-value="quickFwdType"
-          :options="quickFwdTypeOptions"
-          aria-label="转发模式"
-          size="sm"
-          width="132px"
-          :instance="`pane-fwd-${token}`"
-          @update:model-value="quickFwdType = $event as 'L' | 'R' | 'D'"
-        />
-        <input
-          v-model.number="quickFwdListenPort"
-          :class="c('container_workspace_terminal_tunnel_lport')"
-          type="number"
-          min="1"
-          max="65535"
-          placeholder="本地端口"
-        />
-        <input
-          v-if="quickFwdType !== 'D'"
-          v-model="quickFwdDestHost"
-          :class="c('container_workspace_terminal_tunnel_dhost')"
-          type="text"
-          placeholder="目标地址"
-        />
-        <input
-          v-if="quickFwdType !== 'D'"
-          v-model.number="quickFwdDestPort"
-          :class="c('container_workspace_terminal_tunnel_dport')"
-          type="number"
-          min="1"
-          max="65535"
-          placeholder="目标端口"
-        />
-        <button
-          :class="c('container_workspace_terminal_tunnel_addbtn')"
-          type="button"
-          data-primary="true"
-          @click="createAndStartPaneTunnel"
-        >
-          <Plus :size="12" />
-          添加转发
-        </button>
-      </div>
-      <div v-if="paneTunnels.length" :class="c('container_workspace_terminal_tunnel_list')">
-        <div
-          v-for="t in paneTunnels"
-          :key="t.id"
-          :class="c('container_workspace_terminal_tunnel_item', t.id)"
-        >
-          <span :class="c('container_workspace_terminal_tunnel_badge', t.id)">-{{ t.type }}</span>
-          <span :class="c('container_workspace_terminal_tunnel_name', t.id)">
-            {{ t.name }}
-          </span>
-          <code :class="c('container_workspace_terminal_tunnel_route', t.id)">
-            {{ t.listenHost }}:{{ t.listenPort }} →
-            {{ t.type === 'D' ? 'SOCKS5' : `${t.destHost}:${t.destPort}` }}
-          </code>
-          <button
-            :class="c('container_workspace_terminal_tunnel_toggle', t.id)"
-            type="button"
-            :data-primary="!tunnelStatuses[t.id]?.active"
-            :data-danger="Boolean(tunnelStatuses[t.id]?.active)"
-            :disabled="Boolean(tunnelBusy[t.id])"
-            @click="toggleTunnelRuntime(t.id, !tunnelStatuses[t.id]?.active)"
-          >
-            <Square v-if="tunnelStatuses[t.id]?.active" :size="11" />
-            <Play v-else :size="11" />
-            {{ tunnelStatuses[t.id]?.active ? '停止' : '启动' }}
-          </button>
-          <button
-            :class="c('container_workspace_terminal_tunnel_portbtn', t.id)"
-            type="button"
-            @click="
-              checkPortOccupancy(t.listenHost, t.listenPort, `pane:${token}`).then((r) => notify(r.message))
-            "
-          >
-            测端口
-          </button>
-          <button
-            :class="c('container_workspace_terminal_tunnel_del', t.id)"
-            type="button"
-            data-danger="true"
-            :disabled="Boolean(tunnelBusy[t.id])"
-            :aria-label="`删除 ${t.name}`"
-            title="删除转发规则"
-            @click="removeSyncTunnel(t.id)"
-          >
-            <Trash2 :size="11" />
-            删除
-          </button>
-        </div>
-      </div>
-    </div>
+    <TerminalTunnelDrawer v-if="tunnelDrawerOpen" :token="token" :host-id="hostId" :tunnels="paneTunnels" />
     <form
       v-if="searchOpen"
       :class="c('container_workspace_terminal_toolbar_search-form')"
@@ -1447,54 +1261,5 @@ onBeforeUnmount(() => {
   font-size: 10px;
   font-weight: 700;
   color: var(--color-success);
-}
-[class*='container_workspace_terminal_tunnel_drawer'] {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 9px 12px;
-  background: var(--color-surface-1);
-  border-bottom: 1px solid var(--color-border);
-  font-size: 12px;
-  input {
-    padding: 4px 8px;
-    font-size: 12px;
-  }
-  button:not([role='combobox']):not([role='option']) {
-    min-height: 26px;
-    padding: 3px 8px;
-    font-size: 11px;
-  }
-}
-[class*='container_workspace_terminal_tunnel_proberow'],
-[class*='container_workspace_terminal_tunnel_quickadd'] {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-[class*='container_workspace_terminal_tunnel_probeport'],
-[class*='container_workspace_terminal_tunnel_lport'],
-[class*='container_workspace_terminal_tunnel_dport'] {
-  width: 78px;
-}
-[class*='container_workspace_terminal_tunnel_list'] {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-[class*='container_workspace_terminal_tunnel_item'] {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 8px;
-  border-radius: 6px;
-  background: var(--color-surface-2);
-  border: 1px solid var(--color-border-subtle);
-  flex-wrap: wrap;
-}
-[class*='container_workspace_terminal_tunnel_route'] {
-  font-family: var(--font-mono);
-  color: var(--color-accent-secondary);
 }
 </style>

@@ -10,18 +10,20 @@ import {
   Unlock,
   Copy,
   AlertTriangle,
-  Laptop,
-  History,
   FolderKanban,
   Network,
-  LogOut,
-  Check
-} from 'lucide-vue-next'
-import { instanceClass } from '../../../shared/classes'
-import type { SyncDevice, SyncRevisionInfo } from '../../../shared/sync'
+  LogOut
+} from '@lucide/vue'
+import {
+  isInsecureHttpSyncUrl,
+  type SyncConflictResolutionItem,
+  type SyncDevice,
+  type SyncRevisionInfo
+} from '../../../shared/sync'
+import SyncConflictSection from '../components/SyncConflictSection.vue'
+import SyncManageSection from '../components/SyncManageSection.vue'
 import {
   bootstrap,
-  groupToken,
   hosts,
   notify,
   page,
@@ -29,11 +31,8 @@ import {
   syncGroups,
   syncStatus,
   syncTunnels,
-  syncWriteMode,
-  windowInstance
+  syncWriteMode
 } from '../stores/workbench'
-
-const c = (base: string, id: string) => instanceClass(base, windowInstance(groupToken(`sync:${id}`)))
 
 const busy = ref(false)
 const actionError = ref('')
@@ -41,6 +40,7 @@ const pendingRecoveryKey = ref('')
 
 const authMode = ref<'login' | 'register'>('login')
 const serverUrl = ref('')
+const allowInsecureHttp = ref(false)
 const email = ref('')
 const authPassword = ref('')
 const inviteCode = ref('')
@@ -59,9 +59,6 @@ const rotateConfirmVisible = ref(false)
 const rotateMasterPassword = ref('')
 const rotateAccountPassword = ref('')
 
-const conflictChoices = ref<Record<string, 'local' | 'remote'>>({})
-
-const manageTab = ref<'devices' | 'revisions'>('devices')
 const devices = ref<SyncDevice[]>([])
 const revisions = ref<SyncRevisionInfo[]>([])
 const manageLoading = ref(false)
@@ -79,15 +76,28 @@ const phaseText = computed(() => {
   return '未配置同步'
 })
 
-const allConflictsChosen = computed(() => {
-  const list = syncStatus.value?.conflicts ?? []
-  return list.length > 0 && list.every((item) => Boolean(conflictChoices.value[item.id]))
+const insecureHttpWarning = computed(() => isInsecureHttpSyncUrl(serverUrl.value))
+const signedInInsecureHttp = computed(() =>
+  Boolean(
+    syncStatus.value?.signedIn &&
+      syncStatus.value.serverUrl &&
+      isInsecureHttpSyncUrl(syncStatus.value.serverUrl)
+  )
+)
+
+watch(serverUrl, (next) => {
+  if (!isInsecureHttpSyncUrl(next)) {
+    allowInsecureHttp.value = false
+  }
 })
 
 async function loadFormDefaults() {
   try {
     const defaults = await window.orbit.sync.getDefaults()
-    if (!serverUrl.value) serverUrl.value = defaults.serverUrl
+    if (!serverUrl.value) {
+      serverUrl.value = defaults.serverUrl
+      allowInsecureHttp.value = Boolean(defaults.allowInsecureHttp)
+    }
     if (!email.value) email.value = defaults.email
     rememberEmail.value = defaults.rememberEmail
     keepSignedIn.value = defaults.keepSignedIn
@@ -118,19 +128,11 @@ watch(
   }
 )
 
-watch(
-  () => syncStatus.value?.conflicts,
-  (conflicts) => {
-    const next: Record<string, 'local' | 'remote'> = {}
-    for (const item of conflicts ?? []) {
-      if (conflictChoices.value[item.id]) next[item.id] = conflictChoices.value[item.id]!
-    }
-    conflictChoices.value = next
-  }
-)
-
 onMounted(() => {
   void loadFormDefaults()
+  if (syncStatus.value?.signedIn) {
+    void loadManageData()
+  }
 })
 
 function formatIpcError(error: unknown): string {
@@ -170,7 +172,8 @@ async function handleAuthSubmit() {
       email: email.value,
       password: authPassword.value,
       rememberEmail: rememberEmail.value,
-      keepSignedIn: keepSignedIn.value
+      keepSignedIn: keepSignedIn.value,
+      ...(insecureHttpWarning.value ? { allowInsecureHttp: allowInsecureHttp.value } : {})
     }
     const next =
       authMode.value === 'register'
@@ -259,16 +262,8 @@ async function handleSyncNow() {
   })
 }
 
-function selectConflictChoice(conflictId: string, choice: 'local' | 'remote') {
-  conflictChoices.value = { ...conflictChoices.value, [conflictId]: choice }
-}
-
-async function handleResolveConflicts() {
+async function handleResolveConflicts(resolutions: SyncConflictResolutionItem[]) {
   await runAction(async () => {
-    const resolutions = (syncStatus.value?.conflicts ?? []).map((item) => ({
-      conflictId: item.id,
-      choice: conflictChoices.value[item.id] ?? 'local'
-    }))
     syncStatus.value = await window.orbit.sync.resolveConflicts(resolutions)
     notify('冲突已解决并完成同步')
     await loadManageData()
@@ -350,11 +345,6 @@ async function loadManageData() {
   } finally {
     manageLoading.value = false
   }
-}
-
-function switchManageTab(tab: 'devices' | 'revisions') {
-  manageTab.value = tab
-  void loadManageData()
 }
 
 async function handleRevokeDevice(deviceId: string) {
@@ -446,59 +436,12 @@ async function handleRestoreRevision(revision: string) {
       </div>
     </div>
 
-    <section
+    <SyncConflictSection
       v-if="syncStatus?.conflicts.length"
-      class="container_sync_conflict_body_section"
-      aria-label="同步冲突处理"
-    >
-      <header class="container_sync_conflict_header_base">
-        <h3 class="container_sync_conflict_header_title">
-          检测到 {{ syncStatus.conflicts.length }} 处三方合并冲突
-        </h3>
-        <button
-          class="container_sync_conflict_header_apply"
-          type="button"
-          data-primary
-          :disabled="busy || !allConflictsChosen"
-          @click="handleResolveConflicts"
-        >
-          <Check :size="14" />
-          应用选择并完成同步
-        </button>
-      </header>
-      <div class="container_sync_conflict_body_list">
-        <article
-          v-for="item in syncStatus.conflicts"
-          :key="item.id"
-          :class="c('container_sync_conflict_body_item', item.id)"
-        >
-          <div :class="c('container_sync_conflict_body_item-head', item.id)">
-            <strong :class="c('container_sync_conflict_body_item-name', item.id)">
-              {{ item.entityName }}
-            </strong>
-            <span :class="c('container_sync_conflict_body_item-field', item.id)">{{ item.fieldLabel }}</span>
-          </div>
-          <div :class="c('container_sync_conflict_body_choices', item.id)">
-            <button
-              :class="c('container_sync_conflict_body_choice-local', item.id)"
-              type="button"
-              :data-selected="conflictChoices[item.id] === 'local' ? 'true' : 'false'"
-              @click="selectConflictChoice(item.id, 'local')"
-            >
-              保留本地：{{ item.localDisplay }}
-            </button>
-            <button
-              :class="c('container_sync_conflict_body_choice-remote', item.id)"
-              type="button"
-              :data-selected="conflictChoices[item.id] === 'remote' ? 'true' : 'false'"
-              @click="selectConflictChoice(item.id, 'remote')"
-            >
-              采用远端：{{ item.remoteDisplay }}
-            </button>
-          </div>
-        </article>
-      </div>
-    </section>
+      :conflicts="syncStatus.conflicts"
+      :busy="busy"
+      @resolve="handleResolveConflicts"
+    />
 
     <div class="container_sync_grid_body_base">
       <section class="container_sync_account_body_card">
@@ -528,7 +471,7 @@ async function handleRestoreRevision(revision: string) {
           </div>
           <form class="container_sync_account_body_form" @submit.prevent="handleAuthSubmit">
             <label class="container_sync_account_body_url-label">
-              同步服务地址（支持 HTTP / HTTPS）
+              同步服务地址（默认要求 HTTPS；仅本机回环地址可直接 HTTP）
               <input
                 v-model="serverUrl"
                 class="container_sync_account_body_url-input"
@@ -537,6 +480,26 @@ async function handleRestoreRevision(revision: string) {
                 required
               />
             </label>
+            <div v-if="insecureHttpWarning" class="container_sync_account_body_http-warn" role="alert">
+              <div class="container_sync_account_body_http-warn-head">
+                <AlertTriangle :size="15" />
+                <strong class="container_sync_account_body_http-warn-title">
+                  检测到非本机明文 HTTP 同步地址
+                </strong>
+              </div>
+              <p class="container_sync_account_body_http-warn-desc">
+                主机库与凭据仍会先在本地端到端加密，但同步账号密码与刷新令牌会通过 HTTP
+                明文传输。仅建议在受信任的内网或 VPN 环境使用。
+              </p>
+              <label class="container_sync_account_body_insecure-label">
+                <input
+                  v-model="allowInsecureHttp"
+                  class="container_sync_account_body_insecure-check"
+                  type="checkbox"
+                />
+                我已知晓明文传输账号与令牌的风险，仍允许连接此 HTTP 服务
+              </label>
+            </div>
             <label class="container_sync_account_body_email-label">
               账号邮箱
               <input
@@ -600,6 +563,12 @@ async function handleRestoreRevision(revision: string) {
         </template>
 
         <template v-else>
+          <div v-if="signedInInsecureHttp" class="container_sync_account_body_http-active" role="status">
+            <AlertTriangle :size="15" />
+            <span class="container_sync_account_body_http-active-text">
+              当前同步连接使用明文 HTTP 协议（已手动确认风险），账号认证令牌未受传输层加密保护。
+            </span>
+          </div>
           <dl class="container_sync_account_body_meta">
             <dt class="container_sync_account_body_meta-url-label">服务器</dt>
             <dd class="container_sync_account_body_meta-url">{{ syncStatus.serverUrl }}</dd>
@@ -887,103 +856,18 @@ async function handleRestoreRevision(revision: string) {
       </section>
     </div>
 
-    <section v-if="syncStatus?.signedIn" class="container_sync_manage_body_section">
-      <div class="container_sync_manage_header_base">
-        <div class="container_sync_manage_header_tabs">
-          <button
-            class="container_sync_manage_header_tab-devices"
-            type="button"
-            :data-active="manageTab === 'devices' ? 'true' : 'false'"
-            @click="switchManageTab('devices')"
-          >
-            <Laptop :size="15" />
-            授权设备 ({{ devices.length }})
-          </button>
-          <button
-            class="container_sync_manage_header_tab-revisions"
-            type="button"
-            :data-active="manageTab === 'revisions' ? 'true' : 'false'"
-            @click="switchManageTab('revisions')"
-          >
-            <History :size="15" />
-            历史版本 ({{ revisions.length }})
-          </button>
-        </div>
-        <button
-          class="container_sync_manage_header_refresh"
-          type="button"
-          :disabled="manageLoading"
-          @click="loadManageData"
-        >
-          <RefreshCw :size="14" />
-          刷新列表
-        </button>
-      </div>
-
-      <div v-if="manageTab === 'devices'" class="container_sync_manage_body_devices">
-        <p v-if="!devices.length" class="container_sync_manage_body_empty-devices">
-          暂无服务端返回的设备会话信息。
-        </p>
-        <div v-else class="container_sync_manage_body_device-list">
-          <div
-            v-for="device in devices"
-            :key="device.id"
-            :class="c('container_sync_manage_body_device-row', device.id)"
-          >
-            <div :class="c('container_sync_manage_body_device-info', device.id)">
-              <strong :class="c('container_sync_manage_body_device-name', device.id)">
-                {{ device.name }}
-                <template v-if="device.current">（当前设备）</template>
-              </strong>
-              <span :class="c('container_sync_manage_body_device-meta', device.id)">
-                {{ device.platform }} · v{{ device.appVersion }} · 最近活跃：{{
-                  new Date(device.lastSeenAt).toLocaleString()
-                }}
-              </span>
-            </div>
-            <button
-              :class="c('container_sync_manage_body_device-revoke', device.id)"
-              type="button"
-              :disabled="busy"
-              @click="device.current ? handleLogout() : handleRevokeDevice(device.id)"
-            >
-              {{ device.current ? '注销本机' : '下线该设备' }}
-            </button>
-          </div>
-        </div>
-      </div>
-
-      <div v-else class="container_sync_manage_body_revisions">
-        <p v-if="!revisions.length" class="container_sync_manage_body_empty-revisions">
-          暂无历史版本记录。完成首次同步上传后会记录历史修订快照。
-        </p>
-        <div v-else class="container_sync_manage_body_revision-list">
-          <div
-            v-for="rev in revisions"
-            :key="rev.revision"
-            :class="c('container_sync_manage_body_revision-row', rev.revision)"
-          >
-            <div :class="c('container_sync_manage_body_revision-info', rev.revision)">
-              <strong :class="c('container_sync_manage_body_revision-id', rev.revision)">
-                rev-{{ rev.revision }} (v{{ rev.keyVersion }})
-              </strong>
-              <span :class="c('container_sync_manage_body_revision-meta', rev.revision)">
-                {{ new Date(rev.createdAt).toLocaleString() }}
-                <template v-if="rev.createdByDeviceName">· 设备 {{ rev.createdByDeviceName }}</template>
-              </span>
-            </div>
-            <button
-              :class="c('container_sync_manage_body_revision-restore', rev.revision)"
-              type="button"
-              :disabled="busy || !syncStatus.vaultUnlocked"
-              @click="handleRestoreRevision(rev.revision)"
-            >
-              恢复此版本
-            </button>
-          </div>
-        </div>
-      </div>
-    </section>
+    <SyncManageSection
+      v-if="syncStatus?.signedIn"
+      :devices="devices"
+      :revisions="revisions"
+      :loading="manageLoading"
+      :busy="busy"
+      :vault-unlocked="Boolean(syncStatus.vaultUnlocked)"
+      @refresh="loadManageData"
+      @logout="handleLogout"
+      @revoke-device="handleRevokeDevice"
+      @restore-revision="handleRestoreRevision"
+    />
 
     <section class="container_sync_entities_body_section">
       <div class="container_sync_overview_card_hosts">
@@ -1155,65 +1039,6 @@ async function handleRestoreRevision(revision: string) {
   align-items: center;
   gap: 6px;
 }
-.container_sync_conflict_body_section {
-  border: 1px solid rgba(239, 68, 68, 0.4);
-  background: var(--surface-card-gradient);
-  border-radius: 10px;
-  padding: 18px;
-  margin-bottom: 20px;
-}
-.container_sync_conflict_header_base {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 14px;
-}
-.container_sync_conflict_header_title {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 500;
-}
-.container_sync_conflict_header_apply {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.container_sync_conflict_body_list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.container_sync_conflict_body_item {
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  padding: 12px;
-  background: var(--color-surface-canvas);
-}
-.container_sync_conflict_body_item-head {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 8px;
-  font-size: 13px;
-}
-.container_sync_conflict_body_item-field {
-  color: var(--color-text-muted);
-}
-.container_sync_conflict_body_choices {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 8px;
-}
-.container_sync_conflict_body_choice-local,
-.container_sync_conflict_body_choice-remote {
-  text-align: left;
-  font-size: 12px;
-  &[data-selected='true'] {
-    border-color: var(--color-accent-primary);
-    background: var(--color-accent-primary-soft);
-    color: var(--color-text-primary);
-  }
-}
 .container_sync_grid_body_base {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
@@ -1223,7 +1048,6 @@ async function handleRestoreRevision(revision: string) {
 }
 .container_sync_account_body_card,
 .container_sync_vault_body_card,
-.container_sync_manage_body_section,
 .container_sync_groups_body_panel,
 .container_sync_tunnels_body_panel {
   border: 1px solid var(--color-border-control);
@@ -1262,8 +1086,7 @@ async function handleRestoreRevision(revision: string) {
   color: var(--color-text-primary);
 }
 .container_sync_account_body_tabs,
-.container_sync_vault_body_unlock-tabs,
-.container_sync_manage_header_tabs {
+.container_sync_vault_body_unlock-tabs {
   display: flex;
   gap: 8px;
   margin-bottom: 14px;
@@ -1271,9 +1094,7 @@ async function handleRestoreRevision(revision: string) {
 .container_sync_account_body_tab-login,
 .container_sync_account_body_tab-register,
 .container_sync_vault_body_unlock-tab-pw,
-.container_sync_vault_body_unlock-tab-recovery,
-.container_sync_manage_header_tab-devices,
-.container_sync_manage_header_tab-revisions {
+.container_sync_vault_body_unlock-tab-recovery {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1321,10 +1142,45 @@ async function handleRestoreRevision(revision: string) {
 }
 .container_sync_account_body_remember-check,
 .container_sync_account_body_keep-check,
+.container_sync_account_body_insecure-check,
 .container_sync_account_body_autosync-check,
 .container_sync_account_body_persist-check,
 .container_sync_vault_body_pwsync-check {
   width: auto;
+}
+.container_sync_account_body_http-warn,
+.container_sync_account_body_http-active {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  background: rgba(251, 191, 36, 0.08);
+  color: var(--color-warning);
+  font-size: 12px;
+}
+.container_sync_account_body_http-active {
+  flex-direction: row;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.container_sync_account_body_http-warn-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.container_sync_account_body_http-warn-desc {
+  margin: 0;
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+.container_sync_account_body_insecure-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-text-primary);
 }
 .container_sync_account_body_meta,
 .container_sync_vault_body_active-meta {
@@ -1394,52 +1250,6 @@ async function handleRestoreRevision(revision: string) {
   font-size: 12px;
   color: var(--color-text-muted);
   line-height: 1.5;
-}
-.container_sync_manage_body_section {
-  margin-bottom: 20px;
-}
-.container_sync_manage_header_base {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-}
-.container_sync_manage_header_refresh {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-}
-.container_sync_manage_body_device-list,
-.container_sync_manage_body_revision-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.container_sync_manage_body_device-row,
-.container_sync_manage_body_revision-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--color-border);
-  background: var(--color-surface-canvas);
-}
-.container_sync_manage_body_device-info,
-.container_sync_manage_body_revision-info {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-size: 13px;
-}
-.container_sync_manage_body_device-meta,
-.container_sync_manage_body_revision-meta,
-.container_sync_manage_body_empty-devices,
-.container_sync_manage_body_empty-revisions {
-  font-size: 12px;
-  color: var(--color-text-muted);
 }
 .container_sync_entities_body_section {
   display: grid;

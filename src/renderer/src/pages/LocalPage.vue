@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { SquareTerminal, ArrowUpRight, Monitor, RefreshCw } from 'lucide-vue-next'
+import { SquareTerminal, ArrowUpRight, Monitor, RefreshCw } from '@lucide/vue'
 import { instanceClass } from '../../../shared/classes'
 import { applyCardTilt, resetCardTilt } from '../services/card-tilt'
 import {

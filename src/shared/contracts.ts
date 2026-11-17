@@ -32,6 +32,13 @@ export const MAX_SESSIONS = 16
 export const MAX_CLIPBOARD_BYTES = 1024 * 1024
 export const MAX_INPUT_BYTES_PER_SEC = 1024 * 1024
 
+export function resolveKeepaliveIntervalMs(keepalive?: number): number {
+  if (typeof keepalive !== 'number' || !Number.isFinite(keepalive)) return 30_000
+  const seconds = Math.trunc(keepalive)
+  if (seconds <= 0) return 0
+  return Math.min(seconds, 3600) * 1000
+}
+
 export const idSchema = z.string().uuid()
 export const hostInputSchema = z
   .object({

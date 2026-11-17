@@ -2,7 +2,13 @@ import { safeStorage } from 'electron'
 import net from 'node:net'
 import { createHash } from 'node:crypto'
 import { Client as SshClient } from 'ssh2'
-import type { Host, NetProbeResult, PortCheckResult, TunnelRuntimeStatus } from '../shared/contracts'
+import {
+  resolveKeepaliveIntervalMs,
+  type Host,
+  type NetProbeResult,
+  type PortCheckResult,
+  type TunnelRuntimeStatus
+} from '../shared/contracts'
 import type { SyncTunnel } from '../shared/sync'
 import type { DataClient } from './data-client'
 import { lookupOpenSshKnownHost } from './openssh-known-hosts'
@@ -280,7 +286,7 @@ export class TunnelRuntimeManager {
               agent:
                 process.platform === 'win32' ? '\\\\.\\pipe\\openssh-ssh-agent' : process.env.SSH_AUTH_SOCK
             }),
-        keepaliveInterval: (host.keepalive ?? 30) * 1000,
+        keepaliveInterval: resolveKeepaliveIntervalMs(host.keepalive),
         readyTimeout: 10000,
         hostVerifier: (key: Buffer) => {
           const fp = `SHA256:${createHash('sha256').update(key).digest('base64').replace(/=+$/, '')}`

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { Network, Play, Square, Activity, ShieldCheck, Plus, Trash2, Pencil, Server } from 'lucide-vue-next'
+import { Network, Play, Square, Activity, ShieldCheck, Plus, Trash2, Pencil, Server } from '@lucide/vue'
 import { instanceClass } from '../../../shared/classes'
 import type { SyncTunnel } from '../../../shared/sync'
 import OrbitSelect from '../components/OrbitSelect.vue'

@@ -10,6 +10,7 @@ export default defineConfig({
           index: resolve('src/main/index.ts'),
           'local-pty': resolve('src/workers/local-pty/index.ts'),
           'data-worker': resolve('src/workers/data-crypto/index.ts'),
+          'kdf-worker': resolve('src/workers/data-crypto/kdf-worker.ts'),
           connection: resolve('src/workers/connection/index.ts')
         }
       }

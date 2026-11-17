@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { idSchema } from './contracts'
+import { isHttpsOrLoopbackUrl, isLoopbackHostname } from './network'
 
 export const SYNC_SCHEMA_VERSION = 1
 export const MAX_SYNC_DOCUMENT_BYTES = 2 * 1024 * 1024
@@ -25,7 +26,18 @@ export const SYNC_HKDF_RECOVERY_INFO = 'ssh-port-mapper/recovery-kek/v1'
 export const SYNC_KEY_CAPABILITY_MESSAGE =
   '受跨端私钥往返能力限制，当前仅支持本地 Agent 或本机保存密码；远程同步暂不上传桌面端私钥，但会完整保留其他客户端已有记录。'
 
-export function validateSyncServerUrl(raw: string): string {
+export function isInsecureHttpSyncUrl(raw: string): boolean {
+  const trimmed = raw.trim()
+  if (!trimmed) return false
+  try {
+    const parsed = new URL(trimmed)
+    return parsed.protocol.toLowerCase() === 'http:' && !isLoopbackHostname(parsed.hostname)
+  } catch {
+    return false
+  }
+}
+
+export function validateSyncServerUrl(raw: string, options: { allowInsecureHttp?: boolean } = {}): string {
   const trimmed = raw.trim()
   if (!trimmed) throw new Error('请输入同步服务器地址')
   let parsed: URL
@@ -38,28 +50,41 @@ export function validateSyncServerUrl(raw: string): string {
     throw new Error('同步服务器地址不能包含用户名或密码')
   }
   const protocol = parsed.protocol.toLowerCase()
-  if (protocol === 'https:' || protocol === 'http:') {
+  if (protocol === 'https:') {
     return parsed.toString().replace(/\/+$/, '')
+  }
+  if (protocol === 'http:') {
+    if (isHttpsOrLoopbackUrl(parsed) || options.allowInsecureHttp) {
+      return parsed.toString().replace(/\/+$/, '')
+    }
+    throw new Error(
+      '出于安全限制，非本机地址的同步服务默认仅允许 HTTPS；如确需连接内网明文 HTTP 服务，请勾选确认明文传输风险。'
+    )
   }
   throw new Error('同步服务器地址仅支持 HTTP 或 HTTPS 协议')
 }
 
-export const syncServerUrlSchema = z
-  .string()
-  .trim()
-  .min(1, '请输入同步服务器地址')
-  .max(512, '服务器地址过长')
-  .transform((value, ctx) => {
-    try {
-      return validateSyncServerUrl(value)
-    } catch (error) {
-      ctx.addIssue({
-        code: 'custom',
-        message: error instanceof Error ? error.message : '同步服务器地址无效'
-      })
-      return z.NEVER
-    }
-  })
+function createSyncServerUrlSchema(allowInsecureHttp: boolean) {
+  return z
+    .string()
+    .trim()
+    .min(1, '请输入同步服务器地址')
+    .max(512, '服务器地址过长')
+    .transform((value, ctx) => {
+      try {
+        return validateSyncServerUrl(value, { allowInsecureHttp })
+      } catch (error) {
+        ctx.addIssue({
+          code: 'custom',
+          message: error instanceof Error ? error.message : '同步服务器地址无效'
+        })
+        return z.NEVER
+      }
+    })
+}
+
+export const syncServerUrlSchema = createSyncServerUrlSchema(false)
+const rawSyncServerUrlSchema = createSyncServerUrlSchema(true)
 
 export const syncEmailSchema = z
   .string()
@@ -86,18 +111,30 @@ const blankToUndefined = (value: unknown): unknown =>
 
 export const syncLoginInputSchema = z
   .object({
-    serverUrl: syncServerUrlSchema,
+    serverUrl: rawSyncServerUrlSchema,
     email: syncEmailSchema,
     password: syncAuthPasswordSchema,
     rememberEmail: z.boolean().default(true),
     keepSignedIn: z.boolean().default(false),
+    allowInsecureHttp: z.boolean().optional(),
     deviceName: z.string().trim().min(1).max(80).optional()
   })
   .strict()
+  .superRefine((value, ctx) => {
+    try {
+      validateSyncServerUrl(value.serverUrl, { allowInsecureHttp: Boolean(value.allowInsecureHttp) })
+    } catch (error) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['serverUrl'],
+        message: error instanceof Error ? error.message : '同步服务器地址无效'
+      })
+    }
+  })
 
 export const syncRegisterInputSchema = z
   .object({
-    serverUrl: syncServerUrlSchema,
+    serverUrl: rawSyncServerUrlSchema,
     email: syncEmailSchema,
     password: z.string().min(10, '注册账号密码至少需要 10 个字符').max(128, '账号密码长度超出限制'),
     inviteCode: z.preprocess(
@@ -106,9 +143,21 @@ export const syncRegisterInputSchema = z
     ),
     rememberEmail: z.boolean().default(true),
     keepSignedIn: z.boolean().default(false),
+    allowInsecureHttp: z.boolean().optional(),
     deviceName: z.string().trim().min(1).max(80).optional()
   })
   .strict()
+  .superRefine((value, ctx) => {
+    try {
+      validateSyncServerUrl(value.serverUrl, { allowInsecureHttp: Boolean(value.allowInsecureHttp) })
+    } catch (error) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['serverUrl'],
+        message: error instanceof Error ? error.message : '同步服务器地址无效'
+      })
+    }
+  })
 
 export const syncVaultCreateInputSchema = z
   .object({
@@ -151,9 +200,22 @@ export const syncPreferencesUpdateSchema = z
     writeMode: z.enum(['realtime', 'local-only']).optional(),
     keepSignedIn: z.boolean().optional(),
     rememberEmail: z.boolean().optional(),
-    serverUrl: syncServerUrlSchema.optional()
+    allowInsecureHttp: z.boolean().optional(),
+    serverUrl: rawSyncServerUrlSchema.optional()
   })
   .strict()
+  .superRefine((value, ctx) => {
+    if (!value.serverUrl) return
+    try {
+      validateSyncServerUrl(value.serverUrl, { allowInsecureHttp: Boolean(value.allowInsecureHttp) })
+    } catch (error) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['serverUrl'],
+        message: error instanceof Error ? error.message : '同步服务器地址无效'
+      })
+    }
+  })
 
 export const syncConflictResolutionItemSchema = z
   .object({
@@ -394,6 +456,7 @@ export interface SyncCapabilities {
 export interface SyncStatusSnapshot {
   phase: SyncStatePhase
   serverUrl: string
+  allowInsecureHttp?: boolean
   email: string
   rememberEmail: boolean
   keepSignedIn: boolean
@@ -430,6 +493,7 @@ export interface SyncPreferencesResult {
 
 export interface SyncConfigFormDefaults {
   serverUrl: string
+  allowInsecureHttp?: boolean
   email: string
   rememberEmail: boolean
   keepSignedIn: boolean

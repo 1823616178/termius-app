@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Minus, Square, Copy, X, Sparkles, Minimize2, ArrowUpCircle, House } from 'lucide-vue-next'
+import { Minus, Square, Copy, X, Sparkles, Minimize2, ArrowUpCircle, House } from '@lucide/vue'
 import orbitIcon from '../assets/orbit-icon.svg'
 import {
   bootstrap,

@@ -13,7 +13,7 @@ let activeCloseCallback: (() => void) | null = null
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { Check, ChevronDown } from 'lucide-vue-next'
+import { Check, ChevronDown } from '@lucide/vue'
 import { instanceClass } from '../../../shared/classes'
 import { windowInstance } from '../stores/workbench'
 

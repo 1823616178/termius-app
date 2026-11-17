@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue'
-import { X, ShieldCheck } from 'lucide-vue-next'
+import { X, ShieldCheck } from '@lucide/vue'
 import { hostInputSchema, type Host, type HostInput } from '../../../shared/contracts'
 import { bootstrap } from '../stores/workbench'
 import OrbitSelect from './OrbitSelect.vue'

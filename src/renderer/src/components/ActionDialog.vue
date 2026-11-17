@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, nextTick, useId } from 'vue'
-import { ShieldCheck, TriangleAlert } from 'lucide-vue-next'
+import { ShieldCheck, TriangleAlert } from '@lucide/vue'
 
 defineProps<{
   kind: 'password' | 'trust' | 'delete'

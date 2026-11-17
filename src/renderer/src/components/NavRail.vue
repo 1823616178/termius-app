@@ -1,14 +1,5 @@
 <script setup lang="ts">
-import {
-  Terminal,
-  Server,
-  SquareTerminal,
-  Network,
-  KeyRound,
-  Cloud,
-  CircleHelp,
-  Settings
-} from 'lucide-vue-next'
+import { Terminal, Server, SquareTerminal, Network, KeyRound, Cloud, CircleHelp, Settings } from '@lucide/vue'
 import { computed } from 'vue'
 import { activateTab, activeTab, page, showHelp, syncStatus, tunnelStatuses } from '../stores/workbench'
 
