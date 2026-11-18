@@ -34,7 +34,7 @@ function buildIco(frames) {
   return Buffer.concat([header, ...entries, ...frames.map((frame) => frame.png)])
 }
 
-const svgText = await readFile(resolve('resources/icon.svg'), 'utf8')
+const svgText = await readFile(resolve('src/renderer/src/assets/orbit-icon.svg'), 'utf8')
 const tempDir = await mkdtemp(join(tmpdir(), 'orbit-icon-'))
 
 try {
