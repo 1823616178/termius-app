@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { instanceClass } from '../../../shared/classes'
 import orbitIcon from '../assets/orbit-icon.svg'
+import { t, translateMotionReason } from '../services/i18n'
 import { INTRO_SECONDS, MOVEMENT_SECONDS } from '../services/sword-motion'
 import { parseMotionTier, REDUCED_MOTION_REASON, type MotionTier } from '../services/motion-performance'
 import type { SwordScene, SwordSceneOptions, SwordTipProjection } from '../services/sword-scene'
@@ -170,7 +171,7 @@ function handleFailure(): void {
   ready.value = false
   lastWidth = 0
   lastHeight = 0
-  reportPhase('剑境加载失败 · 点击重展剑境重试')
+  reportPhase(t('stage.loadFailed'))
 }
 
 function tick(now: number): void {
@@ -208,7 +209,11 @@ function ensureRunning(): void {
   if (motionDisabled.value) {
     const reason = document.documentElement.dataset.motionReason
     reportPhase(
-      reducedMotion.value ? '系统已开启减少动态效果 · 静态展示' : reason || '动效已关闭 · 可在设置中开启'
+      reducedMotion.value
+        ? t('stage.reducedMotion')
+        : reason
+          ? translateMotionReason(reason)
+          : t('stage.motionOff')
     )
     stopLoop()
     if (scene) {
@@ -238,7 +243,7 @@ function ensureRunning(): void {
 async function initializeScene(): Promise<void> {
   if (loading || scene || failed.value || disposed || !canvas.value) return
   loading = true
-  reportPhase('剑境加载中')
+  reportPhase(t('stage.loading'))
   try {
     const { createSwordScene } = await import('../services/sword-scene')
     if (disposed || !canvas.value || !canAnimate()) return
@@ -312,7 +317,7 @@ function handleContextLost(event: Event): void {
   failed.value = true
   lastWidth = 0
   lastHeight = 0
-  reportPhase('图形连接中断 · 等待恢复')
+  reportPhase(t('stage.contextLost'))
 }
 
 function handleContextRestored(): void {
@@ -591,8 +596,8 @@ onBeforeUnmount(() => {
       :class="c('container_workspace_orbit_body_sword-tip')"
       type="button"
       hidden
-      aria-label="调整主剑倾斜度"
-      title="按住剑尖拖动调整倾斜度 · 方向键微调 · 双击复位"
+      :aria-label="t('welcome.swordTipAria')"
+      :title="t('welcome.swordTipTitle')"
       @keydown="onSwordTipKeydown"
     />
     <img

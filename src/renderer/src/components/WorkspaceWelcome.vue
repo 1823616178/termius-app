@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { Plus, ShieldCheck, SquareTerminal } from '@lucide/vue'
 import { instanceClass } from '../../../shared/classes'
+import { locale, t, translateSwordPhaseLabel } from '../services/i18n'
 import { FORMATIONS } from '../services/sword-motion'
 import {
   defaultShellProfile,
@@ -23,6 +24,14 @@ const stageRef = ref<InstanceType<typeof OrbitStage3D> | null>(null)
 const swordPhaseNote = ref('开阵启封 · 万锋初现')
 const swordFormationIndex = ref(0)
 const welcomeIntroKey = ref(0)
+
+const isEn = computed(() => locale.value === 'en-US')
+const activeFormationName = computed(() => {
+  const f = FORMATIONS[swordFormationIndex.value]
+  if (!f) return isEn.value ? 'Myriad Swords' : '万剑归宗'
+  return isEn.value ? f.nameEn : f.name
+})
+const displayPhaseNote = computed(() => translateSwordPhaseLabel(swordPhaseNote.value))
 
 function replaySwordIntro() {
   welcomeIntroKey.value += 1
@@ -60,41 +69,41 @@ function jumpSwordFormation(index: number) {
     />
     <div class="container_workspace_welcome_body_scene-note" aria-hidden="true">
       <span class="container_workspace_welcome_body_scene-name">
-        {{ FORMATIONS[swordFormationIndex]?.name ?? '万剑归宗' }}
+        {{ activeFormationName }}
       </span>
-      <span class="container_workspace_welcome_body_scene-state">{{ swordPhaseNote }}</span>
+      <span class="container_workspace_welcome_body_scene-state">{{ displayPhaseNote }}</span>
       <span class="container_workspace_welcome_body_view-hint">
-        拖动剑尖调倾角 · 拖动空白环视 · 滚轮缩放 · 双击复位
+        {{ t('welcome.viewHint') }}
       </span>
     </div>
     <div class="container_workspace_welcome_body_controls">
       <button
         class="container_workspace_welcome_body_replay"
         type="button"
-        title="重新播放开场展开与剑阵演武"
+        :title="t('welcome.replayTitle')"
         @click="replaySwordIntro"
       >
-        重展剑境
+        {{ t('welcome.replay') }}
       </button>
       <button
         class="container_workspace_welcome_body_climax"
         type="button"
-        title="立即催动诛仙剑阵四门杀劫"
+        :title="t('welcome.climaxTitle')"
         @click="triggerSwordClimax"
       >
-        即刻归宗
+        {{ t('welcome.climax') }}
       </button>
     </div>
-    <nav class="container_workspace_welcome_body_formrail" aria-label="十二剑阵巡览">
+    <nav class="container_workspace_welcome_body_formrail" :aria-label="t('welcome.railAria')">
       <button
         v-for="(formation, index) in FORMATIONS"
         :key="formation.name"
         :class="c('container_workspace_welcome_body_formseal', `rail-${index}`)"
         :data-active="index === swordFormationIndex"
-        :data-name="formation.name"
+        :data-name="isEn ? formation.nameEn : formation.name"
         type="button"
-        :title="`${formation.name} · ${formation.sub}`"
-        :aria-label="`切换至${formation.name}`"
+        :title="isEn ? `${formation.nameEn} · ${formation.subEn}` : `${formation.name} · ${formation.sub}`"
+        :aria-label="t('welcome.switchFormation', { name: isEn ? formation.nameEn : formation.name })"
         :aria-current="index === swordFormationIndex ? 'true' : undefined"
         @click="jumpSwordFormation(index)"
       >
@@ -104,13 +113,13 @@ function jumpSwordFormation(index: number) {
     <div class="container_workspace_welcome_body_content">
       <div class="container_workspace_welcome_header_kicker">
         <span class="container_workspace_welcome_header_dot" />
-        御剑凌虚 · 万象归宗
+        {{ t('welcome.kicker') }}
       </div>
-      <h2 class="container_workspace_welcome_body_title">让连接，井然有序。</h2>
+      <h2 class="container_workspace_welcome_body_title">{{ t('welcome.title') }}</h2>
       <p class="container_workspace_welcome_body_description">
-        一剑连接山海，一方收束万象。
+        {{ t('welcome.descLine1') }}
         <br class="container_workspace_welcome_body_line-break" />
-        远程主机与本地终端，皆在此归位。
+        {{ t('welcome.descLine2') }}
       </p>
       <div
         class="container_workspace_welcome_body_actions"
@@ -124,7 +133,7 @@ function jumpSwordFormation(index: number) {
           @click="openEditor()"
         >
           <Plus :size="16" />
-          新建 SSH 主机
+          {{ t('welcome.createSsh') }}
         </button>
         <button
           class="container_workspace_welcome_body_local"
@@ -133,21 +142,21 @@ function jumpSwordFormation(index: number) {
           @click="defaultShellProfile && openLocal(defaultShellProfile)"
         >
           <SquareTerminal :size="16" />
-          打开本地终端
+          {{ t('welcome.openLocal') }}
         </button>
       </div>
       <div class="container_workspace_welcome_footer_base">
         <span class="container_workspace_welcome_footer_hint">
           <ShieldCheck :size="13" />
-          离线可用
+          {{ t('welcome.offlineReady') }}
         </span>
         <span class="container_workspace_welcome_footer_separator">·</span>
-        <span class="container_workspace_welcome_footer_keyboard">Ctrl + Shift + T 新建终端</span>
+        <span class="container_workspace_welcome_footer_keyboard">{{ t('welcome.shortcutHint') }}</span>
       </div>
     </div>
     <div class="container_workspace_welcome_footer_phase">
-      <span class="container_workspace_welcome_footer_phase-label">壶中日月长 · 剑外山海阔</span>
-      <span class="container_workspace_welcome_footer_phase-copy">真实连接 · 安全守护 · 静水流深</span>
+      <span class="container_workspace_welcome_footer_phase-label">{{ t('welcome.phasePoem') }}</span>
+      <span class="container_workspace_welcome_footer_phase-copy">{{ t('welcome.phaseSub') }}</span>
     </div>
     <BorderFlyingSword :instance="windowInstance('border')" />
   </div>
@@ -349,21 +358,20 @@ function jumpSwordFormation(index: number) {
 }
 .container_workspace_welcome_body_title {
   font-family: var(--font-display);
-  font-size: clamp(30px, 3vw, 42px);
-  font-weight: 600;
-  line-height: 1.35;
-  letter-spacing: 2px;
-  white-space: nowrap;
+  font-size: calc(clamp(26px, 2.7vw, 38px) * var(--ui-font-scale));
+  font-weight: var(--font-ui-heading-weight);
+  line-height: 1.32;
+  letter-spacing: 1.5px;
   margin: 0 0 20px;
-  color: var(--color-text-primary);
+  color: var(--color-text-heading);
   text-shadow: 0 3px 24px var(--color-accent-primary-glow);
   animation: workspace-hero-rise 500ms cubic-bezier(0.22, 1, 0.36, 1) 90ms both;
 }
 .container_workspace_welcome_body_description {
-  font-size: 14px;
+  font-size: var(--font-size-ui-md);
   color: var(--color-text-secondary);
-  line-height: 2;
-  letter-spacing: 0.5px;
+  line-height: var(--font-ui-line-height);
+  letter-spacing: var(--font-ui-letter-spacing);
   margin: 0;
   animation: workspace-hero-rise 480ms cubic-bezier(0.22, 1, 0.36, 1) 130ms both;
 }
@@ -374,7 +382,7 @@ function jumpSwordFormation(index: number) {
   margin-top: 32px;
   animation: workspace-hero-rise 420ms cubic-bezier(0.22, 1, 0.36, 1) 160ms both;
   button {
-    font-size: 13px;
+    font-size: var(--font-size-ui-sm);
     min-height: 38px;
     padding: 9px 17px;
     border: 1px solid var(--color-border-control);

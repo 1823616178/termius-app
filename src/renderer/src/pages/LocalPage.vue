@@ -2,6 +2,7 @@
 import { SquareTerminal, ArrowUpRight, Monitor, RefreshCw } from '@lucide/vue'
 import { instanceClass } from '../../../shared/classes'
 import { applyCardTilt, resetCardTilt } from '../services/card-tilt'
+import { t } from '../services/i18n'
 import {
   bootstrap,
   openLocal,
@@ -18,14 +19,10 @@ const c = (base: string, token: string) => instanceClass(base, windowInstance(to
   <section v-if="page === 'local'" class="container_local_page_body_base">
     <header class="container_local_page_header_base">
       <div class="container_local_page_header_copy">
-        <span class="container_local_page_header_eyebrow">咫尺丹室 · 内景吐纳</span>
-        <h2 class="container_local_page_header_title">本地终端</h2>
+        <span class="container_local_page_header_eyebrow">{{ t('local.eyebrow') }}</span>
+        <h2 class="container_local_page_header_title">{{ t('local.title') }}</h2>
         <p class="container_local_page_header_description">
-          {{
-            bootstrap?.platform === 'linux'
-              ? '自动发现 $SHELL、/etc/shells 与系统终端环境；点击即在独立 PTY 中运行，支持 256 色与 TrueColor。'
-              : '自动发现 PowerShell、CMD 与已安装的 WSL 发行版；点击即在独立 ConPTY 进程中运行，保持熟悉的 Shell 体验。'
-          }}
+          {{ bootstrap?.platform === 'linux' ? t('local.descLinux') : t('local.descWin') }}
         </p>
       </div>
       <button
@@ -35,7 +32,7 @@ const c = (base: string, token: string) => instanceClass(base, windowInstance(to
         @click="refreshShells"
       >
         <RefreshCw :size="14" />
-        {{ shellsRefreshing ? '扫描中…' : '重新扫描' }}
+        {{ shellsRefreshing ? t('local.scanning') : t('local.rescan') }}
       </button>
     </header>
     <div class="container_local_profiles_body_list">
@@ -59,18 +56,14 @@ const c = (base: string, token: string) => instanceClass(base, windowInstance(to
           type="button"
           @click="openLocal(profile)"
         >
-          打开终端
+          {{ t('local.openTerminal') }}
           <ArrowUpRight :size="15" />
         </button>
       </article>
     </div>
     <p class="container_local_page_footer_hint">
       <Monitor :size="14" />
-      {{
-        bootstrap?.platform === 'linux'
-          ? '自动发现 $SHELL、/etc/shells 与系统已安装终端。'
-          : '自动发现已安装的 Shell 与 WSL 发行版。未安装的环境不会被自动安装。'
-      }}
+      {{ bootstrap?.platform === 'linux' ? t('local.footerLinux') : t('local.footerWin') }}
     </p>
   </section>
 </template>
@@ -89,18 +82,20 @@ const c = (base: string, token: string) => instanceClass(base, windowInstance(to
   gap: 16px;
 }
 .container_local_page_header_eyebrow {
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
   letter-spacing: 1.5px;
   color: var(--color-accent-primary);
 }
 .container_local_page_header_title {
-  font-size: 22px;
-  font-weight: 500;
+  font-family: var(--font-display);
+  font-size: var(--font-size-ui-title);
+  font-weight: var(--font-ui-heading-weight);
+  color: var(--color-text-heading);
   margin: 10px 0;
 }
 .container_local_page_header_description {
   color: var(--color-text-muted);
-  font-size: 13px;
+  font-size: var(--font-size-ui-sm);
   margin: 0;
 }
 .container_local_page_header_refresh {

@@ -1,6 +1,6 @@
 # Windows SSH 工作台 · 规划文档
 
-版本：v1.0 规划基线 · 日期：2026-11-14 · 状态：已进入 M0/M1 开发，当前开发版 0.1.0；实际进度见[开发记录](07-IMPLEMENTATION-STATUS.md)。
+版本：v1.0.0 正式基线（后续迭代在 `v1.0.0` 基础上自动递增） · 日期：2026-11-18 · 当前发布基线 `1.0.0`；历史验证记录见[开发记录](07-IMPLEMENTATION-STATUS.md)。
 
 本文档集针对当前项目 `G:\code\termius-app`。目录名不是最终品牌名；产品名称暂称「Windows SSH 工作台」。以下功能、性能数字与界面规格均为拟实现要求，不能视为已通过测试。
 
@@ -26,6 +26,7 @@
 5. [账号、凭据与同步兼容设计](05-SYNC-AND-CREDENTIALS.md)：本地安全保存、协议字段、密码学兼容、冲突和升级边界。
 6. [开发阶段与验收计划](06-DELIVERY-AND-ACCEPTANCE.md)：需求追踪、依赖顺序、质量门槛、测试场景与风险验证。
 7. [开发进度与验证记录](07-IMPLEMENTATION-STATUS.md)：已实现功能、实际测试、当前限制与接续顺序。
+8. [多协议文件工作台、远程桌面（RDP）、设置分域与同步扩展规划](08-FILES-AND-REMOTE-PROTOCOLS-PLAN.md)：`v1.0.0` 版本迭代规则、独立 Files（SFTP/FTP/FTPS/SMB/S3/WebDAV）与 Remote（RDP 跨 Windows/Ubuntu）页面规划、设置页按协议分类架构，以及远程管理服务端同步 API 缺口清单。
 
 ## 3. 范围定义
 

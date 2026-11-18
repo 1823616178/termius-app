@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, useId } from 'vue'
+import { t } from '../services/i18n'
 import { showHelp } from '../stores/workbench'
 
 const dialogRef = ref<HTMLDialogElement>()
@@ -25,23 +26,21 @@ onBeforeUnmount(() => {
     @mousedown.self="showHelp = false"
   >
     <div class="container_app_shortcuts_body_card">
-      <h3 :id="titleId" class="container_app_shortcuts_header_title">常用快捷键</h3>
-      <p class="container_app_shortcuts_body_new">Ctrl + Shift + T　新建本地终端</p>
-      <p class="container_app_shortcuts_body_close">Ctrl + Shift + W　关闭当前标签</p>
-      <p class="container_app_shortcuts_body_switch">Ctrl + Tab / Ctrl + Shift + Tab　切换标签</p>
-      <p class="container_app_shortcuts_body_copy">
-        Ctrl + Shift + C / V（或 Ctrl/Shift + Insert）　复制 / 粘贴
-      </p>
-      <p class="container_app_shortcuts_body_search">Ctrl + Shift + F　搜索终端输出</p>
-      <p class="container_app_shortcuts_body_hosts">Ctrl + K（非终端区域）　搜索主机</p>
-      <p class="container_app_shortcuts_body_interrupt">Ctrl + C、Ctrl + B、Ctrl + A　透传终端</p>
+      <h3 :id="titleId" class="container_app_shortcuts_header_title">{{ t('shortcuts.title') }}</h3>
+      <p class="container_app_shortcuts_body_new">{{ t('shortcuts.newLocal') }}</p>
+      <p class="container_app_shortcuts_body_close">{{ t('shortcuts.closeTab') }}</p>
+      <p class="container_app_shortcuts_body_switch">{{ t('shortcuts.switchTab') }}</p>
+      <p class="container_app_shortcuts_body_copy">{{ t('shortcuts.copyPaste') }}</p>
+      <p class="container_app_shortcuts_body_search">{{ t('shortcuts.search') }}</p>
+      <p class="container_app_shortcuts_body_hosts">{{ t('shortcuts.searchHosts') }}</p>
+      <p class="container_app_shortcuts_body_interrupt">{{ t('shortcuts.passthrough') }}</p>
       <button
         class="container_app_shortcuts_footer_close"
         type="button"
         data-primary
         @click="showHelp = false"
       >
-        知道了
+        {{ t('shortcuts.ack') }}
       </button>
     </div>
   </dialog>
@@ -63,12 +62,14 @@ onBeforeUnmount(() => {
   padding: 22px 24px;
   p {
     color: var(--color-text-secondary);
-    font-size: 13px;
+    font-size: var(--font-size-ui-sm);
     margin: 8px 0;
   }
 }
 .container_app_shortcuts_header_title {
-  font-size: 16px;
+  font-family: var(--font-display);
+  font-size: var(--font-size-ui-xl);
+  color: var(--color-text-heading);
   margin: 0 0 12px;
 }
 .container_app_shortcuts_footer_close {

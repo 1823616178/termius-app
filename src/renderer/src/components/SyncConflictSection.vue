@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { Check } from '@lucide/vue'
 import { instanceClass } from '../../../shared/classes'
 import type { SyncConflict, SyncConflictResolutionItem } from '../../../shared/sync'
+import { t } from '../services/i18n'
 import { groupToken, windowInstance } from '../stores/workbench'
 
 const props = defineProps<{
@@ -48,9 +49,15 @@ function submitResolutions() {
 </script>
 
 <template>
-  <section v-if="conflicts.length" class="container_sync_conflict_body_section" aria-label="同步冲突处理">
+  <section
+    v-if="conflicts.length"
+    class="container_sync_conflict_body_section"
+    :aria-label="t('sync.conflictAria')"
+  >
     <header class="container_sync_conflict_header_base">
-      <h3 class="container_sync_conflict_header_title">检测到 {{ conflicts.length }} 处三方合并冲突</h3>
+      <h3 class="container_sync_conflict_header_title">
+        {{ t('sync.conflictTitle', { count: conflicts.length }) }}
+      </h3>
       <button
         class="container_sync_conflict_header_apply"
         type="button"
@@ -59,7 +66,7 @@ function submitResolutions() {
         @click="submitResolutions"
       >
         <Check :size="14" />
-        应用选择并完成同步
+        {{ t('sync.conflictApply') }}
       </button>
     </header>
     <div class="container_sync_conflict_body_list">
@@ -81,7 +88,7 @@ function submitResolutions() {
             :data-selected="conflictChoices[item.id] === 'local' ? 'true' : 'false'"
             @click="selectConflictChoice(item.id, 'local')"
           >
-            保留本地：{{ item.localDisplay }}
+            {{ t('sync.conflictKeepLocal', { val: item.localDisplay }) }}
           </button>
           <button
             :class="c('container_sync_conflict_body_choice-remote', item.id)"
@@ -89,7 +96,7 @@ function submitResolutions() {
             :data-selected="conflictChoices[item.id] === 'remote' ? 'true' : 'false'"
             @click="selectConflictChoice(item.id, 'remote')"
           >
-            采用远端：{{ item.remoteDisplay }}
+            {{ t('sync.conflictUseRemote', { val: item.remoteDisplay }) }}
           </button>
         </div>
       </article>

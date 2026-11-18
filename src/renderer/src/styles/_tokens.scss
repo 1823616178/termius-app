@@ -4,7 +4,23 @@
   --font-display:
     'STZhongsong', 'Noto Serif SC', 'Source Han Serif SC', 'FangSong', 'KaiTi', 'Microsoft YaHei UI', serif;
   --font-mono:
-    'JetBrains Mono', 'Sarasa Term SC', 'Cascadia Mono', 'Consolas', 'Microsoft YaHei UI', monospace;
+    'Orbit JetBrains Mono', 'JetBrains Mono', 'Sarasa Term SC', 'Cascadia Mono', 'Consolas',
+    'Microsoft YaHei UI', monospace;
+  --font-ui-size: 13px;
+  --ui-font-scale: 1;
+  --font-ui-weight: 400;
+  --font-ui-heading-weight: 600;
+  --font-ui-line-height: 1.5;
+  --font-ui-letter-spacing: 0px;
+  --font-size-ui-2xs: calc(10px * var(--ui-font-scale, 1));
+  --font-size-ui-xs: calc(11px * var(--ui-font-scale, 1));
+  --font-size-ui-sm: calc(12px * var(--ui-font-scale, 1));
+  --font-size-ui-md: var(--font-ui-size);
+  --font-size-ui-lg: calc(14px * var(--ui-font-scale, 1));
+  --font-size-ui-xl: calc(15px * var(--ui-font-scale, 1));
+  --font-size-ui-2xl: calc(20px * var(--ui-font-scale, 1));
+  --font-size-ui-title: calc(22px * var(--ui-font-scale, 1));
+  --font-mono-ligatures: 'calt' 1, 'liga' 1;
 
   --color-app-bg: #080b0a;
   --color-surface-1: #101514;
@@ -20,6 +36,7 @@
   --color-surface-rail: #0d1210;
   --color-scrollbar: #3b4138;
   --color-text-primary: #efe9da;
+  --color-text-heading: var(--color-text-primary);
   --color-text-secondary: #bfb7a4;
   --color-text-muted: #827b6d;
   --color-text-disabled: #555046;

@@ -15,6 +15,7 @@ import {
 import { currentTab, focusedPane, hosts, notify, tabs, windowInstance } from '../stores/workbench'
 import { writeTerminalInputByToken } from './terminal-registry'
 import { markHostUsed } from './host-recency'
+import { t } from './i18n'
 
 export interface ActiveSftpContext {
   source: 'pane' | 'standalone'
@@ -249,7 +250,7 @@ export async function connectStandaloneSftpHost(host: Host, password?: string): 
       resolve(event.ports[0])
     }
     window.addEventListener('message', listener)
-    timeout = setTimeout(() => reject(new Error('SFTP 通道建立超时')), 20_000)
+    timeout = setTimeout(() => reject(new Error(t('sftp.channelTimeout'))), 20_000)
   })
   void delivered.catch(() => {})
 
@@ -277,7 +278,7 @@ export async function connectStandaloneSftpHost(host: Host, password?: string): 
         closeStandaloneSftpSession()
         sftpPasswordPrompt.value = {
           host,
-          error: data.message ?? 'SSH 密码认证失败，请重新输入登录密码'
+          error: data.message ?? t('sftp.authFailed')
         }
         return
       }
@@ -289,7 +290,7 @@ export async function connectStandaloneSftpHost(host: Host, password?: string): 
     }
     port.start()
   } catch (error) {
-    const msg = error instanceof Error ? error.message : 'SFTP 连接失败'
+    const msg = error instanceof Error ? error.message : t('sftp.connectFailed')
     if (msg.includes('请输入本次连接密码')) {
       sftpStandalone.value = null
       sftpPasswordPrompt.value = { host, error: msg }
@@ -355,7 +356,7 @@ export async function refreshSftpDirectory(targetPath?: string): Promise<void> {
     loadedSessions.set(ctx.sessionId, res.path)
   } catch (error) {
     if (serial !== listRequestSerial) return
-    sftpError.value = error instanceof Error ? error.message : '读取远端目录失败'
+    sftpError.value = error instanceof Error ? error.message : t('sftp.readDirFailed')
   } finally {
     if (serial === listRequestSerial) sftpLoading.value = false
   }
@@ -441,10 +442,10 @@ function pumpTransfers(): void {
       .catch((error) => {
         const idx = sftpTransfers.value.findIndex((t) => t.id === item.id)
         if (idx >= 0 && sftpTransfers.value[idx]!.status !== 'cancelled') {
-          const msg = error instanceof Error ? error.message : '传输失败'
+          const msg = error instanceof Error ? error.message : t('sftp.transferFailed')
           sftpTransfers.value[idx] = {
             ...sftpTransfers.value[idx]!,
-            status: msg.includes('取消') ? 'cancelled' : 'failed',
+            status: msg.includes('取消') || msg.toLowerCase().includes('cancel') ? 'cancelled' : 'failed',
             error: msg,
             updatedAt: Date.now()
           }
@@ -464,7 +465,7 @@ export async function uploadLocalPathsToCurrentDir(localPaths: string[]): Promis
   const baseRemoteDir = sftpCurrentPath.value
   const manifest = await window.orbit.sftp.expandLocalUploads(localPaths)
   if (manifest.skippedSymlinks > 0) {
-    notify(`已跳过 ${manifest.skippedSymlinks} 个本地符号链接，不进行递归穿透`)
+    notify(t('sftp.skippedLocalSymlinks', { count: manifest.skippedSymlinks }))
   }
   for (const relDir of manifest.dirs) {
     await window.orbit.sftp.mkdir(sessionId, joinRemotePosixPath(baseRemoteDir, relDir))
@@ -611,7 +612,7 @@ export async function downloadRemoteEntries(entries: SftpEntry[]): Promise<void>
     }
   }
   if (skippedSymlinks > 0) {
-    notify(`下载目录时已跳过 ${skippedSymlinks} 个远端符号链接`)
+    notify(t('sftp.skippedRemoteSymlinks', { count: skippedSymlinks }))
   }
   pumpTransfers()
 }
@@ -621,7 +622,12 @@ export async function cancelSftpTransfer(item: SftpTransferItem): Promise<void> 
     pendingJobs.delete(item.id)
     const idx = sftpTransfers.value.findIndex((t) => t.id === item.id)
     if (idx >= 0) {
-      sftpTransfers.value[idx] = { ...item, status: 'cancelled', error: '已取消', updatedAt: Date.now() }
+      sftpTransfers.value[idx] = {
+        ...item,
+        status: 'cancelled',
+        error: t('sftp.queueCancelled'),
+        updatedAt: Date.now()
+      }
     }
     return
   }
@@ -670,11 +676,11 @@ export function insertRemotePathIntoTerminal(remotePath: string): void {
     activeSftpContext.value?.paneToken ||
     (focusedPane.value?.kind === 'ssh' ? focusedPane.value.token : undefined)
   if (paneToken && writeTerminalInputByToken(windowInstance(paneToken), `${escaped} `)) {
-    notify('已将转义后的远端路径插入终端光标处')
+    notify(t('sftp.insertedPathNotice'))
     return
   }
   void window.orbit.clipboard.writeText(remotePath).then(() => {
-    notify('当前未绑定 SSH 终端，已复制远端路径到剪贴板')
+    notify(t('sftp.copiedPathNoTerminalNotice'))
   })
 }
 

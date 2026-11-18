@@ -1215,6 +1215,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@xterm/addon-webgl@npm:0.19.0":
+  version: 0.19.0
+  resolution: "@xterm/addon-webgl@npm:0.19.0"
+  checksum: 10c0/238f9af3745bc027c78a6ec6ed155721f82f2f0934bc65adffc0ae997c23ad053b18f04fceb121a38945d2fc31bf0e4baa01714c4c2916781bb27873d9d5cd8b
+  languageName: node
+  linkType: hard
+
 "@xterm/xterm@npm:6.0.0":
   version: 6.0.0
   resolution: "@xterm/xterm@npm:6.0.0"
@@ -2430,6 +2437,7 @@ __metadata:
     "@vue/compiler-sfc": "npm:3.5.45"
     "@xterm/addon-fit": "npm:0.11.0"
     "@xterm/addon-search": "npm:0.16.0"
+    "@xterm/addon-webgl": "npm:0.19.0"
     "@xterm/xterm": "npm:6.0.0"
     better-sqlite3: "npm:13.1.1"
     electron: "npm:45.3.1"

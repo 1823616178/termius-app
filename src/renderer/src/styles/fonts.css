@@ -1,0 +1,307 @@
+/* Embedded WOFF2 font catalog for Graphite Orbit (Terminal + Panel UI) */
+
+/* === Terminal / Monospace Embedded Fonts === */
+
+@font-face {
+  font-family: 'Orbit JetBrains Mono';
+  font-style: normal;
+  font-weight: 100 500;
+  font-display: swap;
+  src: url('../assets/fonts/JetBrainsMono-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit JetBrains Mono';
+  font-style: normal;
+  font-weight: 501 650;
+  font-display: swap;
+  src: url('../assets/fonts/JetBrainsMono-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit JetBrains Mono';
+  font-style: normal;
+  font-weight: 651 900;
+  font-display: swap;
+  src: url('../assets/fonts/JetBrainsMono-700.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit JetBrains Mono';
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../assets/fonts/JetBrainsMono-400-italic.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Orbit Maple Mono';
+  font-style: normal;
+  font-weight: 100 500;
+  font-display: swap;
+  src: url('../assets/fonts/MapleMono-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Maple Mono';
+  font-style: normal;
+  font-weight: 501 650;
+  font-display: swap;
+  src: url('../assets/fonts/MapleMono-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Maple Mono';
+  font-style: normal;
+  font-weight: 651 900;
+  font-display: swap;
+  src: url('../assets/fonts/MapleMono-700.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Maple Mono';
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../assets/fonts/MapleMono-400-italic.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Orbit Cascadia Code';
+  font-style: normal;
+  font-weight: 100 500;
+  font-display: swap;
+  src: url('../assets/fonts/CascadiaCode-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Cascadia Code';
+  font-style: normal;
+  font-weight: 501 650;
+  font-display: swap;
+  src: url('../assets/fonts/CascadiaCode-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Cascadia Code';
+  font-style: normal;
+  font-weight: 651 900;
+  font-display: swap;
+  src: url('../assets/fonts/CascadiaCode-700.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Cascadia Code';
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../assets/fonts/CascadiaCode-400-italic.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Cascadia Code';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  unicode-range: U+2000-2001, U+2004-2008, U+200A, U+23B8-23BD, U+2500-259F;
+  src: url('../assets/fonts/CascadiaCode-symbols2-400.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Orbit Fira Code';
+  font-style: normal;
+  font-weight: 100 500;
+  font-display: swap;
+  src: url('../assets/fonts/FiraCode-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Fira Code';
+  font-style: normal;
+  font-weight: 501 650;
+  font-display: swap;
+  src: url('../assets/fonts/FiraCode-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Fira Code';
+  font-style: normal;
+  font-weight: 651 900;
+  font-display: swap;
+  src: url('../assets/fonts/FiraCode-700.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Orbit Victor Mono';
+  font-style: normal;
+  font-weight: 100 500;
+  font-display: swap;
+  src: url('../assets/fonts/VictorMono-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Victor Mono';
+  font-style: normal;
+  font-weight: 501 650;
+  font-display: swap;
+  src: url('../assets/fonts/VictorMono-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Victor Mono';
+  font-style: normal;
+  font-weight: 651 900;
+  font-display: swap;
+  src: url('../assets/fonts/VictorMono-700.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Victor Mono';
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../assets/fonts/VictorMono-400-italic.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Orbit IBM Plex Mono';
+  font-style: normal;
+  font-weight: 100 500;
+  font-display: swap;
+  src: url('../assets/fonts/IBMPlexMono-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit IBM Plex Mono';
+  font-style: normal;
+  font-weight: 501 650;
+  font-display: swap;
+  src: url('../assets/fonts/IBMPlexMono-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit IBM Plex Mono';
+  font-style: normal;
+  font-weight: 651 900;
+  font-display: swap;
+  src: url('../assets/fonts/IBMPlexMono-700.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit IBM Plex Mono';
+  font-style: italic;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../assets/fonts/IBMPlexMono-400-italic.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Orbit Geist Mono';
+  font-style: normal;
+  font-weight: 100 500;
+  font-display: swap;
+  src: url('../assets/fonts/GeistMono-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Geist Mono';
+  font-style: normal;
+  font-weight: 501 650;
+  font-display: swap;
+  src: url('../assets/fonts/GeistMono-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Geist Mono';
+  font-style: normal;
+  font-weight: 651 900;
+  font-display: swap;
+  src: url('../assets/fonts/GeistMono-700.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Orbit LXGW WenKai Mono';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../assets/fonts/LXGWWenKaiMonoLite-Regular.woff2') format('woff2');
+}
+
+/* === Panel / Interface & Display Embedded Fonts === */
+
+@font-face {
+  font-family: 'Orbit LXGW WenKai';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../assets/fonts/LXGWWenKaiLite-Regular.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Orbit Smiley Sans';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('../assets/fonts/SmileySans-Oblique.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Orbit Inter';
+  font-style: normal;
+  font-weight: 100 500;
+  font-display: swap;
+  src: url('../assets/fonts/Inter-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Inter';
+  font-style: normal;
+  font-weight: 501 650;
+  font-display: swap;
+  src: url('../assets/fonts/Inter-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Inter';
+  font-style: normal;
+  font-weight: 651 900;
+  font-display: swap;
+  src: url('../assets/fonts/Inter-700.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Orbit Plus Jakarta Sans';
+  font-style: normal;
+  font-weight: 100 500;
+  font-display: swap;
+  src: url('../assets/fonts/PlusJakartaSans-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Plus Jakarta Sans';
+  font-style: normal;
+  font-weight: 501 650;
+  font-display: swap;
+  src: url('../assets/fonts/PlusJakartaSans-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Plus Jakarta Sans';
+  font-style: normal;
+  font-weight: 651 900;
+  font-display: swap;
+  src: url('../assets/fonts/PlusJakartaSans-700.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Orbit Outfit';
+  font-style: normal;
+  font-weight: 100 500;
+  font-display: swap;
+  src: url('../assets/fonts/Outfit-400.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Outfit';
+  font-style: normal;
+  font-weight: 501 650;
+  font-display: swap;
+  src: url('../assets/fonts/Outfit-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Outfit';
+  font-style: normal;
+  font-weight: 651 900;
+  font-display: swap;
+  src: url('../assets/fonts/Outfit-700.woff2') format('woff2');
+}
+
+@font-face {
+  font-family: 'Orbit Cinzel';
+  font-style: normal;
+  font-weight: 100 650;
+  font-display: swap;
+  src: url('../assets/fonts/Cinzel-600.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Orbit Cinzel';
+  font-style: normal;
+  font-weight: 651 900;
+  font-display: swap;
+  src: url('../assets/fonts/Cinzel-700.woff2') format('woff2');
+}

@@ -2,15 +2,16 @@ export type AppShortcutAction = 'new-local-tab' | 'close-tab' | 'next-tab' | 'pr
 export type TerminalShortcutAction = 'copy' | 'paste' | 'search'
 
 export function matchAppShortcut(event: KeyboardEvent): AppShortcutAction | undefined {
-  if (event.type !== 'keydown' || event.isComposing || event.altKey || event.metaKey) return undefined
-  if (event.ctrlKey && event.shiftKey && event.code === 'KeyT') return 'new-local-tab'
-  if (event.ctrlKey && event.shiftKey && event.code === 'KeyW') return 'close-tab'
-  if (event.ctrlKey && event.code === 'Tab') return event.shiftKey ? 'prev-tab' : 'next-tab'
-  const insideTerminal =
-    typeof Element !== 'undefined' &&
-    event.target instanceof Element &&
-    Boolean(event.target.closest('.xterm'))
-  if (event.ctrlKey && !event.shiftKey && event.code === 'KeyK' && !insideTerminal) return 'focus-host-search'
+  if (event.type !== 'keydown' || !event.ctrlKey || event.isComposing || event.altKey || event.metaKey)
+    return undefined
+  if (event.shiftKey && event.code === 'KeyT') return 'new-local-tab'
+  if (event.shiftKey && event.code === 'KeyW') return 'close-tab'
+  if (event.code === 'Tab') return event.shiftKey ? 'prev-tab' : 'next-tab'
+  if (!event.shiftKey && event.code === 'KeyK') {
+    const insideTerminal =
+      typeof Element !== 'undefined' && event.target instanceof Element && event.target.closest('.xterm')
+    if (!insideTerminal) return 'focus-host-search'
+  }
   return undefined
 }
 

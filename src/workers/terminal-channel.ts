@@ -36,6 +36,7 @@ export function terminalChannel(
   let ending = false
   let pendingChunks: Buffer[] = []
   let pendingBytes = 0
+  let lastFlushAt = -Infinity
   let flushTimer: NodeJS.Timeout | undefined
   let inputBytes = 0
   let inputStart = Date.now()
@@ -71,6 +72,7 @@ export function terminalChannel(
       flushTimer = undefined
     }
     if (closed || pendingBytes === 0) return
+    lastFlushAt = performance.now()
     const bytes = pendingChunks.length === 1 ? pendingChunks[0]! : Buffer.concat(pendingChunks, pendingBytes)
     pendingChunks = []
     pendingBytes = 0
@@ -173,7 +175,10 @@ export function terminalChannel(
       if (bytes.length === 0) return
       pendingChunks.push(bytes)
       pendingBytes += bytes.length
-      if (pendingBytes >= CHUNK_BYTES || coalesceMs <= 0) {
+      // Show the first output after an idle period immediately. Keep batching
+      // bursts while the renderer is busy or the previous send was recent.
+      const idle = !flushTimer && flow.bytes === 0 && performance.now() - lastFlushAt >= coalesceMs
+      if (idle || pendingBytes >= CHUNK_BYTES || coalesceMs <= 0) {
         flush()
       } else if (!flushTimer) {
         flushTimer = setTimeout(flush, coalesceMs)

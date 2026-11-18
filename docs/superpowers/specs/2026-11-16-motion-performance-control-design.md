@@ -18,6 +18,7 @@
 `MotionPreference` 为 `auto | full | light | off`；`MotionTier` 仍为实际生效的 `full | light | off`。沿用 `orbit:motion-tier` 保存显式用户选择，缺失值代表自动，旧版完整／轻量／关闭设置无损迁移。
 
 自动模式：
+
 - WebGL2 不可用或检测到 SwiftShader、llvmpipe、softpipe、Software、Microsoft Basic Render 等软件渲染器：关闭。
 - 已知逻辑处理器不超过 2 个，或已知设备内存不超过 2 GiB：关闭。
 - 已知逻辑处理器不超过 4 个，或已知设备内存不超过 4 GiB：轻量。

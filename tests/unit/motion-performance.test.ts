@@ -42,7 +42,12 @@ describe('motion performance capability', () => {
   ])('recognizes software rendering: %s', (renderer) => {
     expect(isSoftwareRenderer(renderer)).toBe(true)
   })
-  expect(isSoftwareRenderer('ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Direct3D11 vs_5_0 ps_5_0)')).toBe(false)
+  it.each([
+    'ANGLE (AMD, AMD Radeon RX 6700 XT Direct3D11 vs_5_0 ps_5_0)',
+    'ANGLE (NVIDIA, NVIDIA GeForce RTX 4070 Direct3D11 vs_5_0 ps_5_0)'
+  ])('accepts hardware renderers: %s', (renderer) => {
+    expect(isSoftwareRenderer(renderer)).toBe(false)
+  })
 
   it('honors reduced motion in automatic mode only', () => {
     const capability = assessMotionCapability({ webgl2Supported: true, reducedMotion: true })

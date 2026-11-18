@@ -239,3 +239,35 @@ export function sortSftpEntries(
     return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }) * factor
   })
 }
+
+export function parseFileUriToLocalPath(rawUri: string): string | null {
+  try {
+    const parsed = new URL(rawUri.trim())
+    if (parsed.protocol !== 'file:') return null
+    const decodedPath = decodeURIComponent(parsed.pathname)
+    if (!decodedPath || decodedPath.includes('\0')) return null
+    if (/^\/[A-Za-z]:\//.test(decodedPath)) {
+      return decodedPath.slice(1).replaceAll('/', '\\')
+    }
+    if (parsed.hostname && parsed.hostname.toLowerCase() !== 'localhost') {
+      return `\\\\${parsed.hostname}${decodedPath.replaceAll('/', '\\')}`
+    }
+    return decodedPath
+  } catch {
+    return null
+  }
+}
+
+export function extractFilePathsFromUriList(rawUriList: string): string[] {
+  if (!rawUriList) return []
+  const paths: string[] = []
+  for (const line of rawUriList.split(/\r?\n/)) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('#')) continue
+    const localPath = parseFileUriToLocalPath(trimmed)
+    if (localPath && !paths.includes(localPath)) {
+      paths.push(localPath)
+    }
+  }
+  return paths
+}

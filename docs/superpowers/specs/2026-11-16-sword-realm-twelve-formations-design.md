@@ -20,13 +20,13 @@
 
 ## 1. 酒碗移除（已落地清单）
 
-| 文件 | 动作 |
-| --- | --- |
-| `sword-models.ts` | 删除 `WineBowlModel` 与 `createWineBowl()`。**保留 `createWineSeal()`**（"酒"字印贴葫芦）。 |
-| `sword-scene.ts` | 删除酒碗导入 / 创建 / 定位 / `visible` / 整块 render 动画；原 `wineLight` 改名 `gourdLight` 并跟随葫芦。 |
-| `sword-motion.ts` | 删除 `StageState.wineReveal`；新增葫芦字段（§2）。 |
-| `ui-themes.ts` / `WorkspacePage.vue` | `--color-scene-wine / -soft` 琥珀 token 保留（语义=葫芦酒色），无 CSS churn。 |
-| 测试 | 无单元引用酒碗；e2e 仅截图变化。 |
+| 文件                                 | 动作                                                                                                     |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| `sword-models.ts`                    | 删除 `WineBowlModel` 与 `createWineBowl()`。**保留 `createWineSeal()`**（"酒"字印贴葫芦）。              |
+| `sword-scene.ts`                     | 删除酒碗导入 / 创建 / 定位 / `visible` / 整块 render 动画；原 `wineLight` 改名 `gourdLight` 并跟随葫芦。 |
+| `sword-motion.ts`                    | 删除 `StageState.wineReveal`；新增葫芦字段（§2）。                                                       |
+| `ui-themes.ts` / `WorkspacePage.vue` | `--color-scene-wine / -soft` 琥珀 token 保留（语义=葫芦酒色），无 CSS churn。                            |
+| 测试                                 | 无单元引用酒碗；e2e 仅截图变化。                                                                         |
 
 ---
 
@@ -35,36 +35,37 @@
 ### 2.1 `GourdModel`（`createGourd()` 返回）
 
 `group / body / cork / cord / seal / sealMaterial / vapor / vaporMaterial / pourRibbon / pourMaterial`。
+
 - `vapor`：24 点预分配 `Points`（DynamicDrawUsage），加法混合，自塞口上升。
 - `pourRibbon`：预建 Tube 弧带 `(0,1.2,0)→(0.5,1.35,0.1)→(1.1,1.0,0.2)→(1.6,0.5,0.25)`，半径 0.035；仅动画 opacity / rotation / scale，**不每帧重建**。
 
 ### 2.2 StageState 葫芦字段（`sampleStageState`）
 
-| 字段 | 公式 |
-| --- | --- |
-| `gourdReveal` | `easeOutCubic(clamp01((introT-1.05)/1.05))` |
-| `gourdPour` | `clamp01(pulseEnvelope(gt,1,4) + gather*0.3 + 0.08 + 0.06*sin(gt*0.7))` |
-| `gourdTilt` | `sin(gt*0.9)*0.10 + gourdPour*0.55` |
-| `corkLift` | `gourdPour*0.12 + pulse*0.05` |
-| `vaporIntensity` | `gourdReveal*(0.25 + gourdPour*0.75 + pulse*0.4)` |
-| `gourdGlow` | `6 + gather*6 + pulse*8` |
+| 字段             | 公式                                                                    |
+| ---------------- | ----------------------------------------------------------------------- |
+| `gourdReveal`    | `easeOutCubic(clamp01((introT-1.05)/1.05))`                             |
+| `gourdPour`      | `clamp01(pulseEnvelope(gt,1,4) + gather*0.3 + 0.08 + 0.06*sin(gt*0.7))` |
+| `gourdTilt`      | `sin(gt*0.9)*0.10 + gourdPour*0.55`                                     |
+| `corkLift`       | `gourdPour*0.12 + pulse*0.05`                                           |
+| `vaporIntensity` | `gourdReveal*(0.25 + gourdPour*0.75 + pulse*0.4)`                       |
+| `gourdGlow`      | `6 + gather*6 + pulse*8`                                                |
 
 > `gourdPour` 只在诛仙高潮窗口（gt 1–4）显著倾身斟酒，平时微酌（≈0.08–0.14），避免常年动作噪声。
 
 ### 2.3 场景驱动（`sword-scene.ts` render）
 
-| 动作 | 实现 |
-| --- | --- |
-| 入场·升坛 | `y = -0.7 + (1-reveal)*-0.95`；`scale = 0.54*(0.35+reveal*0.65)` |
-| 悬浮·呼吸 | `y += sin(time*1.3)*0.07`；`body.scale = 1+sin(time*1.3+0.6)*0.02` |
-| 巡行·漂移 | `x = -1.25+sin(cycle*0.5)*0.12`；`z = 0.9+cos(cycle*0.5)*0.08` |
-| 斟酌·倾斜 | `rot = (0.06+pour*0.12, -0.24+sin(time*0.6)*0.16, 0.08+gourdTilt)` |
-| 启塞 | `cork.y = 1.11+corkLift`；`cork.rot.z = pour*0.3` |
-| 酒气 | 24 点 `life=fract(time*0.35+v/24)`，`y=1.2+life*1.1`，横摆 `sin/cos(time*…)*0.06*life`；`opacity=intensity*(light?0.25:0.5)`；`size=0.04+intensity*0.03`；`visible=!compact&&intensity>0.02` |
-| 斟酒光带 | `visible=!compact&&pour>0.05`；`opacity=pour*0.45`；`rot.z=sin(time*1.2)*0.05`；`scale=0.8+pour*0.4` |
-| 绳摆 | `cord.rot.z = sin(time*1.6+1)*0.06 + pour*0.10` |
-| 印发光 | `sealMaterial.color = white→brightGold(pulse*0.6)`；`opacity=0.75+gather*0.25` |
-| 暖光随形 | `gourdLight.position` 跟随葫芦；`intensity=gourdGlow` |
+| 动作      | 实现                                                                                                                                                                                         |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 入场·升坛 | `y = -0.7 + (1-reveal)*-0.95`；`scale = 0.54*(0.35+reveal*0.65)`                                                                                                                             |
+| 悬浮·呼吸 | `y += sin(time*1.3)*0.07`；`body.scale = 1+sin(time*1.3+0.6)*0.02`                                                                                                                           |
+| 巡行·漂移 | `x = -1.25+sin(cycle*0.5)*0.12`；`z = 0.9+cos(cycle*0.5)*0.08`                                                                                                                               |
+| 斟酌·倾斜 | `rot = (0.06+pour*0.12, -0.24+sin(time*0.6)*0.16, 0.08+gourdTilt)`                                                                                                                           |
+| 启塞      | `cork.y = 1.11+corkLift`；`cork.rot.z = pour*0.3`                                                                                                                                            |
+| 酒气      | 24 点 `life=fract(time*0.35+v/24)`，`y=1.2+life*1.1`，横摆 `sin/cos(time*…)*0.06*life`；`opacity=intensity*(light?0.25:0.5)`；`size=0.04+intensity*0.03`；`visible=!compact&&intensity>0.02` |
+| 斟酒光带  | `visible=!compact&&pour>0.05`；`opacity=pour*0.45`；`rot.z=sin(time*1.2)*0.05`；`scale=0.8+pour*0.4`                                                                                         |
+| 绳摆      | `cord.rot.z = sin(time*1.6+1)*0.06 + pour*0.10`                                                                                                                                              |
+| 印发光    | `sealMaterial.color = white→brightGold(pulse*0.6)`；`opacity=0.75+gather*0.25`                                                                                                               |
+| 暖光随形  | `gourdLight.position` 跟随葫芦；`intensity=gourdGlow`                                                                                                                                        |
 
 ---
 
@@ -72,20 +73,20 @@
 
 每式窗口 `[m*5, (m+1)*5)`。`link` 决定剑丝/剑网连线生成器，`linkColor` 0=金 1=玉 2=朱。
 
-| # | 名称 | 副标 | 剪影 | 朝向 | 色彩倾向 | link |
-| --- | --- | --- | --- | --- | --- | --- |
-| 1 | 诛仙剑阵 | 四门诛戮陷绝 · 杀意朝心 | 四角密集剑簇·剑锋朝心 | 指向剑心 | 朱+金，门脉冲 | none |
-| 2 | 大庚剑阵 | 庚金剑丝 · 隐匿穿空 | 12 条横贯剑丝，剑沿丝滑行 | 沿丝切线 | 高金、细长剑拉伸 | threads(金) |
-| 3 | 春黎剑阵 | 幻术为基 · 春影重叠 | 五臂花瓣螺旋＋幻影偏移 | 径向+切线混合 | 高玉（春绿） | none |
-| 4 | 青蟠剑阵 | 青元高阶 · 蟠龙绕柱 | 单条三圈蟠龙螺旋柱 | 螺旋切线偏上 | 高玉 | none |
-| 5 | 小千剑阵 | 千剑层叠 · 六重呼吸 | 六层同心环逐层呼吸 | 环切线 | 层奇偶金/玉 | none |
-| 6 | 大千剑阵 | 大千世界 · 三环浑天 | 三球壳绕异轴旋转（浑天仪） | 旋转切线 | 金主玉辅 | none |
-| 7 | 恒山剑阵 | 七人一队 · 攻守相济 | ~20 个七剑罗sette 小队 | 攻=向外/守=向内 | 钢青+玉 | none |
-| 8 | 六脉神剑阵 | 六脉剑气 · 依次奔涌 | 六辐条＋行波脉冲外奔 | 径向向外 | 波前高金 | none |
-| 9 | 罗汉剑阵 | 少林罗汉 · 立剑如僧 | 平静立剑环（如立僧） | 近竖直微摆 | 铜金、低能量 | none |
-| 10 | 九宫八卦剑阵 | 九宫方位 · 交织剑网 | 3×3 宫格剑簇＋经纬对角剑网 | 朝邻宫+切线 | 宫奇偶金/玉 | grid(玉) |
-| 11 | 五行连环剑阵 | 五行相生 · 连环合击 | 五角五元素簇＋相生环 | 朝下一元素 | 五行各自配色 | ring(金) |
-| 12 | 五九剑阵 | 四五长剑 · 旋盘不息 | 45 亮剑旋盘＋外圈暗回声 | 盘切线 | 高金 | none |
+| #   | 名称         | 副标                    | 剪影                       | 朝向            | 色彩倾向         | link        |
+| --- | ------------ | ----------------------- | -------------------------- | --------------- | ---------------- | ----------- |
+| 1   | 诛仙剑阵     | 四门诛戮陷绝 · 杀意朝心 | 四角密集剑簇·剑锋朝心      | 指向剑心        | 朱+金，门脉冲    | none        |
+| 2   | 大庚剑阵     | 庚金剑丝 · 隐匿穿空     | 12 条横贯剑丝，剑沿丝滑行  | 沿丝切线        | 高金、细长剑拉伸 | threads(金) |
+| 3   | 春黎剑阵     | 幻术为基 · 春影重叠     | 五臂花瓣螺旋＋幻影偏移     | 径向+切线混合   | 高玉（春绿）     | none        |
+| 4   | 青蟠剑阵     | 青元高阶 · 蟠龙绕柱     | 单条三圈蟠龙螺旋柱         | 螺旋切线偏上    | 高玉             | none        |
+| 5   | 小千剑阵     | 千剑层叠 · 六重呼吸     | 六层同心环逐层呼吸         | 环切线          | 层奇偶金/玉      | none        |
+| 6   | 大千剑阵     | 大千世界 · 三环浑天     | 三球壳绕异轴旋转（浑天仪） | 旋转切线        | 金主玉辅         | none        |
+| 7   | 恒山剑阵     | 七人一队 · 攻守相济     | ~20 个七剑罗sette 小队     | 攻=向外/守=向内 | 钢青+玉          | none        |
+| 8   | 六脉神剑阵   | 六脉剑气 · 依次奔涌     | 六辐条＋行波脉冲外奔       | 径向向外        | 波前高金         | none        |
+| 9   | 罗汉剑阵     | 少林罗汉 · 立剑如僧     | 平静立剑环（如立僧）       | 近竖直微摆      | 铜金、低能量     | none        |
+| 10  | 九宫八卦剑阵 | 九宫方位 · 交织剑网     | 3×3 宫格剑簇＋经纬对角剑网 | 朝邻宫+切线     | 宫奇偶金/玉      | grid(玉)    |
+| 11  | 五行连环剑阵 | 五行相生 · 连环合击     | 五角五元素簇＋相生环       | 朝下一元素      | 五行各自配色     | ring(金)    |
+| 12  | 五九剑阵     | 四五长剑 · 旋盘不息     | 45 亮剑旋盘＋外圈暗回声    | 盘切线          | 高金             | none        |
 
 ---
 
@@ -115,12 +116,14 @@
 ## 5. 调度、过渡与可控性
 
 ### 5.1 大循环与交叉过渡
+
 - `LOOP_SECONDS=60`、`MOVEMENT_SECONDS=5`、`CROSS=0.45`（边界半宽）。
 - `formationAt(gt)` → `{index, local, fade, from}`：`local<0.45` 时为上一式→本式的尾段（`from=prev`，`fade=smoothstep(4.55,5.45,local+5)`）；`local>4.55` 时为本式→下一式（`from=index`）；其余 `fade=0`。保证跨边界（含 `60s→0s` 回绕）连续。
 - `sampleSwordPoseInto`：`blendPoseInto(a,b,fade,pinch)`，`pinch=sin(fade*π)*0.16`；位置向 `HEART=(1.12,0.22)` 收 `(1-pinch)`（z 收 `1-pinch*0.5`），`glow+=pinch*0.6` → "收心一息"的得体过渡。
 - 内部旋转统一以 `cyc=gt/60` 与 `base=cyc*TAU` 的整数倍驱动，全周期无缝。
 
 ### 5.2 高潮权重（`sampleFormationWeights`）
+
 - `gather = smoothstep(0.5,2,gt)*(1-smoothstep(4,5,gt))`（诛仙窗口）。
 - `lotus = smoothstep(10,11,gt)*(1-smoothstep(14,15,gt))`（春黎）。
 - `volley = smoothstep(35,36,gt)*(1-smoothstep(39,40,gt))`（六脉）。
@@ -130,6 +133,7 @@
 - `phaseLabel`：序章内沿用"开阵启封·天剑破空/裂地渊鸣/万剑分身/凌虚归阵"；否则 `名称 · 副标`。
 
 ### 5.3 按钮与 rail 语义
+
 - `重展剑境` → `replayIntro()`：elapsed/intro 归零，重播序章。
 - `即刻归宗` → `jumpToClimax()`：`intro=INTRO`、`elapsed=2`（直落诛仙高潮）＋triggerPulse。
 - rail 点击 → `jumpToFormation(i)`：`intro=INTRO`、`elapsed=i*5+2.5`。

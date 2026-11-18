@@ -1,5 +1,6 @@
 import { computed } from 'vue'
 import type { Host, ShellProfile } from '../../../shared/contracts'
+import { locale } from '../services/i18n'
 import { markHostUsed } from '../services/host-recency'
 import { disposeTerminalByToken } from '../services/terminal-registry'
 import {
@@ -99,7 +100,11 @@ export function requestPanePassword(tabToken: string, paneToken: string, errorMe
     tabToken,
     paneToken,
     reason: 'auth-failed',
-    message: errorMessage || 'SSH 密码认证失败，请重新输入登录密码。',
+    message:
+      errorMessage ||
+      (locale.value === 'en-US'
+        ? 'SSH password authentication failed. Please enter your password again.'
+        : 'SSH 密码认证失败，请重新输入登录密码。'),
     attempt: nextPromptAttempt()
   }
   if (prompt.value) {
@@ -115,9 +120,13 @@ function canTabAccommodatePanes(
   direction?: Tab['direction']
 ): { ok: boolean; reason?: string } {
   if (!tab) return { ok: false }
+  const en = locale.value === 'en-US'
   const totalPanes = tab.panes.length + additionalPanes
   if (totalPanes > 4) {
-    return { ok: false, reason: '当前开发版每个标签最多 4 个窗格。' }
+    return {
+      ok: false,
+      reason: en ? 'Maximum 4 split panes per tab in this build.' : '当前开发版每个标签最多 4 个窗格。'
+    }
   }
   const container = getPaneContainer(tab.token)
   const effectiveDirection = direction ?? tab.direction
@@ -129,7 +138,12 @@ function canTabAccommodatePanes(
     ((vertical && container.clientHeight / totalPanes < 180) ||
       (!vertical && container.clientWidth / totalPanes < 320))
   ) {
-    return { ok: false, reason: '窗格空间不足，请放大窗口或新建标签。' }
+    return {
+      ok: false,
+      reason: en
+        ? 'Not enough pane space; resize window or open a new tab.'
+        : '窗格空间不足，请放大窗口或新建标签。'
+    }
   }
   return { ok: true }
 }
@@ -225,12 +239,20 @@ export function splitActivePane(
   if (source.kind === 'local') {
     const profile = bootstrap.value?.shells.find((item) => item.id === source.profileId)
     if (profile) return openLocal(profile, true, placement)
-    notify('原本地终端配置已不可用，请刷新后重试。')
+    notify(
+      locale.value === 'en-US'
+        ? 'Original local shell profile is unavailable; please refresh.'
+        : '原本地终端配置已不可用，请刷新后重试。'
+    )
     return false
   }
   const host = hosts.value.find((item) => item.id === source.hostId)
   if (host) return connectHost(host, true, undefined, placement)
-  notify('原主机配置已删除，请新建连接。')
+  notify(
+    locale.value === 'en-US'
+      ? 'Original host has been deleted; open a new connection instead.'
+      : '原主机配置已删除，请新建连接。'
+  )
   return false
 }
 
@@ -285,8 +307,21 @@ export function dockTabToSplit(
   page.value = 'workspace'
   if (movedFocus) markSplitAnimation(movedFocus)
 
-  const zoneLabel = zone === 'left' ? '左侧' : zone === 'right' ? '右侧' : zone === 'top' ? '上方' : '下方'
-  notify(`已将「${sourceTab.title}」并入${zoneLabel}分屏`)
+  const en = locale.value === 'en-US'
+  const zoneLabel = en
+    ? zone
+    : zone === 'left'
+      ? '左侧'
+      : zone === 'right'
+        ? '右侧'
+        : zone === 'top'
+          ? '上方'
+          : '下方'
+  notify(
+    en
+      ? `Docked "${sourceTab.title}" to ${zoneLabel} split`
+      : `已将「${sourceTab.title}」并入${zoneLabel}分屏`
+  )
   return true
 }
 
@@ -306,7 +341,16 @@ export function movePaneToSplit(
 
   const direction: Tab['direction'] = zone === 'top' || zone === 'bottom' ? 'vertical' : 'horizontal'
   const placement: 'before' | 'after' = zone === 'left' || zone === 'top' ? 'before' : 'after'
-  const zoneLabel = zone === 'left' ? '左侧' : zone === 'right' ? '右侧' : zone === 'top' ? '上方' : '下方'
+  const en = locale.value === 'en-US'
+  const zoneLabel = en
+    ? zone
+    : zone === 'left'
+      ? '左侧'
+      : zone === 'right'
+        ? '右侧'
+        : zone === 'top'
+          ? '上方'
+          : '下方'
 
   if (sourceTabToken === targetTabToken) {
     if (sourceTab.panes.length <= 1) return false
@@ -338,7 +382,11 @@ export function movePaneToSplit(
     activeTab.value = sourceTab.token
     page.value = 'workspace'
     markSplitAnimation(movedPane.token)
-    notify(`已将「${movedPane.title}」移动至${zoneLabel}分屏`)
+    notify(
+      en
+        ? `Moved "${movedPane.title}" to ${zoneLabel} split`
+        : `已将「${movedPane.title}」移动至${zoneLabel}分屏`
+    )
     return true
   }
 
@@ -371,7 +419,11 @@ export function movePaneToSplit(
   activeTab.value = targetTab.token
   page.value = 'workspace'
   markSplitAnimation(movedPane.token)
-  notify(`已将「${movedPane.title}」移入目标${zoneLabel}分屏`)
+  notify(
+    en
+      ? `Moved "${movedPane.title}" into target ${zoneLabel} split`
+      : `已将「${movedPane.title}」移入目标${zoneLabel}分屏`
+  )
   return true
 }
 
@@ -404,7 +456,11 @@ export function detachPaneToTab(tabToken: string, paneToken: string): boolean {
   activeTab.value = detachedTab.token
   page.value = 'workspace'
   markSplitAnimation(pane!.token)
-  notify(`已将「${pane!.title}」拆分为独立标签页`)
+  notify(
+    locale.value === 'en-US'
+      ? `Detached "${pane!.title}" into a separate tab`
+      : `已将「${pane!.title}」拆分为独立标签页`
+  )
   return true
 }
 
@@ -483,9 +539,19 @@ export async function confirmAction(password: string, savePassword = false): Pro
             password,
             savePassword: true
           })
-          notify(`已更新「${action.host.name}」的保存密码`)
+          notify(
+            locale.value === 'en-US'
+              ? `Updated saved password for "${action.host.name}"`
+              : `已更新「${action.host.name}」的保存密码`
+          )
         } catch (error) {
-          notify(error instanceof Error ? error.message : '密码保存失败，将仅用于本次连接')
+          notify(
+            error instanceof Error
+              ? error.message
+              : locale.value === 'en-US'
+                ? 'Failed to save password; using for this session only'
+                : '密码保存失败，将仅用于本次连接'
+          )
         }
       }
       if (action.paneToken) {
@@ -504,7 +570,7 @@ export async function confirmAction(password: string, savePassword = false): Pro
     if (action.kind === 'delete' && action.host) {
       hosts.value = await window.orbit.hosts.remove(action.host.id)
       if (selected.value === action.host.id) selected.value = undefined
-      notify('主机配置已删除')
+      notify(locale.value === 'en-US' ? 'Host configuration deleted' : '主机配置已删除')
     }
     if (action.kind === 'trust' && action.trust) {
       await window.orbit.sessions.trust(action.trust.sessionId, true)
@@ -512,7 +578,13 @@ export async function confirmAction(password: string, savePassword = false): Pro
     prompt.value = undefined
     advancePromptQueue()
   } catch (error) {
-    notify(error instanceof Error ? error.message : '操作失败，请重试')
+    notify(
+      error instanceof Error
+        ? error.message
+        : locale.value === 'en-US'
+          ? 'Action failed; please try again'
+          : '操作失败，请重试'
+    )
   } finally {
     promptBusy.value = false
     password = ''

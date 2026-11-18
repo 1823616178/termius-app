@@ -20,6 +20,8 @@ import { instanceClass } from '../../../shared/classes'
 import { MAX_CLIPBOARD_BYTES, type TerminalEvent } from '../../../shared/contracts'
 import { matchTerminalShortcut, shouldInterceptInTerminal } from '../../../shared/shortcuts'
 import { createTerminal, peekConnectedTerminal, type TerminalHandle } from '../services/terminal-registry'
+import { resolveEffectiveTerminalTheme, resolveTerminalFontFamily } from '../services/fonts'
+import { locale, t } from '../services/i18n'
 import { markHostUsed } from '../services/host-recency'
 import { buildShellColorizeCommand, cycleTerminalTheme, getTerminalTheme } from '../services/terminal-themes'
 import {
@@ -32,8 +34,18 @@ import {
   isPaneTokenMounted,
   lineHeight,
   notify,
+  notifyCopiedSelection,
   prompt,
   syncTunnels,
+  terminalCustomColors,
+  terminalCustomColorsEnabled,
+  terminalCustomFont,
+  terminalFontId,
+  terminalFontWeight,
+  terminalFontWeightBold,
+  terminalLetterSpacing,
+  terminalLigatures,
+  terminalMinimumContrast,
   terminalTheme,
   tunnelStatuses
 } from '../stores/workbench'
@@ -116,16 +128,25 @@ let searchSub: { dispose: () => void } | undefined
 
 const c = (base: string, suffix?: string) =>
   instanceClass(base, suffix ? `${props.token}-${suffix}` : props.token)
-const labels: Record<string, string> = {
-  connecting: '连接中',
-  verifying: '校验主机',
-  authenticating: '认证中',
-  running: '运行中',
-  exited: '已退出',
-  error: '连接失败'
-}
+const labels = computed<Record<string, string>>(() => {
+  void locale.value
+  return {
+    connecting: t('terminal.status.connecting'),
+    verifying: t('terminal.status.verifying'),
+    authenticating: t('terminal.status.authenticating'),
+    running: t('terminal.status.running'),
+    exited: t('terminal.status.exited'),
+    error: t('terminal.status.error')
+  }
+})
 
-const activeThemePreset = computed(() => getTerminalTheme(terminalTheme.value))
+const effectiveTerminalTheme = computed(() =>
+  resolveEffectiveTerminalTheme(
+    terminalTheme.value,
+    terminalCustomColorsEnabled.value,
+    terminalCustomColors.value
+  )
+)
 
 const badgeInfo = computed(() => {
   if (props.kind === 'ssh') return { text: 'SSH', tone: 'ssh' }
@@ -147,15 +168,15 @@ const searchResultText = computed(() => {
 })
 
 const paneCssVars = computed(() => ({
-  '--pane-terminal-bg': activeThemePreset.value.background,
-  '--pane-header-bg': activeThemePreset.value.headerBg,
-  '--pane-border-glow': activeThemePreset.value.borderGlow
+  '--pane-terminal-bg': effectiveTerminalTheme.value.background,
+  '--pane-header-bg': effectiveTerminalTheme.value.headerBg,
+  '--pane-border-glow': effectiveTerminalTheme.value.borderGlow
 }))
 
 const updateState = (event: Extract<TerminalEvent, { type: 'state' }>, silent = false) => {
   if (event.reason === 'auth-failed' && props.kind === 'ssh' && props.hostId) {
     lastErrorWasAuth.value = true
-    message.value = event.message ?? 'SSH 密码认证失败，请重新输入登录密码。'
+    message.value = event.message ?? t('app.dialog.authFailedAlert')
     if (hudTimer) {
       window.clearTimeout(hudTimer)
       hudTimer = undefined
@@ -241,12 +262,43 @@ function toggleScreenReader() {
   if (handle) handle.terminal.options.screenReaderMode = screenReader.value
 }
 
-function copySelection() {
+let pointerDragging = false
+let pendingSelectionCopy = false
+let lastCopiedSelectionText = ''
+let lastCopiedSelectionAt = 0
+
+function onSurfacePointerDown(event: PointerEvent): void {
+  if (event.button !== 0) return
+  pointerDragging = true
+  pendingSelectionCopy = false
+}
+
+function onWindowPointerUp(event: PointerEvent): void {
+  if (event.button !== 0 || !pointerDragging) return
+  pointerDragging = false
+  if (copyOnSelect.value && (pendingSelectionCopy || handle?.terminal.hasSelection())) {
+    pendingSelectionCopy = false
+    copySelection(true)
+  }
+}
+
+function copySelection(fromAuto = false) {
   const selection = handle?.terminal.getSelection() ?? ''
   if (!selection) return
-  void window.orbit.clipboard.writeText(selection).catch(() => {
-    message.value = '无法写入剪贴板。'
-  })
+  if (fromAuto) {
+    const now = Date.now()
+    if (selection === lastCopiedSelectionText && now - lastCopiedSelectionAt < 300) return
+    lastCopiedSelectionText = selection
+    lastCopiedSelectionAt = now
+  }
+  void window.orbit.clipboard
+    .writeText(selection)
+    .then(() => {
+      notifyCopiedSelection(selection)
+    })
+    .catch(() => {
+      message.value = t('terminal.clipboardWriteFailed')
+    })
 }
 
 function confirmPaste() {
@@ -261,7 +313,7 @@ async function pasteClipboard() {
     if (/[\r\n]/.test(text)) paste.value = text
     else handle?.terminal.paste(text)
   } catch (error) {
-    message.value = error instanceof Error ? error.message : '无法读取剪贴板。'
+    message.value = error instanceof Error ? error.message : t('terminal.clipboardReadFailed')
   }
 }
 
@@ -270,7 +322,7 @@ function colorizeShell() {
   const script = buildShellColorizeCommand(props.kind, props.profileId)
   handle?.writeInput(script)
   handle?.terminal.focus()
-  notify('已为当前会话注入彩色提示符与命令高亮')
+  notify(t('terminal.colorizedNotice'))
 }
 
 function clearTerminal() {
@@ -288,7 +340,8 @@ function selectAllTerminal() {
 function switchThemeNext() {
   contextMenu.value = null
   terminalTheme.value = cycleTerminalTheme(terminalTheme.value)
-  notify(`已切换终端配色：${getTerminalTheme(terminalTheme.value).name}`)
+  const theme = getTerminalTheme(terminalTheme.value)
+  notify(t('terminal.themeSwitchedNotice', { name: locale.value === 'en-US' ? theme.nameEn : theme.name }))
 }
 
 function closeContextMenu() {
@@ -329,7 +382,7 @@ const interceptPaste = (event: ClipboardEvent) => {
   if (new TextEncoder().encode(text).length > MAX_CLIPBOARD_BYTES) {
     event.preventDefault()
     event.stopImmediatePropagation()
-    message.value = '粘贴内容超过 1 MiB 限制，请分批粘贴。'
+    message.value = t('terminal.pasteTooLarge')
     return
   }
   if (/[\r\n]/.test(text)) {
@@ -385,8 +438,16 @@ async function mountAndConnect() {
   try {
     const created = await createTerminal(props.token, targetSurface, updateState, screenReader.value, {
       themeId: terminalTheme.value,
+      fontFamily: resolveTerminalFontFamily(terminalFontId.value, terminalCustomFont.value),
       fontSize: props.fontSize,
+      fontWeight: terminalFontWeight.value,
+      fontWeightBold: terminalFontWeightBold.value,
       lineHeight: lineHeight.value,
+      letterSpacing: terminalLetterSpacing.value,
+      minimumContrastRatio: terminalMinimumContrast.value,
+      ligatures: terminalLigatures.value,
+      customColorsEnabled: terminalCustomColorsEnabled.value,
+      customColors: { ...terminalCustomColors.value },
       cursorStyle: cursorStyle.value,
       cursorBlink: cursorBlink.value
     })
@@ -414,7 +475,8 @@ async function mountAndConnect() {
     selectionSub = handle.terminal.onSelectionChange(() => {
       hasSelection.value = Boolean(handle?.terminal.hasSelection())
       if (copyOnSelect.value && hasSelection.value) {
-        copySelection()
+        if (pointerDragging) pendingSelectionCopy = true
+        else copySelection(true)
       }
     })
     searchSub = handle.search.onDidChangeResults(({ resultIndex, resultCount }) => {
@@ -452,10 +514,10 @@ async function mountAndConnect() {
     }
 
     if (props.kind === 'local') {
-      if (!props.profileId) throw new Error('缺少本地终端配置标识')
+      if (!props.profileId) throw new Error(t('terminal.missingLocalProfile'))
       await connectingHandle.connect({ kind: 'local', profileId: props.profileId })
     } else {
-      if (!props.hostId) throw new Error('缺少主机配置标识')
+      if (!props.hostId) throw new Error(t('terminal.missingHostId'))
       markHostUsed(props.hostId)
       await connectingHandle.connect({ kind: 'ssh', hostId: props.hostId, password: props.password })
     }
@@ -464,7 +526,7 @@ async function mountAndConnect() {
     if (props.visible) handle.terminal.focus()
   } catch (error) {
     if (connectingHandle && handle !== connectingHandle) return
-    const errorMessage = error instanceof Error ? error.message : '连接失败'
+    const errorMessage = error instanceof Error ? error.message : t('terminal.connectFailed')
     if (props.kind === 'ssh' && props.hostId && errorMessage.includes('请输入本次连接密码')) {
       lastErrorWasAuth.value = true
       status.value = 'authenticating'
@@ -492,7 +554,7 @@ async function reconnectTerminal() {
     props.kind === 'ssh' &&
     (lastErrorWasAuth.value || (paneHost.value?.auth === 'password' && !paneHost.value.hasPassword))
   ) {
-    emit('authFailed', message.value || '请重新输入 SSH 登录密码。')
+    emit('authFailed', message.value || t('terminal.needPasswordPrompt'))
     return
   }
   await mountAndConnect()
@@ -501,6 +563,7 @@ async function reconnectTerminal() {
 onMounted(async () => {
   surface.value?.addEventListener('paste', interceptPaste, true)
   window.addEventListener('click', closeContextMenu)
+  window.addEventListener('pointerup', onWindowPointerUp)
   await mountAndConnect()
 })
 
@@ -523,7 +586,6 @@ watch(
   (value) => {
     if (handle) {
       handle.terminal.options.fontSize = value
-      handle.terminal.clearTextureAtlas()
       handle.resize()
     }
   }
@@ -554,7 +616,7 @@ watch(
       updateState({
         type: 'state',
         state: 'error',
-        message: '已取消输入密码，SSH 密码认证未完成，请点击右侧按钮重新输入密码。'
+        message: t('terminal.authCancelled')
       })
     }
   }
@@ -563,9 +625,12 @@ watch(
 onBeforeUnmount(() => {
   unmounted = true
   mountSeq += 1
+  pointerDragging = false
+  pendingSelectionCopy = false
   if (hudTimer) window.clearTimeout(hudTimer)
   surface.value?.removeEventListener('paste', interceptPaste, true)
   window.removeEventListener('click', closeContextMenu)
+  window.removeEventListener('pointerup', onWindowPointerUp)
   if (isPaneTokenMounted(props.token)) {
     detachSubscriptions()
     if (surface.value) handle?.detachHost(surface.value)
@@ -588,7 +653,7 @@ onBeforeUnmount(() => {
       :class="c('container_workspace_terminal_header_base')"
       :data-dragging="Boolean(isDragging)"
       draggable="true"
-      title="拖动窗格标题栏可调整分屏位置，或拖至标签栏拆分为独立标签"
+      :title="t('terminal.headerDragTitle')"
       @dragstart="onHeaderDragStart($event)"
       @dragend="emit('headerDragEnd')"
     >
@@ -607,8 +672,8 @@ onBeforeUnmount(() => {
       <button
         :class="c('container_workspace_terminal_toolbar_sftp')"
         type="button"
-        aria-label="打开 SFTP 文件面板"
-        title="在右侧展开 SFTP 文件列表与传输队列"
+        :aria-label="t('terminal.sftpAria')"
+        :title="t('terminal.sftpTitle')"
         :aria-pressed="Boolean(sftpActive)"
         @click="emit('toggleSftp')"
       >
@@ -623,8 +688,8 @@ onBeforeUnmount(() => {
       <button
         :class="c('container_workspace_terminal_toolbar_tunnels')"
         type="button"
-        aria-label="端口转发与网络探测"
-        title="展开端口转发、连通测速与本地端口占用检测"
+        :aria-label="t('terminal.tunnelsAria')"
+        :title="t('terminal.tunnelsTitle')"
         :aria-pressed="tunnelDrawerOpen"
         @click="tunnelDrawerOpen = !tunnelDrawerOpen"
       >
@@ -639,8 +704,8 @@ onBeforeUnmount(() => {
       <button
         :class="c('container_workspace_terminal_toolbar_colorize')"
         type="button"
-        aria-label="注入彩色提示符与命令配色"
-        title="一键注入彩色提示符与命令高亮"
+        :aria-label="t('terminal.colorizeAria')"
+        :title="t('terminal.colorizeTitle')"
         @click="colorizeShell"
       >
         <Sparkles :size="14" />
@@ -648,8 +713,8 @@ onBeforeUnmount(() => {
       <button
         :class="c('container_workspace_terminal_toolbar_search')"
         type="button"
-        aria-label="搜索终端输出"
-        title="搜索终端输出 · Ctrl+Shift+F"
+        :aria-label="t('terminal.searchAria')"
+        :title="t('terminal.searchTitle')"
         :aria-pressed="searchOpen"
         @click="toggleSearch()"
       >
@@ -658,8 +723,8 @@ onBeforeUnmount(() => {
       <button
         :class="c('container_workspace_terminal_toolbar_paste')"
         type="button"
-        aria-label="粘贴到终端"
-        title="粘贴到终端 · Ctrl+Shift+V"
+        :aria-label="t('terminal.pasteAria')"
+        :title="t('terminal.pasteTitle')"
         @click="pasteClipboard"
       >
         <Clipboard :size="14" />
@@ -667,8 +732,8 @@ onBeforeUnmount(() => {
       <button
         :class="c('container_workspace_terminal_toolbar_clear')"
         type="button"
-        aria-label="清空终端输出"
-        title="清空终端屏幕"
+        :aria-label="t('terminal.clearAria')"
+        :title="t('terminal.clearTitle')"
         @click="clearTerminal"
       >
         <Eraser :size="14" />
@@ -676,8 +741,8 @@ onBeforeUnmount(() => {
       <button
         :class="c('container_workspace_terminal_toolbar_reconnect')"
         type="button"
-        aria-label="重新连接当前终端"
-        title="重新连接当前会话"
+        :aria-label="t('terminal.reconnectAria')"
+        :title="t('terminal.reconnectTitle')"
         @click="reconnectTerminal"
       >
         <RotateCw :size="14" />
@@ -685,8 +750,8 @@ onBeforeUnmount(() => {
       <button
         :class="c('container_workspace_terminal_toolbar_accessibility')"
         type="button"
-        aria-label="切换终端屏幕阅读器模式"
-        title="切换无障碍阅读器模式"
+        :aria-label="t('terminal.a11yAria')"
+        :title="t('terminal.a11yTitle')"
         :aria-pressed="screenReader"
         @click="toggleScreenReader"
       >
@@ -696,8 +761,8 @@ onBeforeUnmount(() => {
         v-if="canUnsplit"
         :class="c('container_workspace_terminal_toolbar_unsplit')"
         type="button"
-        aria-label="拆分为独立标签页"
-        title="拆分为独立标签页"
+        :aria-label="t('terminal.unsplitAria')"
+        :title="t('terminal.unsplitAria')"
         @click="emit('unsplit')"
       >
         <ExternalLink :size="14" />
@@ -706,8 +771,8 @@ onBeforeUnmount(() => {
         v-if="canUnsplit"
         :class="c('container_workspace_terminal_toolbar_close-pane')"
         type="button"
-        aria-label="关闭此分屏"
-        title="关闭此分屏窗格"
+        :aria-label="t('terminal.closePaneAria')"
+        :title="t('terminal.closePaneTitle')"
         @click="emit('closePane')"
       >
         <X :size="14" />
@@ -724,8 +789,8 @@ onBeforeUnmount(() => {
         ref="searchInput"
         v-model="query"
         :class="c('container_workspace_terminal_toolbar_search-input')"
-        aria-label="终端搜索内容"
-        placeholder="搜索输出…"
+        :aria-label="t('terminal.searchInputAria')"
+        :placeholder="t('terminal.searchPlaceholder')"
         @input="search(false, true)"
       />
       <span v-if="searchResultText" :class="c('container_workspace_terminal_toolbar_search-count')">
@@ -734,7 +799,7 @@ onBeforeUnmount(() => {
       <button
         :class="c('container_workspace_terminal_toolbar_search-case')"
         type="button"
-        title="区分大小写"
+        :title="t('terminal.searchCaseTitle')"
         :aria-pressed="searchCase"
         @click="
           () => {
@@ -748,7 +813,7 @@ onBeforeUnmount(() => {
       <button
         :class="c('container_workspace_terminal_toolbar_search-word')"
         type="button"
-        title="全字匹配"
+        :title="t('terminal.searchWordTitle')"
         :aria-pressed="searchWholeWord"
         @click="
           () => {
@@ -762,7 +827,7 @@ onBeforeUnmount(() => {
       <button
         :class="c('container_workspace_terminal_toolbar_search-regex')"
         type="button"
-        title="正则表达式"
+        :title="t('terminal.searchRegexTitle')"
         :aria-pressed="searchRegex"
         @click="
           () => {
@@ -774,13 +839,15 @@ onBeforeUnmount(() => {
         .*
       </button>
       <button :class="c('container_workspace_terminal_toolbar_previous')" type="button" @click="search(true)">
-        上一个
+        {{ t('terminal.searchPrev') }}
       </button>
-      <button :class="c('container_workspace_terminal_toolbar_next')" type="submit">下一个</button>
+      <button :class="c('container_workspace_terminal_toolbar_next')" type="submit">
+        {{ t('terminal.searchNext') }}
+      </button>
       <button
         :class="c('container_workspace_terminal_toolbar_close-search')"
         type="button"
-        aria-label="关闭搜索"
+        :aria-label="t('terminal.searchCloseAria')"
         @click="toggleSearch(false)"
       >
         <X :size="14" />
@@ -795,13 +862,14 @@ onBeforeUnmount(() => {
         @click="reconnectTerminal"
       >
         <RotateCw :size="12" />
-        {{ lastErrorWasAuth ? '输入密码重试' : '重新连接' }}
+        {{ lastErrorWasAuth ? t('terminal.retryAuth') : t('terminal.retryConnect') }}
       </button>
     </div>
     <div
       ref="surface"
       :class="c('container_workspace_terminal_body_surface')"
       :data-terminal-token="token"
+      @pointerdown="onSurfacePointerDown"
       @contextmenu.prevent.stop="openContextMenu"
       @wheel="onSurfaceWheel"
     />
@@ -810,7 +878,7 @@ onBeforeUnmount(() => {
       :class="c('container_workspace_terminal_overlay_context')"
       :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
       role="menu"
-      aria-label="终端操作菜单"
+      :aria-label="t('terminal.menuAria')"
       @click.stop
     >
       <button
@@ -825,7 +893,7 @@ onBeforeUnmount(() => {
         "
       >
         <Copy :size="13" />
-        复制选中内容
+        {{ t('terminal.menuCopy') }}
       </button>
       <button
         :class="c('container_workspace_terminal_menu_paste')"
@@ -838,11 +906,11 @@ onBeforeUnmount(() => {
         "
       >
         <Clipboard :size="13" />
-        粘贴剪贴板
+        {{ t('terminal.menuPaste') }}
       </button>
       <button :class="c('container_workspace_terminal_menu_colorize')" type="button" @click="colorizeShell">
         <Sparkles :size="13" />
-        注入彩色环境
+        {{ t('terminal.menuColorize') }}
       </button>
       <button
         :class="c('container_workspace_terminal_menu_select-all')"
@@ -850,11 +918,11 @@ onBeforeUnmount(() => {
         @click="selectAllTerminal"
       >
         <TextSelect :size="13" />
-        全选缓冲区
+        {{ t('terminal.menuSelectAll') }}
       </button>
       <button :class="c('container_workspace_terminal_menu_clear')" type="button" @click="clearTerminal">
         <Eraser :size="13" />
-        清空屏幕
+        {{ t('terminal.menuClear') }}
       </button>
       <button
         :class="c('container_workspace_terminal_menu_search')"
@@ -867,11 +935,11 @@ onBeforeUnmount(() => {
         "
       >
         <Search :size="13" />
-        搜索终端输出
+        {{ t('terminal.menuSearch') }}
       </button>
       <button :class="c('container_workspace_terminal_menu_theme')" type="button" @click="switchThemeNext">
         <Palette :size="13" />
-        切换终端配色
+        {{ t('terminal.menuTheme') }}
       </button>
       <button
         :class="c('container_workspace_terminal_menu_reconnect')"
@@ -879,7 +947,7 @@ onBeforeUnmount(() => {
         @click="reconnectTerminal"
       >
         <RotateCw :size="13" />
-        重新连接
+        {{ t('terminal.menuReconnect') }}
       </button>
     </div>
     <div
@@ -900,12 +968,12 @@ onBeforeUnmount(() => {
         <span :class="c('container_workspace_terminal_hud_stage')">
           {{
             status === 'verifying'
-              ? '等待确认主机指纹'
+              ? t('terminal.hudVerifying')
               : status === 'authenticating'
-                ? '正在完成 SSH 认证…'
+                ? t('terminal.hudAuth')
                 : status === 'running'
-                  ? '加密通道已就绪'
-                  : '正在建立 SSH 连接…'
+                  ? t('terminal.hudRunning')
+                  : t('terminal.hudConnecting')
           }}
         </span>
       </div>
@@ -916,12 +984,14 @@ onBeforeUnmount(() => {
       :class="c('container_workspace_terminal_overlay_paste')"
       role="dialog"
       aria-modal="true"
-      aria-label="确认多行粘贴"
+      :aria-label="t('terminal.pasteDialogAria')"
       @cancel.prevent="paste = undefined"
     >
-      <strong :class="c('container_workspace_terminal_dialog_paste-title')">确认粘贴多行内容</strong>
+      <strong :class="c('container_workspace_terminal_dialog_paste-title')">
+        {{ t('terminal.pasteDialogTitle') }}
+      </strong>
       <p :class="c('container_workspace_terminal_dialog_paste-help')">
-        换行可能触发命令执行。请核对内容和当前终端，按 Enter 确认粘贴，按 Esc 取消。
+        {{ t('terminal.pasteDialogHelp') }}
       </p>
       <pre :class="c('container_workspace_terminal_dialog_paste-preview')">{{ paste }}</pre>
       <footer :class="c('container_workspace_terminal_dialog_footer')">
@@ -930,7 +1000,7 @@ onBeforeUnmount(() => {
           type="button"
           @click="paste = undefined"
         >
-          取消
+          {{ t('actionDialog.cancel') }}
         </button>
         <button
           :class="c('container_workspace_terminal_dialog_confirm-paste')"
@@ -939,7 +1009,7 @@ onBeforeUnmount(() => {
           data-primary
           @click="confirmPaste"
         >
-          确认粘贴
+          {{ t('terminal.pasteConfirm') }}
         </button>
       </footer>
     </dialog>

@@ -2,18 +2,22 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue'
 import { X, ShieldCheck } from '@lucide/vue'
 import { hostInputSchema, type Host, type HostInput } from '../../../shared/contracts'
+import { locale, t } from '../services/i18n'
 import { bootstrap } from '../stores/workbench'
 import OrbitSelect from './OrbitSelect.vue'
 
 const isLinux = computed(() => bootstrap.value?.platform === 'linux')
 
-const authOptions = computed(() => [
-  { value: 'password', label: '密码' },
-  {
-    value: 'agent',
-    label: isLinux.value ? 'OpenSSH Agent (SSH_AUTH_SOCK)' : 'Windows OpenSSH Agent'
-  }
-])
+const authOptions = computed(() => {
+  void locale.value
+  return [
+    { value: 'password', label: t('hostEditor.authPassword') },
+    {
+      value: 'agent',
+      label: isLinux.value ? t('hostEditor.authAgentLinux') : t('hostEditor.authAgentWindows')
+    }
+  ]
+})
 
 const props = defineProps<{ host?: Host; encryptionAvailable: boolean; busy: boolean; error: string }>()
 const emit = defineEmits<{ save: [input: HostInput]; close: [] }>()
@@ -71,10 +75,10 @@ function submit() {
   errors.value = {}
   if (form.auth === 'password' && form.password && !form.savePassword) {
     errors.value.password = props.encryptionAvailable
-      ? '已输入新密码，请勾选“使用系统凭据保护保存密码”，或清空密码框。'
+      ? t('hostEditor.needSavePasswordCheck')
       : isLinux.value
-        ? '当前未检测到可用系统 Keyring（gnome-keyring / kwallet），不能保存密码；请留空并在连接时临时输入。'
-        : '系统凭据保护不可用，不能保存密码；请留空并在连接时输入。'
+        ? t('hostEditor.cannotSaveLinux')
+        : t('hostEditor.cannotSaveWin')
     return
   }
   const normalized: HostInput = {
@@ -108,15 +112,15 @@ function submit() {
     <form class="container_hosts_editor_body_form" @submit.prevent="submit">
       <header class="container_hosts_editor_header_base">
         <div class="container_hosts_editor_header_copy">
-          <span class="container_hosts_editor_header_eyebrow">御剑传讯 · 灵脉契约</span>
+          <span class="container_hosts_editor_header_eyebrow">{{ t('hostEditor.eyebrow') }}</span>
           <h2 :id="titleId" class="container_hosts_editor_header_title">
-            {{ host ? '编辑主机' : '新建主机' }}
+            {{ host ? t('hostEditor.editTitle') : t('hostEditor.newTitle') }}
           </h2>
         </div>
         <button
           class="container_hosts_editor_header_close"
           type="button"
-          aria-label="关闭主机编辑"
+          :aria-label="t('hostEditor.closeAria')"
           :disabled="busy"
           @click="emit('close')"
         >
@@ -124,12 +128,12 @@ function submit() {
         </button>
       </header>
       <label class="container_hosts_editor_body_name-label">
-        主机名称
+        {{ t('hostEditor.name') }}
         <input
           ref="first"
           v-model="form.name"
           class="container_hosts_editor_body_name-input"
-          placeholder="例如：开发服务器"
+          :placeholder="t('hostEditor.namePlaceholder')"
           maxlength="80"
           :aria-invalid="!!errors.name"
           :aria-describedby="nameErrorId"
@@ -140,11 +144,11 @@ function submit() {
       </label>
       <div class="container_hosts_editor_body_endpoint">
         <label class="container_hosts_editor_body_address-label">
-          主机地址
+          {{ t('hostEditor.address') }}
           <input
             v-model="form.address"
             class="container_hosts_editor_body_address-input"
-            placeholder="IP 地址或域名"
+            :placeholder="t('hostEditor.addressPlaceholder')"
             :aria-invalid="!!errors.address"
             :aria-describedby="addressErrorId"
           />
@@ -153,7 +157,7 @@ function submit() {
           </span>
         </label>
         <label class="container_hosts_editor_body_port-label">
-          端口
+          {{ t('hostEditor.port') }}
           <input
             v-model.number="form.port"
             class="container_hosts_editor_body_port-input"
@@ -169,12 +173,12 @@ function submit() {
         </label>
       </div>
       <label class="container_hosts_editor_body_username-label">
-        用户名
+        {{ t('hostEditor.username') }}
         <input
           v-model="form.username"
           class="container_hosts_editor_body_username-input"
           autocomplete="username"
-          placeholder="例如：ubuntu"
+          :placeholder="t('hostEditor.usernamePlaceholder')"
           :aria-invalid="!!errors.username"
           :aria-describedby="usernameErrorId"
         />
@@ -183,11 +187,11 @@ function submit() {
         </span>
       </label>
       <label class="container_hosts_editor_body_auth-label">
-        认证方式
+        {{ t('hostEditor.auth') }}
         <OrbitSelect
           :model-value="form.auth"
           :options="authOptions"
-          aria-label="认证方式"
+          :aria-label="t('hostEditor.auth')"
           block
           instance="host-editor-auth"
           @update:model-value="form.auth = $event as 'password' | 'agent'"
@@ -195,7 +199,7 @@ function submit() {
       </label>
       <template v-if="form.auth === 'password'">
         <label class="container_hosts_editor_body_password-label">
-          {{ host?.hasPassword ? '替换密码（留空保留已保存密码）' : '连接密码（可在连接时输入）' }}
+          {{ host?.hasPassword ? t('hostEditor.passwordReplace') : t('hostEditor.passwordNew') }}
           <input
             v-model="form.password"
             class="container_hosts_editor_body_password-input"
@@ -223,11 +227,11 @@ function submit() {
           {{
             encryptionAvailable
               ? isLinux
-                ? '使用系统 Keyring 安全保存密码（libsecret）'
-                : '使用 Windows 系统保护保存密码'
+                ? t('hostEditor.savePasswordLinux')
+                : t('hostEditor.savePasswordWin')
               : isLinux
-                ? '保存密码已禁用（未检测到系统 Keyring：gnome-keyring / kwallet）'
-                : '保存密码已禁用（系统凭据保护不可用）'
+                ? t('hostEditor.savePasswordDisabledLinux')
+                : t('hostEditor.savePasswordDisabledWin')
           }}
         </label>
         <label v-if="host?.hasPassword" class="container_hosts_editor_body_clear-label">
@@ -238,7 +242,7 @@ function submit() {
             :disabled="Boolean(form.password)"
             :aria-describedby="clearPasswordErrorId"
           />
-          移除已保存密码
+          {{ t('hostEditor.clearPassword') }}
         </label>
         <span
           v-if="errors.clearPassword"
@@ -249,7 +253,7 @@ function submit() {
         </span>
       </template>
       <label class="container_hosts_editor_body_keepalive-label">
-        心跳保活间隔（秒，0 表示禁用）
+        {{ t('hostEditor.keepalive') }}
         <input
           v-model.number="form.keepalive"
           class="container_hosts_editor_body_keepalive-input"
@@ -259,11 +263,11 @@ function submit() {
         />
       </label>
       <label class="container_hosts_editor_body_group-label">
-        本地分组
+        {{ t('hostEditor.group') }}
         <input
           v-model="form.group"
           class="container_hosts_editor_body_group-input"
-          placeholder="可选，例如：开发环境"
+          :placeholder="t('hostEditor.groupPlaceholder')"
           maxlength="60"
           :aria-invalid="!!errors.group"
           :aria-describedby="groupErrorId"
@@ -273,13 +277,13 @@ function submit() {
         </span>
       </label>
       <label class="container_hosts_editor_body_notes-label">
-        备注
+        {{ t('hostEditor.notes') }}
         <textarea
           v-model="form.notes"
           class="container_hosts_editor_body_notes-input"
           rows="2"
           maxlength="2000"
-          placeholder="仅保存在这台设备"
+          :placeholder="t('hostEditor.notesPlaceholder')"
           :aria-invalid="!!errors.notes"
           :aria-describedby="notesErrorId"
         />
@@ -289,7 +293,7 @@ function submit() {
       </label>
       <label class="container_hosts_editor_body_favorite-label">
         <input v-model="form.favorite" class="container_hosts_editor_body_favorite-check" type="checkbox" />
-        收藏主机
+        {{ t('hostEditor.favorite') }}
       </label>
       <p v-if="error || errors._root" class="container_hosts_editor_body_error" role="alert">
         {{ error || errors._root }}
@@ -297,7 +301,7 @@ function submit() {
       <footer class="container_hosts_editor_footer_base">
         <span class="container_hosts_editor_footer_hint">
           <ShieldCheck :size="14" />
-          仅保存在本机
+          {{ t('hostEditor.localOnlyHint') }}
         </span>
         <button
           class="container_hosts_editor_footer_cancel"
@@ -305,10 +309,10 @@ function submit() {
           :disabled="busy"
           @click="emit('close')"
         >
-          取消
+          {{ t('hostEditor.cancel') }}
         </button>
         <button class="container_hosts_editor_footer_submit" data-primary type="submit" :disabled="busy">
-          {{ busy ? '保存中…' : '保存主机' }}
+          {{ busy ? t('hostEditor.saving') : t('hostEditor.save') }}
         </button>
       </footer>
     </form>
@@ -340,7 +344,7 @@ function submit() {
     flex-direction: column;
     gap: 6px;
     color: var(--color-text-secondary);
-    font-size: 12px;
+    font-size: var(--font-size-ui-xs);
   }
   input,
   textarea {
@@ -360,12 +364,15 @@ function submit() {
 }
 .container_hosts_editor_header_eyebrow {
   color: var(--color-accent-primary);
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
   letter-spacing: 1.5px;
 }
 .container_hosts_editor_header_title {
   margin: 4px 0;
-  font-size: 20px;
+  font-family: var(--font-display);
+  font-size: var(--font-size-ui-2xl);
+  font-weight: var(--font-ui-heading-weight);
+  color: var(--color-text-heading);
 }
 .container_hosts_editor_body_endpoint {
   display: grid;

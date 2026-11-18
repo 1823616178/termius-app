@@ -15,7 +15,9 @@ export type CursorShape = 'block' | 'bar' | 'underline'
 export interface TerminalThemePreset {
   id: TerminalThemeId
   name: string
+  nameEn: string
   badge: string
+  badgeEn: string
   background: string
   headerBg: string
   borderGlow: string
@@ -26,7 +28,9 @@ export interface TerminalThemePreset {
 interface PaletteSpec {
   id: TerminalThemeId
   name: string
+  nameEn: string
   badge: string
+  badgeEn: string
   background: string
   headerBg: string
   borderGlow: string
@@ -60,7 +64,9 @@ function createPreset(spec: PaletteSpec): TerminalThemePreset {
   return {
     id: spec.id,
     name: spec.name,
+    nameEn: spec.nameEn,
     badge: spec.badge,
+    badgeEn: spec.badgeEn,
     background: spec.background,
     headerBg: spec.headerBg,
     borderGlow: spec.borderGlow,
@@ -85,7 +91,9 @@ export const TERMINAL_THEMES: TerminalThemePreset[] = [
   createPreset({
     id: 'orbit-vivid',
     name: '青冥古剑 · 玄墨',
+    nameEn: 'Qingming Ink Blade',
     badge: '默认',
+    badgeEn: 'Default',
     background: '#080B0A',
     headerBg: 'linear-gradient(180deg, #131A18, #0B0F0E)',
     borderGlow: 'rgba(212, 175, 99, 0.34)',
@@ -116,7 +124,9 @@ export const TERMINAL_THEMES: TerminalThemePreset[] = [
   createPreset({
     id: 'tokyo-night',
     name: 'Tokyo Night · 东京夜色',
+    nameEn: 'Tokyo Night',
     badge: '高对比',
+    badgeEn: 'High Contrast',
     background: '#1A1B26',
     headerBg: 'linear-gradient(180deg, #222436, #1A1B26)',
     borderGlow: 'rgba(122, 162, 247, 0.34)',
@@ -147,7 +157,9 @@ export const TERMINAL_THEMES: TerminalThemePreset[] = [
   createPreset({
     id: 'catppuccin-mocha',
     name: 'Catppuccin Mocha · 摩卡星云',
+    nameEn: 'Catppuccin Mocha',
     badge: '柔和炫彩',
+    badgeEn: 'Pastel',
     background: '#1E1E2E',
     headerBg: 'linear-gradient(180deg, #27273C, #1E1E2E)',
     borderGlow: 'rgba(203, 166, 247, 0.34)',
@@ -178,7 +190,9 @@ export const TERMINAL_THEMES: TerminalThemePreset[] = [
   createPreset({
     id: 'dracula',
     name: 'Dracula · 暗夜伯爵',
+    nameEn: 'Dracula',
     badge: '紫粉霓虹',
+    badgeEn: 'Neon',
     background: '#1E1F29',
     headerBg: 'linear-gradient(180deg, #282A36, #1E1F29)',
     borderGlow: 'rgba(255, 121, 198, 0.34)',
@@ -209,7 +223,9 @@ export const TERMINAL_THEMES: TerminalThemePreset[] = [
   createPreset({
     id: 'one-dark',
     name: 'One Dark Pro · 极客经典',
+    nameEn: 'One Dark Pro',
     badge: '开发常用',
+    badgeEn: 'Classic',
     background: '#1E222A',
     headerBg: 'linear-gradient(180deg, #252A34, #1E222A)',
     borderGlow: 'rgba(97, 175, 239, 0.32)',
@@ -240,7 +256,9 @@ export const TERMINAL_THEMES: TerminalThemePreset[] = [
   createPreset({
     id: 'nord',
     name: 'Nord · 极地冰川',
+    nameEn: 'Nord',
     badge: '冷色调',
+    badgeEn: 'Arctic',
     background: '#242933',
     headerBg: 'linear-gradient(180deg, #2E3440, #242933)',
     borderGlow: 'rgba(136, 192, 208, 0.34)',
@@ -271,7 +289,9 @@ export const TERMINAL_THEMES: TerminalThemePreset[] = [
   createPreset({
     id: 'gruvbox-dark',
     name: 'Gruvbox · 复古暖金',
+    nameEn: 'Gruvbox Dark',
     badge: '暖色调',
+    badgeEn: 'Warm Retro',
     background: '#1D2021',
     headerBg: 'linear-gradient(180deg, #282828, #1D2021)',
     borderGlow: 'rgba(250, 189, 47, 0.3)',
@@ -302,7 +322,9 @@ export const TERMINAL_THEMES: TerminalThemePreset[] = [
   createPreset({
     id: 'solarized-dark',
     name: 'Solarized · 深海护眼',
+    nameEn: 'Solarized Dark',
     badge: '低疲劳',
+    badgeEn: 'Eye Care',
     background: '#002B36',
     headerBg: 'linear-gradient(180deg, #073642, #002B36)',
     borderGlow: 'rgba(42, 161, 152, 0.36)',

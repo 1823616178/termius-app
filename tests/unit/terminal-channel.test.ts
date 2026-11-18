@@ -79,36 +79,61 @@ afterEach(() => {
 })
 
 describe('terminalChannel coalescing, flow control, and rate limits', () => {
-  it('coalesces small outputs within 8ms and flushes immediately at 32 KiB or on finish', () => {
+  it('delivers idle echoes immediately and batches closely spaced output even after an ACK', () => {
     vi.useFakeTimers()
     const h = createHarness()
 
+    h.emit({ type: 'input', data: 'a' })
+    h.channel.output('a')
+    expect(h.posted).toHaveLength(1)
+    h.emit({ type: 'ack', sequence: 1 })
+
+    h.channel.output('b')
+    h.channel.output('c')
+    expect(h.posted).toHaveLength(1)
+    vi.advanceTimersByTime(8)
+    expect(h.posted).toHaveLength(2)
+    expect(Buffer.from((h.posted[1] as { data: Uint8Array }).data).toString()).toBe('bc')
+    h.emit({ type: 'ack', sequence: 2 })
+    vi.advanceTimersByTime(20)
+
+    h.channel.output('d')
+    expect(h.posted).toHaveLength(3)
+    h.channel.close()
+  })
+
+  it('coalesces trailing output within 8ms and flushes immediately at 32 KiB or on finish', () => {
+    vi.useFakeTimers()
+    const h = createHarness()
+
+    h.channel.output('first')
     h.channel.output('hello ')
     h.channel.output('world')
-    expect(h.posted).toHaveLength(0)
+    expect(h.posted).toHaveLength(1)
 
     vi.advanceTimersByTime(8)
-    expect(h.posted).toHaveLength(1)
-    expect(h.posted[0]).toMatchObject({ type: 'data', sequence: 1 })
-    expect(Buffer.from((h.posted[0] as { data: Uint8Array }).data).toString()).toBe('hello world')
+    expect(h.posted).toHaveLength(2)
+    expect(h.posted[1]).toMatchObject({ type: 'data', sequence: 2 })
+    expect(Buffer.from((h.posted[1] as { data: Uint8Array }).data).toString()).toBe('hello world')
 
     // Large chunk >= 32768 bytes flushes synchronously without waiting 8ms
     h.channel.output('x'.repeat(32768))
-    expect(h.posted).toHaveLength(2)
+    expect(h.posted).toHaveLength(3)
 
     // Buffered small chunk flushes before finish state event
     h.channel.output('tail')
-    expect(h.posted).toHaveLength(2)
+    expect(h.posted).toHaveLength(3)
     h.channel.finish({ type: 'state', state: 'exited', exitCode: 0, message: 'done' })
-    expect(h.posted).toHaveLength(4)
-    expect(h.posted[2]).toMatchObject({ type: 'data', sequence: 3 })
-    expect(h.posted[3]).toMatchObject({ type: 'state', state: 'exited' })
+    expect(h.posted).toHaveLength(5)
+    expect(h.posted[3]).toMatchObject({ type: 'data', sequence: 4 })
+    expect(h.posted[4]).toMatchObject({ type: 'state', state: 'exited' })
 
-    // Not closed yet until all unacked sequences (1..3) are acknowledged in order
+    // Not closed yet until all unacked sequences are acknowledged in order
     expect(h.stats.channelClosed).toBe(0)
     h.emit({ type: 'ack', sequence: 1 })
     h.emit({ type: 'ack', sequence: 2 })
     h.emit({ type: 'ack', sequence: 3 })
+    h.emit({ type: 'ack', sequence: 4 })
     expect(h.stats.channelClosed).toBe(1)
   })
 

@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
+  AppLocale,
   Bridge,
   HostInput,
   HostTrust,
@@ -10,6 +11,7 @@ import type {
   TrayState
 } from '../shared/contracts'
 import type { SftpProgressEvent } from '../shared/sftp'
+import { extractFilePathsFromUriList } from '../shared/sftp'
 import type { UpdatePreferencesPatch, UpdateStatusSnapshot } from '../shared/updater'
 import type {
   SyncConflictResolutionItem,
@@ -25,6 +27,53 @@ import type {
 } from '../shared/sync'
 import { IPC } from '../shared/channels'
 
+let lastCapturedDrop: { timestamp: number; paths: string[] } | null = null
+
+function extractPathsFromFiles(files: Iterable<File> | ArrayLike<File> | null | undefined): string[] {
+  if (!files) return []
+  const list = Array.isArray(files) ? files : Array.from(files)
+  const paths: string[] = []
+  for (const file of list) {
+    if (!file) continue
+    try {
+      const p = webUtils.getPathForFile(file)
+      if (p && !paths.includes(p)) paths.push(p)
+    } catch {
+      /* ignore non-local drop items */
+    }
+  }
+  return paths
+}
+
+function extractPathsFromDataTransfer(dt: DataTransfer | null): string[] {
+  if (!dt) return []
+  const fromFiles = extractPathsFromFiles(dt.files)
+  if (fromFiles.length > 0) return fromFiles
+
+  const itemFiles: File[] = []
+  for (const item of Array.from(dt.items ?? [])) {
+    if (item.kind !== 'file') continue
+    const file = item.getAsFile()
+    if (file) itemFiles.push(file)
+  }
+  const fromItems = extractPathsFromFiles(itemFiles)
+  if (fromItems.length > 0) return fromItems
+
+  return extractFilePathsFromUriList(dt.getData('text/uri-list'))
+}
+
+if (typeof window !== 'undefined') {
+  // Capture native DataTransfer inside preload's own DOM world before contextBridge alters FileList.
+  window.addEventListener(
+    'drop',
+    (event) => {
+      const paths = extractPathsFromDataTransfer(event.dataTransfer)
+      lastCapturedDrop = paths.length > 0 ? { timestamp: performance.now(), paths } : null
+    },
+    true
+  )
+}
+
 const api: Bridge = {
   clipboard: {
     readText: () => ipcRenderer.invoke(IPC.clipboardRead),
@@ -32,6 +81,12 @@ const api: Bridge = {
   },
   shell: {
     openExternal: (url: string) => ipcRenderer.invoke(IPC.openExternal, url)
+  },
+  locale: {
+    set: (locale: AppLocale) => ipcRenderer.invoke(IPC.localeSet, locale)
+  },
+  fonts: {
+    listSystem: (refresh?: boolean) => ipcRenderer.invoke(IPC.fontsListSystem, refresh)
   },
   bootstrap: () => ipcRenderer.invoke(IPC.bootstrap),
   hosts: {
@@ -186,18 +241,17 @@ const api: Bridge = {
     expandLocalUploads: (localPaths) => ipcRenderer.invoke(IPC.sftpExpandLocalUploads, { localPaths }),
     revealLocal: (localPath) => ipcRenderer.invoke(IPC.sftpRevealLocal, { localPath }),
     getDroppedPaths: (files) => {
-      const paths: string[] = []
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i]
-        if (!file) continue
-        try {
-          const p = webUtils.getPathForFile(file)
-          if (p) paths.push(p)
-        } catch {
-          /* ignore non-local drop items */
-        }
+      const direct = extractPathsFromFiles(files)
+      if (direct.length > 0) {
+        lastCapturedDrop = null
+        return direct
       }
-      return paths
+      if (lastCapturedDrop && performance.now() - lastCapturedDrop.timestamp < 5000) {
+        const captured = lastCapturedDrop.paths
+        lastCapturedDrop = null
+        return captured
+      }
+      return []
     },
     onProgress: (callback) => {
       const listener = (_event: Electron.IpcRendererEvent, event: SftpProgressEvent) => callback(event)

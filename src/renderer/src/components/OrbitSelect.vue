@@ -15,6 +15,7 @@ let activeCloseCallback: (() => void) | null = null
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { Check, ChevronDown } from '@lucide/vue'
 import { instanceClass } from '../../../shared/classes'
+import { t } from '../services/i18n'
 import { windowInstance } from '../stores/workbench'
 
 const props = withDefaults(
@@ -32,7 +33,7 @@ const props = withDefaults(
   }>(),
   {
     modelValue: '',
-    placeholder: '请选择…',
+    placeholder: '',
     size: 'md',
     block: false,
     disabled: false,
@@ -71,8 +72,9 @@ const menuCoords = ref<{ left: number; top: number; bottom: number; width: numbe
   width: 180
 })
 
+const resolvedPlaceholder = computed(() => props.placeholder || t('select.placeholder'))
 const selectedOption = computed(() => props.options.find((item) => item.value === props.modelValue))
-const displayLabel = computed(() => selectedOption.value?.label || props.placeholder)
+const displayLabel = computed(() => selectedOption.value?.label || resolvedPlaceholder.value)
 
 const menuStyle = computed<Record<string, string>>(() => {
   const base: Record<string, string> = {
@@ -296,7 +298,7 @@ onBeforeUnmount(() => {
       ref="menuRef"
       popover="manual"
       role="listbox"
-      :aria-label="ariaLabel || placeholder"
+      :aria-label="ariaLabel || resolvedPlaceholder"
       :class="c('container_common_select_menu_popover')"
       :data-placement="menuPlacement"
       :style="menuStyle"

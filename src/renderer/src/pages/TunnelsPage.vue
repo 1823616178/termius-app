@@ -4,6 +4,7 @@ import { Network, Play, Square, Activity, ShieldCheck, Plus, Trash2, Pencil, Ser
 import { instanceClass } from '../../../shared/classes'
 import type { SyncTunnel } from '../../../shared/sync'
 import OrbitSelect from '../components/OrbitSelect.vue'
+import { locale, t } from '../services/i18n'
 import {
   checkPortOccupancy,
   hosts,
@@ -48,25 +49,32 @@ const portCheckPort = ref(1080)
 
 const activeCount = computed(() => Object.values(tunnelStatuses.value).filter((item) => item.active).length)
 
-const serverOptions = computed(() =>
-  hosts.value.length === 0
-    ? [{ value: '', label: '暂无已配置主机' }]
+const serverOptions = computed(() => {
+  void locale.value
+  return hosts.value.length === 0
+    ? [{ value: '', label: t('tunnels.noHostsOption') }]
     : hosts.value.map((h) => ({
         value: h.id,
         label: `${h.name} (${h.username}@${h.address}:${h.port})`
       }))
-)
+})
 
-const tunnelTypeOptions = [
-  { value: 'L', label: '本地转发 (-L)' },
-  { value: 'R', label: '远端转发 (-R)' },
-  { value: 'D', label: '动态 SOCKS5 (-D)' }
-]
+const tunnelTypeOptions = computed(() => {
+  void locale.value
+  return [
+    { value: 'L', label: t('tunnels.modeL') },
+    { value: 'R', label: t('tunnels.modeR') },
+    { value: 'D', label: t('tunnels.modeD') }
+  ]
+})
 
-const groupOptions = computed(() => [
-  { value: '', label: '未分组' },
-  ...syncGroups.value.map((g) => ({ value: g.id, label: g.name }))
-])
+const groupOptions = computed(() => {
+  void locale.value
+  return [
+    { value: '', label: t('hosts.ungrouped') },
+    ...syncGroups.value.map((g) => ({ value: g.id, label: g.name }))
+  ]
+})
 
 const hostMap = computed(() => {
   const m = new Map<string, string>()
@@ -81,9 +89,9 @@ function isTunnelActive(tunnel: SyncTunnel): boolean {
 function tunnelRuntimeText(tunnel: SyncTunnel): string {
   const st = tunnelStatuses.value[tunnel.id]
   if (st?.active) {
-    return `运行中 · 活跃连接 ${st.activeConnections}`
+    return t('tunnels.runningConns', { count: st.activeConnections })
   }
-  return '未启动'
+  return t('tunnels.stopped')
 }
 
 function effectiveServerId(): string {
@@ -122,14 +130,17 @@ function startEdit(tunnel: SyncTunnel): void {
 }
 
 async function handleSaveTunnel(): Promise<void> {
+  const en = locale.value === 'en-US'
   formError.value = ''
   const sid = effectiveServerId()
   if (!sid) {
-    formError.value = '请先添加至少一台 SSH 服务器，再创建端口转发规则'
+    formError.value = en
+      ? 'Add at least one SSH server before creating a forwarding rule'
+      : '请先添加至少一台 SSH 服务器，再创建端口转发规则'
     return
   }
   if (!formName.value.trim()) {
-    formError.value = '请输入转发规则名称'
+    formError.value = en ? 'Enter a forwarding rule name' : '请输入转发规则名称'
     return
   }
   saving.value = true
@@ -151,22 +162,33 @@ async function handleSaveTunnel(): Promise<void> {
     })
     resetForm()
   } catch (err) {
-    formError.value = err instanceof Error ? err.message : '保存端口转发规则失败'
+    formError.value =
+      err instanceof Error ? err.message : en ? 'Failed to save forwarding rule' : '保存端口转发规则失败'
   } finally {
     saving.value = false
   }
 }
 
 async function runManualProbe(): Promise<void> {
+  const en = locale.value === 'en-US'
   try {
     const res = await probeConnectivity(probeHost.value.trim(), Number(probePort.value), 'manual')
-    notify(res.reachable ? `连通正常：${res.latencyMs} ms` : `探测失败：${res.message}`)
+    notify(
+      res.reachable
+        ? en
+          ? `Reachable: ${res.latencyMs} ms`
+          : `连通正常：${res.latencyMs} ms`
+        : en
+          ? `Probe failed: ${res.message}`
+          : `探测失败：${res.message}`
+    )
   } catch (err) {
-    notify(err instanceof Error ? err.message : '连通性探测失败')
+    notify(err instanceof Error ? err.message : en ? 'Connectivity probe failed' : '连通性探测失败')
   }
 }
 
 async function runManualPortCheck(): Promise<void> {
+  const en = locale.value === 'en-US'
   try {
     const res = await checkPortOccupancy(
       portCheckHost.value.trim() || '127.0.0.1',
@@ -175,20 +197,22 @@ async function runManualPortCheck(): Promise<void> {
     )
     notify(res.message)
   } catch (err) {
-    notify(err instanceof Error ? err.message : '端口占用检测失败')
+    notify(err instanceof Error ? err.message : en ? 'Port check failed' : '端口占用检测失败')
   }
 }
 
 async function checkTunnelPort(tunnel: SyncTunnel): Promise<void> {
+  const en = locale.value === 'en-US'
   try {
     const res = await checkPortOccupancy(tunnel.listenHost, tunnel.listenPort, `tunnel:${tunnel.id}`)
     notify(res.message)
   } catch (err) {
-    notify(err instanceof Error ? err.message : '端口检测失败')
+    notify(err instanceof Error ? err.message : en ? 'Port check failed' : '端口检测失败')
   }
 }
 
 async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
+  const en = locale.value === 'en-US'
   const host = hosts.value.find((h) => h.id === tunnel.serverId)
   const targetHost = tunnel.type === 'D' ? (host?.address ?? '127.0.0.1') : tunnel.destHost
   const targetPort = tunnel.type === 'D' ? (host?.port ?? 22) : tunnel.destPort
@@ -196,11 +220,13 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
     const res = await probeConnectivity(targetHost, targetPort, `tunnel:${tunnel.id}`)
     notify(
       res.reachable
-        ? `${targetHost}:${targetPort} 连通 (${res.latencyMs} ms)`
+        ? en
+          ? `${targetHost}:${targetPort} reachable (${res.latencyMs} ms)`
+          : `${targetHost}:${targetPort} 连通 (${res.latencyMs} ms)`
         : `${targetHost}:${targetPort} ${res.message}`
     )
   } catch (err) {
-    notify(err instanceof Error ? err.message : '连通性测试失败')
+    notify(err instanceof Error ? err.message : en ? 'Connectivity test failed' : '连通性测试失败')
   }
 }
 </script>
@@ -209,22 +235,21 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
   <section v-if="page === 'tunnels'" class="container_tunnels_page_body_base">
     <header class="container_tunnels_page_header_base">
       <div class="container_tunnels_page_header_copy">
-        <span class="container_tunnels_page_header_eyebrow">周天经脉 · 凌空暗渡</span>
-        <h2 class="container_tunnels_page_header_title">端口转发与网络探测中心</h2>
+        <span class="container_tunnels_page_header_eyebrow">{{ t('tunnels.eyebrow') }}</span>
+        <h2 class="container_tunnels_page_header_title">{{ t('tunnels.title') }}</h2>
         <p class="container_tunnels_page_header_description">
-          支持本地转发 (-L)、远端转发 (-R) 与 SOCKS5 动态代理 (-D)，并可随时检测本地端口占用与远端 TCP
-          连通性。
+          {{ t('tunnels.description') }}
         </p>
       </div>
       <div class="container_tunnels_page_header_controls">
-        <div class="container_tunnels_sync_mode_switch" role="group" aria-label="修改同步策略">
+        <div class="container_tunnels_sync_mode_switch" role="group" :aria-label="t('hosts.syncModeAria')">
           <button
             class="container_tunnels_sync_mode_realtime"
             type="button"
             :data-active="syncWriteMode === 'realtime'"
             @click="setSyncWriteMode('realtime')"
           >
-            实时同步服务端
+            {{ t('hosts.syncRealtime') }}
           </button>
           <button
             class="container_tunnels_sync_mode_local"
@@ -232,13 +257,15 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
             :data-active="syncWriteMode === 'local-only'"
             @click="setSyncWriteMode('local-only')"
           >
-            仅本地修改
+            {{ t('hosts.syncLocalOnly') }}
           </button>
         </div>
         <div class="container_tunnels_header_stats_box">
-          <span class="container_tunnels_header_stat_total">规则 {{ syncTunnels.length }}</span>
+          <span class="container_tunnels_header_stat_total">
+            {{ t('tunnels.statsTotal', { count: syncTunnels.length }) }}
+          </span>
           <span class="container_tunnels_header_stat_active" :data-has-active="activeCount > 0">
-            运行中 {{ activeCount }}
+            {{ t('tunnels.statsActive', { count: activeCount }) }}
           </span>
         </div>
       </div>
@@ -248,15 +275,15 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
       <article class="container_tunnels_probe_card_base">
         <div class="container_tunnels_probe_card_head">
           <Activity :size="16" />
-          <h3 class="container_tunnels_probe_card_title">TCP 连通性与延迟测试</h3>
+          <h3 class="container_tunnels_probe_card_title">{{ t('tunnels.probeTitle') }}</h3>
         </div>
         <div class="container_tunnels_probe_form_row">
           <input
             v-model="probeHost"
             class="container_tunnels_probe_input_host"
             type="text"
-            placeholder="目标主机 IP 或域名"
-            aria-label="探测目标主机"
+            :placeholder="t('tunnels.probeHostPlaceholder')"
+            :aria-label="t('tunnels.probeHostAria')"
           />
           <input
             v-model.number="probePort"
@@ -264,8 +291,8 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
             type="number"
             min="1"
             max="65535"
-            placeholder="端口"
-            aria-label="探测目标端口"
+            :placeholder="t('tunnels.probePortPlaceholder')"
+            :aria-label="t('tunnels.probePortAria')"
           />
           <button
             class="container_tunnels_probe_action_btn"
@@ -274,7 +301,7 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
             :disabled="Boolean(probeBusy['net:manual'])"
             @click="runManualProbe"
           >
-            {{ probeBusy['net:manual'] ? '测试中…' : '测试连通性' }}
+            {{ probeBusy['net:manual'] ? t('tunnels.testing') : t('tunnels.testConnectivity') }}
           </button>
         </div>
         <div
@@ -283,7 +310,11 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
           :data-ok="probeResults['manual'].reachable"
         >
           <span class="container_tunnels_probe_result_badge">
-            {{ probeResults['manual'].reachable ? `${probeResults['manual'].latencyMs} ms` : '不可达' }}
+            {{
+              probeResults['manual'].reachable
+                ? `${probeResults['manual'].latencyMs} ms`
+                : t('hosts.unreachable')
+            }}
           </span>
           <span class="container_tunnels_probe_result_msg">{{ probeResults['manual'].message }}</span>
         </div>
@@ -292,15 +323,15 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
       <article class="container_tunnels_portcheck_card_base">
         <div class="container_tunnels_portcheck_card_head">
           <ShieldCheck :size="16" />
-          <h3 class="container_tunnels_portcheck_card_title">本地端口占用检测</h3>
+          <h3 class="container_tunnels_portcheck_card_title">{{ t('tunnels.portCheckTitle') }}</h3>
         </div>
         <div class="container_tunnels_portcheck_form_row">
           <input
             v-model="portCheckHost"
             class="container_tunnels_portcheck_input_host"
             type="text"
-            placeholder="监听地址 (如 127.0.0.1)"
-            aria-label="检测监听地址"
+            :placeholder="t('tunnels.portCheckHostPlaceholder')"
+            :aria-label="t('tunnels.portCheckHostAria')"
           />
           <input
             v-model.number="portCheckPort"
@@ -308,8 +339,8 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
             type="number"
             min="1"
             max="65535"
-            placeholder="端口"
-            aria-label="检测本地端口"
+            :placeholder="t('tunnels.probePortPlaceholder')"
+            :aria-label="t('tunnels.portCheckPortAria')"
           />
           <button
             class="container_tunnels_portcheck_action_btn"
@@ -318,7 +349,7 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
             :disabled="Boolean(probeBusy['port:manual'])"
             @click="runManualPortCheck"
           >
-            {{ probeBusy['port:manual'] ? '检测中…' : '检测端口占用' }}
+            {{ probeBusy['port:manual'] ? t('tunnels.checking') : t('hosts.checkPortOccupancy') }}
           </button>
         </div>
         <div
@@ -329,10 +360,10 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
           <span class="container_tunnels_portcheck_result_badge">
             {{
               portCheckResults['manual'].available
-                ? '空闲可用'
+                ? t('tunnels.portFree')
                 : portCheckResults['manual'].occupiedByOrbit
-                  ? '本软件转发中'
-                  : '已被占用'
+                  ? t('tunnels.portOrbit')
+                  : t('tunnels.portBusy')
             }}
           </span>
           <span class="container_tunnels_portcheck_result_msg">{{ portCheckResults['manual'].message }}</span>
@@ -344,63 +375,59 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
       <div class="container_tunnels_editor_card_head">
         <Network :size="16" />
         <h3 class="container_tunnels_editor_card_title">
-          {{ editingId ? '编辑端口转发规则' : '新增端口转发规则' }}
+          {{ editingId ? t('tunnels.editRule') : t('tunnels.newRule') }}
         </h3>
         <span v-if="syncStatus?.signedIn" class="container_tunnels_editor_sync_hint">
-          {{
-            syncWriteMode === 'realtime'
-              ? '保存后将自动实时同步到云端'
-              : '当前仅保存在本地数据库（可随时手动同步）'
-          }}
+          {{ syncWriteMode === 'realtime' ? t('tunnels.syncHintRealtime') : t('tunnels.syncHintLocal') }}
         </span>
       </div>
       <div class="container_tunnels_editor_form_grid">
         <label class="container_tunnels_editor_field_name">
-          <span class="container_tunnels_editor_label_name">规则名称</span>
+          <span class="container_tunnels_editor_label_name">{{ t('tunnels.ruleName') }}</span>
           <input
             v-model="formName"
             class="container_tunnels_editor_input_name"
             type="text"
-            placeholder="例如：内网数据库 3306 转发"
+            :placeholder="t('tunnels.ruleNamePlaceholder')"
           />
         </label>
         <label class="container_tunnels_editor_field_server">
-          <span class="container_tunnels_editor_label_server">跳板 SSH 服务器</span>
+          <span class="container_tunnels_editor_label_server">{{ t('tunnels.jumpHost') }}</span>
           <OrbitSelect
             v-model="formServerId"
             :options="serverOptions"
-            aria-label="跳板 SSH 服务器"
+            :aria-label="t('tunnels.jumpHost')"
             block
             instance="tunnels-server"
           />
         </label>
         <label class="container_tunnels_editor_field_type">
-          <span class="container_tunnels_editor_label_type">转发模式</span>
+          <span class="container_tunnels_editor_label_type">{{ t('tunnels.mode') }}</span>
           <OrbitSelect
             :model-value="formType"
             :options="tunnelTypeOptions"
-            aria-label="转发模式"
+            :aria-label="t('tunnels.mode')"
             block
             instance="tunnels-type"
             @update:model-value="formType = $event as 'L' | 'R' | 'D'"
           />
         </label>
         <label class="container_tunnels_editor_field_group">
-          <span class="container_tunnels_editor_label_group">所属分组</span>
+          <span class="container_tunnels_editor_label_group">{{ t('tunnels.group') }}</span>
           <OrbitSelect
             v-model="formGroupId"
             :options="groupOptions"
-            aria-label="所属分组"
+            :aria-label="t('tunnels.group')"
             block
             instance="tunnels-group"
           />
         </label>
         <label class="container_tunnels_editor_field_lhost">
-          <span class="container_tunnels_editor_label_lhost">监听地址</span>
+          <span class="container_tunnels_editor_label_lhost">{{ t('tunnels.listenHost') }}</span>
           <input v-model="formListenHost" class="container_tunnels_editor_input_lhost" type="text" />
         </label>
         <label class="container_tunnels_editor_field_lport">
-          <span class="container_tunnels_editor_label_lport">监听端口</span>
+          <span class="container_tunnels_editor_label_lport">{{ t('tunnels.listenPort') }}</span>
           <input
             v-model.number="formListenPort"
             class="container_tunnels_editor_input_lport"
@@ -410,11 +437,11 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
           />
         </label>
         <label v-if="formType !== 'D'" class="container_tunnels_editor_field_dhost">
-          <span class="container_tunnels_editor_label_dhost">目标地址</span>
+          <span class="container_tunnels_editor_label_dhost">{{ t('tunnels.destHost') }}</span>
           <input v-model="formDestHost" class="container_tunnels_editor_input_dhost" type="text" />
         </label>
         <label v-if="formType !== 'D'" class="container_tunnels_editor_field_dport">
-          <span class="container_tunnels_editor_label_dport">目标端口</span>
+          <span class="container_tunnels_editor_label_dport">{{ t('tunnels.destPort') }}</span>
           <input
             v-model.number="formDestPort"
             class="container_tunnels_editor_input_dport"
@@ -438,10 +465,10 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
           "
         >
           <ShieldCheck :size="14" />
-          检测监听端口是否空闲
+          {{ t('tunnels.checkListenPort') }}
         </button>
         <button v-if="editingId" class="container_tunnels_editor_cancel_btn" type="button" @click="resetForm">
-          取消编辑
+          {{ t('tunnels.cancelEdit') }}
         </button>
         <button
           class="container_tunnels_editor_save_btn"
@@ -451,16 +478,16 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
           @click="handleSaveTunnel"
         >
           <Plus :size="14" />
-          {{ saving ? '保存中…' : editingId ? '更新端口转发规则' : '保存端口转发规则' }}
+          {{ saving ? t('hostEditor.saving') : editingId ? t('tunnels.updateRule') : t('tunnels.saveRule') }}
         </button>
       </div>
     </article>
 
     <div v-if="syncTunnels.length === 0" class="container_tunnels_list_empty_card">
       <Server :size="28" />
-      <p class="container_tunnels_list_empty_title">尚未配置任何端口转发规则</p>
+      <p class="container_tunnels_list_empty_title">{{ t('tunnels.emptyTitle') }}</p>
       <p class="container_tunnels_list_empty_desc">
-        可在上方表单新增规则，或前往主机列表 / 终端界面为单台服务器一键添加。
+        {{ t('tunnels.emptyDesc') }}
       </p>
       <button
         v-if="hosts.length === 0"
@@ -469,7 +496,7 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
         data-primary="true"
         @click="page = 'hosts'"
       >
-        前往添加主机
+        {{ t('tunnels.goAddHost') }}
       </button>
     </div>
 
@@ -496,11 +523,11 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
             </div>
             <div :class="c('container_tunnels_rule_meta_line', tunnel.id)">
               <span :class="c('container_tunnels_rule_host_ref', tunnel.id)">
-                跳板主机：{{ hostMap.get(tunnel.serverId) ?? tunnel.serverId }}
+                {{ t('tunnels.jumpHostRef', { host: hostMap.get(tunnel.serverId) ?? tunnel.serverId }) }}
               </span>
               <code :class="c('container_tunnels_rule_route_code', tunnel.id)">
                 {{ tunnel.listenHost }}:{{ tunnel.listenPort }} →
-                {{ tunnel.type === 'D' ? 'SOCKS5 动态代理' : `${tunnel.destHost}:${tunnel.destPort}` }}
+                {{ tunnel.type === 'D' ? t('hosts.socks5Proxy') : `${tunnel.destHost}:${tunnel.destPort}` }}
               </code>
             </div>
             <div
@@ -511,13 +538,17 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
                 v-if="portCheckResults[`tunnel:${tunnel.id}`]"
                 :class="c('container_tunnels_rule_port_result', tunnel.id)"
               >
-                端口检测：{{ portCheckResults[`tunnel:${tunnel.id}`]?.message }}
+                {{
+                  t('tunnels.portResultLabel', {
+                    msg: portCheckResults[`tunnel:${tunnel.id}`]?.message ?? ''
+                  })
+                }}
               </span>
               <span
                 v-if="probeResults[`tunnel:${tunnel.id}`]"
                 :class="c('container_tunnels_rule_net_result', tunnel.id)"
               >
-                目标探测：{{ probeResults[`tunnel:${tunnel.id}`]?.message }}
+                {{ t('tunnels.netResultLabel', { msg: probeResults[`tunnel:${tunnel.id}`]?.message ?? '' }) }}
               </span>
             </div>
           </div>
@@ -533,29 +564,29 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
           >
             <Square v-if="isTunnelActive(tunnel)" :size="13" />
             <Play v-else :size="13" />
-            {{ isTunnelActive(tunnel) ? '停止转发' : '启动转发' }}
+            {{ isTunnelActive(tunnel) ? t('tunnels.stopTunnel') : t('tunnels.startTunnel') }}
           </button>
           <button
             :class="c('container_tunnels_rule_checkport_btn', tunnel.id)"
             type="button"
-            title="检测该转发规则本地端口占用"
+            :title="t('hosts.checkPortOccupancy')"
             @click="checkTunnelPort(tunnel)"
           >
-            测端口
+            {{ t('tunnelDrawer.testPortShort') }}
           </button>
           <button
             :class="c('container_tunnels_rule_probe_btn', tunnel.id)"
             type="button"
-            title="测试目标连通性"
+            :title="t('tunnels.testConnTitle')"
             @click="probeTunnelTarget(tunnel)"
           >
-            测连通
+            {{ t('tunnels.testConnShort') }}
           </button>
           <button
             :class="c('container_tunnels_rule_edit_btn', tunnel.id)"
             type="button"
             :disabled="tunnel.readOnly"
-            :aria-label="`编辑 ${tunnel.name}`"
+            :aria-label="t('hosts.editAria', { name: tunnel.name })"
             @click="startEdit(tunnel)"
           >
             <Pencil :size="13" />
@@ -564,7 +595,7 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
             :class="c('container_tunnels_rule_delete_btn', tunnel.id)"
             type="button"
             data-danger="true"
-            :aria-label="`删除 ${tunnel.name}`"
+            :aria-label="t('hosts.deleteAria', { name: tunnel.name })"
             @click="removeSyncTunnel(tunnel.id)"
           >
             <Trash2 :size="13" />
@@ -829,7 +860,7 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
   color: var(--color-text-muted);
   flex-wrap: wrap;
 }
@@ -840,7 +871,7 @@ async function probeTunnelTarget(tunnel: SyncTunnel): Promise<void> {
 [class*='container_tunnels_rule_probe_line'] {
   display: flex;
   gap: 12px;
-  font-size: 11px;
+  font-size: var(--font-size-ui-2xs);
   color: var(--color-text-secondary);
   flex-wrap: wrap;
 }

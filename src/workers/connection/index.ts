@@ -167,6 +167,7 @@ process.parentPort?.on('message', ({ data, ports }) => {
       })
       return
     }
+    client.setNoDelay(true)
     channel.send({ type: 'state', state: 'authenticating', message: '认证成功，正在请求终端' })
     client.shell(
       { term: 'xterm-256color', cols, rows },
@@ -174,7 +175,7 @@ process.parentPort?.on('message', ({ data, ports }) => {
         env: {
           COLORTERM: 'truecolor',
           TERM_PROGRAM: 'GraphiteOrbit',
-          TERM_PROGRAM_VERSION: '0.1.0',
+          TERM_PROGRAM_VERSION: '1.0.0',
           CLICOLOR: '1',
           LS_COLORS:
             'rs=0:di=01;36:ln=01;35:so=01;32:pi=40;33:ex=01;32:*.tar=01;31:*.gz=01;31:*.zip=01;31:*.jpg=01;35:*.png=01;35:*.json=01;33:*.yml=01;33:*.md=01;34'

@@ -21,9 +21,12 @@ export type CustomUiColors = UiThemeColors
 export interface UiThemePreset {
   id: Exclude<UiThemeId, 'custom'>
   name: string
+  nameEn: string
   element: string
+  elementEn: string
   trigram: string
   tagline: string
+  taglineEn: string
   colors: UiThemeColors
 }
 
@@ -40,9 +43,12 @@ export const UI_THEME_PRESETS: UiThemePreset[] = [
   {
     id: 'bagua-taiji',
     name: '玄墨古剑 · 太极剑阁',
+    nameEn: 'Ink Blade · Taiji Pavilion',
     element: '太极两仪',
+    elementEn: 'Taiji Yin-Yang',
     trigram: '☰',
     tagline: '松烟玄墨配剑格鎏金，兼融青霜碧玉剑芒（默认）',
+    taglineEn: 'Pine-soot ink paired with gilded hilt gold and jade blade sheen (Default)',
     colors: {
       appBg: '#080b0a',
       surface1: '#101514',
@@ -55,9 +61,12 @@ export const UI_THEME_PRESETS: UiThemePreset[] = [
   {
     id: 'wuxing-mu',
     name: '东方青龙 · 苍篁竹剑',
+    nameEn: 'Azure Dragon · Bamboo Sword',
     element: '木 · 青龙',
+    elementEn: 'Wood · Azure',
     trigram: '☳',
     tagline: '幽篁青竹映青锋，温润竹金蕴生机',
+    taglineEn: 'Verdant bamboo forest tinted with emerald blade and warm gold',
     colors: {
       appBg: '#07100c',
       surface1: '#0e1914',
@@ -70,9 +79,12 @@ export const UI_THEME_PRESETS: UiThemePreset[] = [
   {
     id: 'wuxing-huo',
     name: '南方朱雀 · 赤霄丹剑',
+    nameEn: 'Vermilion Bird · Crimson Forge',
     element: '火 · 朱雀',
+    elementEn: 'Fire · Vermilion',
     trigram: '☲',
     tagline: '朱砂丹炉淬赤霄，炉火玄炭映鎏金',
+    taglineEn: 'Cinnabar hearth tempering crimson steel with ember gold highlights',
     colors: {
       appBg: '#120a09',
       surface1: '#1b100e',
@@ -85,9 +97,12 @@ export const UI_THEME_PRESETS: UiThemePreset[] = [
   {
     id: 'wuxing-tu',
     name: '中央黄麟 · 昆仑古玉',
+    nameEn: 'Yellow Qilin · Kunlun Jade',
     element: '土 · 麒麟',
+    elementEn: 'Earth · Qilin',
     trigram: '☷',
     tagline: '沉香古檀衬昆仑玉印，厚德载物剑心沉稳',
+    taglineEn: 'Aged sandalwood backdrop with Kunlun jade and steady amber',
     colors: {
       appBg: '#0f0d09',
       surface1: '#18150f',
@@ -100,9 +115,12 @@ export const UI_THEME_PRESETS: UiThemePreset[] = [
   {
     id: 'wuxing-jin',
     name: '西方白虎 · 太白霜锋',
+    nameEn: 'White Tiger · Frost Edge',
     element: '金 · 白虎',
+    elementEn: 'Metal · Tiger',
     trigram: '☱',
     tagline: '寒铁精钢配古铜剑格，清冽杀伐决断万里',
+    taglineEn: 'Tempered frost steel with antique bronze guard and sharp contrast',
     colors: {
       appBg: '#090c10',
       surface1: '#11161c',
@@ -115,9 +133,12 @@ export const UI_THEME_PRESETS: UiThemePreset[] = [
   {
     id: 'wuxing-shui',
     name: '北方玄武 · 沧溟寒渊',
+    nameEn: 'Black Tortoise · Deep Abyss',
     element: '水 · 玄武',
+    elementEn: 'Water · Abyss',
     trigram: '☵',
     tagline: '寒潭深渊映秋水古剑，静水流深收放自如',
+    taglineEn: 'Deep midnight ocean reflecting autumn-water steel and calm cyan',
     colors: {
       appBg: '#070b10',
       surface1: '#0f161f',

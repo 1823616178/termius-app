@@ -7,6 +7,7 @@ import type {
   ILinkProvider,
   Terminal
 } from '@xterm/xterm'
+import { locale } from './i18n'
 
 export interface DetectedTerminalLink {
   start: number
@@ -282,7 +283,7 @@ export function createTerminalLinkHoverController(
     urlNode.className = 'xterm-link-preview-url'
     const hintNode = document.createElement('span')
     hintNode.className = 'xterm-link-preview-hint'
-    hintNode.textContent = '可点击打开 ↗'
+    hintNode.textContent = locale.value === 'en-US' ? 'Click to open ↗' : '可点击打开 ↗'
 
     btn.append(urlNode, hintNode)
     btn.addEventListener('mouseenter', () => {
@@ -315,12 +316,14 @@ export function createTerminalLinkHoverController(
 
     activeUrl = url
     urlSpan.textContent = url
+    const hintEl = btn.querySelector('.xterm-link-preview-hint')
+    if (hintEl) hintEl.textContent = locale.value === 'en-US' ? 'Click to open ↗' : '可点击打开 ↗'
     btn.title = url
-    btn.setAttribute('aria-label', `打开链接：${url}`)
+    btn.setAttribute('aria-label', locale.value === 'en-US' ? `Open link: ${url}` : `打开链接：${url}`)
     btn.hidden = false
 
     const rootRect = root.getBoundingClientRect()
-    const rowsEl = root.querySelector('.xterm-rows')
+    const rowsEl = root.querySelector('.xterm-screen')
     const rowsRect = rowsEl?.getBoundingClientRect()
     const rowCount = Math.max(1, terminal.rows)
     const colCount = Math.max(1, terminal.cols)

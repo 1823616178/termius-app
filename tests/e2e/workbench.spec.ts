@@ -1,5 +1,5 @@
 import { test as base, expect, _electron, type ElectronApplication, type Page } from '@playwright/test'
-import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { generateKeyPairSync } from 'node:crypto'
@@ -67,6 +67,13 @@ const test = base.extend<{ orbit: Orbit }>({
     expect(errors).toEqual([])
   }
 })
+
+async function enableTerminalTextForAssertions(page: Page) {
+  // Accessibility rows expose the same terminal text for both GPU and DOM renderers.
+  await page.evaluate(() => localStorage.setItem('orbit:screen-reader', 'true'))
+  await page.reload()
+  await expect(page.getByText('让连接，井然有序。')).toBeVisible()
+}
 
 async function createHost(page: Page, name: string, port = 22, password?: string) {
   await page.getByRole('button', { name: '新建主机', exact: true }).first().click()
@@ -239,6 +246,7 @@ test('secure empty workspace, semantic DOM and saved host persistence', async ({
 
 test('titlebar home icon returns to welcome and preserves terminal sessions', async ({ orbit }, info) => {
   const { page } = orbit
+  await enableTerminalTextForAssertions(page)
   const home = page.getByRole('button', { name: '返回首页', exact: true })
   await expect(home).toBeVisible()
   expect((await home.textContent())?.trim()).toBe('')
@@ -247,11 +255,11 @@ test('titlebar home icon returns to welcome and preserves terminal sessions', as
     'no-drag'
   )
   await page.getByRole('button', { name: '打开本地终端', exact: true }).click()
-  await expect(page.locator('.xterm-rows')).toContainText('PS ', { timeout: 15_000 })
+  await expect(page.locator('.xterm-accessibility-tree')).toContainText('PS ', { timeout: 15_000 })
   await page.locator('.xterm-helper-textarea').focus()
   await page.keyboard.type('Write-Output ("HOME_" + "PRESERVED")')
   await page.keyboard.press('Enter')
-  await expect(page.locator('.xterm-rows')).toContainText('HOME_PRESERVED')
+  await expect(page.locator('.xterm-accessibility-tree')).toContainText('HOME_PRESERVED')
   await home.click()
   await expect(page.getByText('让连接，井然有序。')).toBeVisible()
   await expect(page.locator('.xterm')).toHaveCount(1)
@@ -260,17 +268,17 @@ test('titlebar home icon returns to welcome and preserves terminal sessions', as
   await page.screenshot({ path: info.outputPath('home-with-live-session.png') })
   await checkClasses(page)
   await page.getByRole('tab').click()
-  await expect(page.locator('.xterm-rows')).toBeVisible()
-  await expect(page.locator('.xterm-rows')).toContainText('HOME_PRESERVED')
+  await expect(page.locator('.xterm-accessibility-tree')).toBeVisible()
+  await expect(page.locator('.xterm-accessibility-tree')).toContainText('HOME_PRESERVED')
   await home.click()
   await page.getByRole('button', { name: '工作台', exact: true }).click()
-  await expect(page.locator('.xterm-rows')).toBeVisible()
+  await expect(page.locator('.xterm-accessibility-tree')).toBeVisible()
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await home.click()
   await expect(page.getByText('让连接，井然有序。')).toBeVisible()
   await page.keyboard.press('Control+Tab')
-  await expect(page.locator('.xterm-rows')).toBeVisible()
-  await expect(page.locator('.xterm-rows')).toContainText('HOME_PRESERVED')
+  await expect(page.locator('.xterm-accessibility-tree')).toBeVisible()
+  await expect(page.locator('.xterm-accessibility-tree')).toContainText('HOME_PRESERVED')
 })
 
 test('connections move to the top on use, respect filters and persist after reload', async ({ orbit }) => {
@@ -684,24 +692,103 @@ test('sword initialization failure can be retried from the homepage', async ({ o
   await expect(phase).toContainText('万剑分身')
 })
 
+test('terminal uses hardware WebGL when available and keeps the session after context loss', async ({
+  orbit
+}) => {
+  const { page } = orbit
+  const hardware = await page.evaluate(() => {
+    const gl = document.createElement('canvas').getContext('webgl2')
+    if (!gl) return false
+    const debug = gl.getExtension('WEBGL_debug_renderer_info')
+    const renderer = String(gl.getParameter(debug?.UNMASKED_RENDERER_WEBGL ?? gl.RENDERER))
+    gl.getExtension('WEBGL_lose_context')?.loseContext()
+    return !/swiftshader|llvmpipe|softpipe|lavapipe|software|basic render/i.test(renderer)
+  })
+  const glyphFonts = await page.evaluateHandle(() => {
+    const fonts = new Set<string>()
+    for (const context of [CanvasRenderingContext2D, OffscreenCanvasRenderingContext2D]) {
+      const fillText = context.prototype.fillText
+      context.prototype.fillText = function (...args: Parameters<typeof fillText>) {
+        fonts.add(this.font)
+        fillText.apply(this, args)
+      }
+    }
+    return fonts
+  })
+  await page.getByRole('button', { name: '打开本地终端', exact: true }).click()
+  await expect(page.getByText('运行中', { exact: true })).toBeVisible()
+  if (hardware) {
+    const canvas = page.locator('.xterm-screen > canvas').last()
+    await expect(canvas).toBeVisible()
+    // Check the actual font used to rasterize glyphs, not just the terminal options.
+    await expect
+      .poll(() =>
+        glyphFonts.evaluate((fonts) => {
+          const size = `${14 * devicePixelRatio}px`
+          return ['', '600 '].every((weight) =>
+            [...fonts].some(
+              (font) => font.startsWith(weight + size + ' ') && font.includes('Orbit JetBrains Mono')
+            )
+          )
+        })
+      )
+      .toBe(true)
+    const settings = page.getByRole('button', { name: '设置', exact: true })
+    const workspace = page.getByRole('button', { name: '工作台', exact: true })
+    const acceleration = page.getByRole('checkbox', { name: '启用终端 GPU 加速' })
+    await settings.click()
+    await expect(acceleration).toBeChecked()
+    await acceleration.uncheck()
+    await expect(canvas).toHaveCount(0)
+    await workspace.click()
+    await expect(page.locator('.xterm-rows')).toContainText('PS ', { timeout: 15_000 })
+    await page.locator('.xterm-helper-textarea').focus()
+    await page.keyboard.type('Write-Output ("GPU_" + "SWITCH")')
+    await page.keyboard.press('Enter')
+    await expect(page.locator('.xterm-rows')).toContainText('GPU_SWITCH')
+    await settings.click()
+    await acceleration.check()
+    await workspace.click()
+    await expect(canvas).toBeVisible()
+    await canvas.evaluate((el) =>
+      (el as HTMLCanvasElement).getContext('webgl2')!.getExtension('WEBGL_lose_context')!.loseContext()
+    )
+  }
+  await expect(page.locator('.xterm-rows')).toContainText('PS ', { timeout: 15_000 })
+  await page.locator('.xterm-helper-textarea').focus()
+  await page.keyboard.type('Write-Output ("FALLBACK_" + "READY")')
+  await page.keyboard.press('Enter')
+  await expect(page.locator('.xterm-rows')).toContainText('FALLBACK_READY')
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByRole('checkbox', { name: '启用终端 GPU 加速' }).uncheck()
+  await page.reload()
+  await page.getByRole('button', { name: '设置', exact: true }).click()
+  await expect(page.getByRole('checkbox', { name: '启用终端 GPU 加速' })).not.toBeChecked()
+  await page.getByRole('button', { name: '返回首页', exact: true }).click()
+  await page.getByRole('button', { name: '打开本地终端', exact: true }).click()
+  await expect(page.locator('.xterm-rows')).toContainText('PS ', { timeout: 15_000 })
+  await expect(page.locator('.xterm-screen > canvas')).toHaveCount(0)
+})
+
 test('real PowerShell and CMD, split resize, terminal input and lifecycle cleanup', async ({
   orbit
 }, info) => {
   const { page, app } = orbit
+  await enableTerminalTextForAssertions(page)
   const initial = await page.evaluate(() => window.orbit.bootstrap())
   expect(initial.shells.some((profile) => profile.id === 'powershell')).toBe(true)
   expect(initial.shells.some((profile) => profile.id === 'cmd')).toBe(true)
   await page.getByRole('button', { name: '打开本地终端', exact: true }).click()
   await expect(page.getByText('运行中', { exact: true })).toHaveCount(1)
-  await expect(page.locator('.xterm-rows').first()).toContainText('PS ', { timeout: 15_000 })
+  await expect(page.locator('.xterm-accessibility-tree').first()).toContainText('PS ', { timeout: 15_000 })
   const terminal = page.locator('.xterm-helper-textarea').first()
   await terminal.focus()
   await page.keyboard.type('Write-Output ("ORBIT_" + "LOCAL_READY")')
   await page.keyboard.press('Enter')
-  await expect(page.locator('.xterm-rows').first()).toContainText('ORBIT_LOCAL_READY')
+  await expect(page.locator('.xterm-accessibility-tree').first()).toContainText('ORBIT_LOCAL_READY')
   await page.keyboard.type('Write-Output ("ORBIT_PID:" + $PID)')
   await page.keyboard.press('Enter')
-  await expect(page.locator('.xterm-rows').first()).toContainText(/ORBIT_PID:\d+/)
+  await expect(page.locator('.xterm-accessibility-tree').first()).toContainText(/ORBIT_PID:\d+/)
   const bounds = await page.evaluate(() => {
     const surface = document
       .querySelector('.container_workspace_terminal_body_surface')!
@@ -717,7 +804,7 @@ test('real PowerShell and CMD, split resize, terminal input and lifecycle cleanu
   expect(bounds.screenTop).toBeGreaterThanOrEqual(bounds.surfaceTop)
   expect(bounds.surfaceBottom - bounds.screenBottom).toBeGreaterThanOrEqual(8)
   const shellPid = Number(
-    (await page.locator('.xterm-rows').first().innerText()).match(/ORBIT_PID:(\d+)/)![1]
+    (await page.locator('.xterm-accessibility-tree').first().innerText()).match(/ORBIT_PID:(\d+)/)![1]
   )
   const originalClipboard = await app.evaluate(({ clipboard }) => clipboard.readText())
   try {
@@ -729,23 +816,25 @@ test('real PowerShell and CMD, split resize, terminal input and lifecycle cleanu
     await expect(pastePreview).toBeVisible()
     await checkClasses(page)
     await expect(pastePreview.locator('pre')).toContainText('PASTE_PREVIEW_TWO')
-    await expect(page.locator('.xterm-rows').first()).not.toContainText('PASTE_PREVIEW_ONE')
+    await expect(page.locator('.xterm-accessibility-tree').first()).not.toContainText('PASTE_PREVIEW_ONE')
     await page.keyboard.press('Escape')
     await expect(terminal).toBeFocused()
-    await expect(page.locator('.xterm-rows').first()).not.toContainText('PASTE_PREVIEW_ONE')
+    await expect(page.locator('.xterm-accessibility-tree').first()).not.toContainText('PASTE_PREVIEW_ONE')
     await page.keyboard.press('Control+Shift+V')
     await expect(pastePreview.getByRole('button', { name: '确认粘贴', exact: true })).toBeFocused()
     await page.keyboard.press('Enter')
     await expect(pastePreview).toHaveCount(0)
     await expect(terminal).toBeFocused()
-    await expect(page.locator('.xterm-rows').first()).toContainText('PASTE_PREVIEW_TWO')
+    await expect(page.locator('.xterm-accessibility-tree').first()).toContainText('PASTE_PREVIEW_TWO')
     await page.keyboard.press('Control+c')
     await app.evaluate(({ clipboard }) => clipboard.writeText('Write-Output ("PASTE_" + "ONCE")'))
     await terminal.focus()
     await page.keyboard.press('Control+Shift+V')
     await page.keyboard.press('Enter')
-    await expect(page.locator('.xterm-rows').first()).toContainText('PASTE_ONCE')
-    expect((await page.locator('.xterm-rows').first().innerText()).match(/PASTE_ONCE/g)).toHaveLength(1)
+    await expect(page.locator('.xterm-accessibility-tree').first()).toContainText('PASTE_ONCE')
+    expect(
+      (await page.locator('.xterm-accessibility-tree').first().innerText()).match(/PASTE_ONCE/g)
+    ).toHaveLength(1)
   } finally {
     await app.evaluate(({ clipboard }, original) => clipboard.writeText(original), originalClipboard)
   }
@@ -783,13 +872,13 @@ test('real PowerShell and CMD, split resize, terminal input and lifecycle cleanu
   await page.locator('.xterm-helper-textarea').last().focus()
   await page.keyboard.type('echo ORBIT_CMD_READY')
   await page.keyboard.press('Enter')
-  await expect(page.locator('.xterm-rows').last()).toContainText('ORBIT_CMD_READY')
+  await expect(page.locator('.xterm-accessibility-tree').last()).toContainText('ORBIT_CMD_READY')
   await page.keyboard.type('exit')
   await page.keyboard.press('Enter')
   await expect(page.getByText('已退出', { exact: true })).toBeVisible()
   await page.locator('.xterm-helper-textarea').last().focus()
   await page.keyboard.press('Control+Shift+W')
-  await expect(page.locator('.xterm-rows').first()).not.toContainText('^W')
+  await expect(page.locator('.xterm-accessibility-tree').first()).not.toContainText('^W')
   await page.getByRole('button', { name: '关闭标签 Windows PowerShell', exact: true }).click()
   await expect(page.getByText('让连接，井然有序。')).toBeVisible()
   await expect
@@ -811,6 +900,7 @@ test('real PowerShell and CMD, split resize, terminal input and lifecycle cleanu
 
 test('real SSH handshake, trust prompt, encrypted credential and PTY data', async ({ orbit }, info) => {
   const { page } = orbit
+  await enableTerminalTextForAssertions(page)
   const hostKey = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({
     type: 'pkcs1',
     format: 'pem'
@@ -854,10 +944,10 @@ test('real SSH handshake, trust prompt, encrypted credential and PTY data', asyn
     await page.screenshot({ path: info.outputPath('host-trust.png') })
     await trust.getByRole('button', { name: '信任并继续' }).click()
     await expect(page.getByText('运行中', { exact: true })).toBeVisible()
-    await expect(page.locator('.xterm-rows')).toContainText('ORBIT_SSH_READY 中文')
+    await expect(page.locator('.xterm-accessibility-tree')).toContainText('ORBIT_SSH_READY 中文')
     await page.locator('.xterm-helper-textarea').focus()
     await page.keyboard.type('ssh-roundtrip')
-    await expect(page.locator('.xterm-rows')).toContainText('ssh-roundtrip')
+    await expect(page.locator('.xterm-accessibility-tree')).toContainText('ssh-roundtrip')
     await page.getByRole('button', { name: '关闭标签 协议测试服务器', exact: true }).click()
     await page.getByRole('button', { name: '连接 协议测试服务器', exact: true }).click()
     await expect(page.getByText('运行中', { exact: true })).toBeVisible()
@@ -938,13 +1028,13 @@ test('real SSH handshake, trust prompt, encrypted credential and PTY data', asyn
       await saveNewCheckbox.check()
     }
     await retryPrompt3.getByRole('button', { name: '重新连接', exact: true }).click()
-    await expect(page.locator('.xterm-rows')).toContainText('ORBIT_SSH_RETRY_OK')
+    await expect(page.locator('.xterm-accessibility-tree')).toContainText('ORBIT_SSH_RETRY_OK')
     await page.getByRole('button', { name: '关闭标签 密码重试服务器', exact: true }).click()
 
     // Subsequent connection succeeds without prompt when the updated password was saved
     if (canSavePassword) {
       await page.getByRole('button', { name: '连接 密码重试服务器', exact: true }).click()
-      await expect(page.locator('.xterm-rows')).toContainText('ORBIT_SSH_RETRY_OK')
+      await expect(page.locator('.xterm-accessibility-tree')).toContainText('ORBIT_SSH_RETRY_OK')
       await expect(page.getByRole('dialog')).toHaveCount(0)
     }
   } finally {
@@ -1191,21 +1281,22 @@ test('drag tab into workspace triggers animated split preview, lossless docking 
   orbit
 }, info) => {
   const { page } = orbit
+  await enableTerminalTextForAssertions(page)
   await page.getByRole('button', { name: '打开本地终端', exact: true }).click()
   await expect(page.getByText('运行中', { exact: true })).toHaveCount(1)
-  await expect(page.locator('.xterm-rows').first()).toContainText('PS ', { timeout: 15_000 })
+  await expect(page.locator('.xterm-accessibility-tree').first()).toContainText('PS ', { timeout: 15_000 })
   const firstTerminal = page.locator('.xterm-helper-textarea').first()
   await firstTerminal.focus()
   await page.keyboard.type('Write-Output ("TAB_ONE_" + "KEEP")')
   await page.keyboard.press('Enter')
-  await expect(page.locator('.xterm-rows').first()).toContainText('TAB_ONE_KEEP')
+  await expect(page.locator('.xterm-accessibility-tree').first()).toContainText('TAB_ONE_KEEP')
 
   // Returning a tab to its own terminal is a no-op, never a new session.
   await page
     .locator('.container_workspace_tabs_header_item')
     .dragTo(page.locator('.container_workspace_panes_body_pane'), { targetPosition: { x: 120, y: 120 } })
   await expect(page.getByRole('tab')).toHaveCount(1)
-  await expect(page.locator('.xterm-rows')).toHaveCount(1)
+  await expect(page.locator('.xterm-accessibility-tree')).toHaveCount(1)
   await expect(page.locator('.container_workspace_split_overlay_base')).toBeHidden()
 
   await page.getByRole('button', { name: '本地终端', exact: true }).click()
@@ -1220,7 +1311,7 @@ test('drag tab into workspace triggers animated split preview, lossless docking 
   await secondTerminal.focus()
   await page.keyboard.type('echo TAB_TWO_KEEP')
   await page.keyboard.press('Enter')
-  await expect(page.locator('.xterm-rows').last()).toContainText('TAB_TWO_KEEP')
+  await expect(page.locator('.xterm-accessibility-tree').last()).toContainText('TAB_TWO_KEEP')
 
   // Switch back to the first tab while leaving the second tab in the tab strip.
   await page.getByRole('tab', { name: /Windows PowerShell/ }).click()
@@ -1282,9 +1373,9 @@ test('drag tab into workspace triggers animated split preview, lossless docking 
 
   await expect(page.getByRole('tab')).toHaveCount(1)
   await expect(page.locator('.container_workspace_tabs_header_split-badge')).toContainText('2分屏')
-  await expect(page.locator('.xterm-rows')).toHaveCount(2)
-  await expect(page.locator('.xterm-rows').nth(0)).toContainText('TAB_ONE_KEEP')
-  await expect(page.locator('.xterm-rows').nth(1)).toContainText('TAB_TWO_KEEP')
+  await expect(page.locator('.xterm-accessibility-tree')).toHaveCount(2)
+  await expect(page.locator('.xterm-accessibility-tree').nth(0)).toContainText('TAB_ONE_KEEP')
+  await expect(page.locator('.xterm-accessibility-tree').nth(1)).toContainText('TAB_TWO_KEEP')
   await page.screenshot({ path: info.outputPath('drag-split-docked.png') })
   await checkClasses(page)
 
@@ -1294,7 +1385,7 @@ test('drag tab into workspace triggers animated split preview, lossless docking 
     .last()
     .dragTo(page.locator('.container_workspace_tabs_header_item'), { sourcePosition: { x: 80, y: 16 } })
   await expect(page.getByRole('tab')).toHaveCount(1)
-  await expect(page.locator('.xterm-rows')).toHaveCount(2)
+  await expect(page.locator('.xterm-accessibility-tree')).toHaveCount(2)
 
   // Drag the right split pane's header over the left pane's left zone to verify preview & lossless swap.
   const visiblePanes = paneArea.locator('.container_workspace_panes_body_pane')
@@ -1341,8 +1432,8 @@ test('drag tab into workspace triggers animated split preview, lossless docking 
     sourcePosition: { x: 80, y: 16 },
     targetPosition: { x: Math.round(leftPaneBox.width * 0.22), y: Math.round(leftPaneBox.height * 0.5) }
   })
-  await expect(page.locator('.xterm-rows').nth(0)).toContainText('TAB_TWO_KEEP')
-  await expect(page.locator('.xterm-rows').nth(1)).toContainText('TAB_ONE_KEEP')
+  await expect(page.locator('.xterm-accessibility-tree').nth(0)).toContainText('TAB_TWO_KEEP')
+  await expect(page.locator('.xterm-accessibility-tree').nth(1)).toContainText('TAB_ONE_KEEP')
   await page.screenshot({ path: info.outputPath('pane-header-drag-reposition.png') })
   await checkClasses(page)
 
@@ -1361,8 +1452,8 @@ test('drag tab into workspace triggers animated split preview, lossless docking 
     }
   })
   await expect(paneArea).toHaveAttribute('data-direction', 'vertical')
-  await expect(page.locator('.xterm-rows').nth(0)).toContainText('TAB_ONE_KEEP')
-  await expect(page.locator('.xterm-rows').nth(1)).toContainText('TAB_TWO_KEEP')
+  await expect(page.locator('.xterm-accessibility-tree').nth(0)).toContainText('TAB_ONE_KEEP')
+  await expect(page.locator('.xterm-accessibility-tree').nth(1)).toContainText('TAB_TWO_KEEP')
 
   // Drag the top split pane header up into blank tab-bar space to detach back into a standalone tab losslessly.
   const tabList = page.locator('.container_workspace_tabs_header_list')
@@ -1376,8 +1467,8 @@ test('drag tab into workspace triggers animated split preview, lossless docking 
     targetPosition: { x: Math.round(tabListBox.width - 28), y: Math.round(tabListBox.height * 0.5) }
   })
   await expect(page.getByRole('tab')).toHaveCount(2)
-  await expect(page.locator('.xterm-rows').nth(0)).toContainText('TAB_TWO_KEEP')
-  await expect(page.locator('.xterm-rows').nth(1)).toContainText('TAB_ONE_KEEP')
+  await expect(page.locator('.xterm-accessibility-tree').nth(0)).toContainText('TAB_TWO_KEEP')
+  await expect(page.locator('.xterm-accessibility-tree').nth(1)).toContainText('TAB_ONE_KEEP')
   await checkClasses(page)
 
   await page.getByRole('button', { name: '关闭标签 命令提示符', exact: true }).click()
@@ -1769,34 +1860,48 @@ test('checks GitHub releases, downloads verified installer and respects prerelea
     await expect(page.locator('.container_settings_update_meta_grid')).toContainText('1823616178/termius-app')
 
     await page.getByRole('button', { name: '检查更新', exact: true }).click()
-    await expect(page.locator('.container_settings_update_header_badge')).toContainText('发现新版 v0.2.0', {
-      timeout: 5000
-    })
+    await expect(page.locator('.container_settings_update_header_badge')).toContainText(
+      `发现新版 v${server.stableVersion}`,
+      {
+        timeout: 5000
+      }
+    )
     await expect(page.locator('.container_settings_update_release_notes')).toContainText('玄墨剑侠主题升级')
-    await expect(page.locator('.container_app_window_header_update')).toContainText('新版本 v0.2.0')
-    await expect(page.locator('.container_app_status_footer_version')).toContainText('可升级 v0.2.0')
+    await expect(page.locator('.container_app_window_header_update')).toContainText(
+      `新版本 v${server.stableVersion}`
+    )
+    await expect(page.locator('.container_app_status_footer_version')).toContainText(
+      `可升级 v${server.stableVersion}`
+    )
 
     await page.getByRole('button', { name: /下载更新/ }).click()
     await expect(page.locator('.container_settings_update_header_badge')).toContainText('校验完成 · 待安装', {
       timeout: 5000
     })
     await expect(page.locator('.container_settings_update_release_verified')).toContainText('已校验 SHA256:')
-    await expect(page.locator('.container_app_window_header_update')).toContainText('就绪待装 v0.2.0')
+    await expect(page.locator('.container_app_window_header_update')).toContainText(
+      `就绪待装 v${server.stableVersion}`
+    )
     await page.screenshot({ path: info.outputPath('settings-update-ready.png') })
     await checkClasses(page)
 
-    const downloadedBytes = await readFile(join(directory, 'updates', 'Graphite-Orbit-Setup-0.2.0.exe'))
+    const downloadedBytes = await readFile(
+      join(directory, 'updates', `Graphite-Orbit-Setup-${server.stableVersion}.exe`)
+    )
     expect(downloadedBytes.byteLength).toBeGreaterThan(65536)
 
     const dryInstallOk = await page.evaluate(() => window.orbit.update.installUpdate())
     expect(dryInstallOk).toBe(true)
 
-    // Enable prerelease channel after server exposes v0.3.0-beta.1
+    // Enable prerelease channel after server exposes prereleaseVersion
     server.setPrereleaseAvailable(true)
     await page.getByLabel('接收预发布测试版（Alpha / Beta / RC）更新提示', { exact: true }).check()
-    await expect(page.locator('.container_settings_update_header_badge')).toContainText('v0.3.0-beta.1', {
-      timeout: 5000
-    })
+    await expect(page.locator('.container_settings_update_header_badge')).toContainText(
+      `v${server.prereleaseVersion}`,
+      {
+        timeout: 5000
+      }
+    )
     await expect(page.locator('.container_settings_update_release_pretag')).toBeVisible()
     expect(errors).toEqual([])
   } finally {
@@ -1822,6 +1927,7 @@ test('terminal right-side SFTP drawer browses, uploads, downloads, chmods, renam
   await writeFile(localUploadFile, uploadPayload)
 
   const { app, page } = await launch(appDir)
+  await enableTerminalTextForAssertions(page)
   const errors: string[] = []
   page.on('pageerror', (error) => errors.push(error.message))
 
@@ -1835,7 +1941,7 @@ test('terminal right-side SFTP drawer browses, uploads, downloads, chmods, renam
     await trust.getByRole('button', { name: '信任并继续' }).click()
 
     await expect(page.getByText('运行中', { exact: true })).toBeVisible({ timeout: 10_000 })
-    await expect(page.locator('.xterm-rows').first()).toContainText('orbit@mock-sftp:~$')
+    await expect(page.locator('.xterm-accessibility-tree').first()).toContainText('orbit@mock-sftp:~$')
 
     await page.getByRole('button', { name: '打开 SFTP 文件面板', exact: true }).click()
     const sftpAside = page.getByRole('complementary', { name: 'SFTP 文件管理', exact: true })
@@ -1937,6 +2043,70 @@ test('terminal right-side SFTP drawer browses, uploads, downloads, chmods, renam
     ).toBeVisible({ timeout: 10_000 })
     const remoteUploaded = await readFile(join(sftpServer.homeDir, 'upload-bundle.bin'))
     expect(remoteUploaded.equals(uploadPayload)).toBe(true)
+
+    // Real OS drag-and-drop upload via CDP Input.dispatchDragEvent (verifies File[] + webUtils.getPathForFile)
+    const localDragDropFile = join(localTransferDir, 'drag-drop-note.txt')
+    await writeFile(localDragDropFile, 'ORBIT_SFTP_DRAG_DROP_OK\n', 'utf8')
+    const sftpCenterBox = await sftpAside.boundingBox()
+    expect(sftpCenterBox).not.toBeNull()
+    const dropX = Math.round(sftpCenterBox!.x + sftpCenterBox!.width / 2)
+    const dropY = Math.round(sftpCenterBox!.y + sftpCenterBox!.height / 2)
+    const cdp = await page.context().newCDPSession(page)
+    try {
+      const dragData = {
+        items: [],
+        files: [localDragDropFile],
+        dragOperationsMask: 1
+      }
+      await cdp.send('Input.dispatchDragEvent', { type: 'dragEnter', x: dropX, y: dropY, data: dragData })
+      await cdp.send('Input.dispatchDragEvent', { type: 'dragOver', x: dropX, y: dropY, data: dragData })
+      await expect(sftpAside.locator('.container_workspace_sftp_drop_overlay')).toBeVisible()
+      await cdp.send('Input.dispatchDragEvent', { type: 'drop', x: dropX, y: dropY, data: dragData })
+    } finally {
+      await cdp.detach().catch(() => {})
+    }
+    await expect(sftpAside.locator('.container_workspace_sftp_drop_overlay')).toBeHidden()
+    await expect(page.getByText(/未能解析拖入的本地文件路径/)).toHaveCount(0)
+    await expect(
+      sftpAside
+        .locator('[class*="container_workspace_sftp_row_item"]')
+        .filter({ hasText: 'drag-drop-note.txt' })
+    ).toBeVisible({ timeout: 10_000 })
+    expect(await readFile(join(sftpServer.homeDir, 'drag-drop-note.txt'), 'utf8')).toBe(
+      'ORBIT_SFTP_DRAG_DROP_OK\n'
+    )
+
+    // Real OS directory drag-and-drop via CDP also resolves local folder and uploads recursively
+    const localDragDropDir = join(localTransferDir, 'drag-drop-dir')
+    await mkdir(localDragDropDir)
+    await writeFile(join(localDragDropDir, 'nested.txt'), 'ORBIT_SFTP_DIR_DROP_OK\n', 'utf8')
+    const dirCdp = await page.context().newCDPSession(page)
+    try {
+      const dirDragData = { items: [], files: [localDragDropDir], dragOperationsMask: 1 }
+      await dirCdp.send('Input.dispatchDragEvent', {
+        type: 'dragEnter',
+        x: dropX,
+        y: dropY,
+        data: dirDragData
+      })
+      await dirCdp.send('Input.dispatchDragEvent', {
+        type: 'dragOver',
+        x: dropX,
+        y: dropY,
+        data: dirDragData
+      })
+      await expect(sftpAside.locator('.container_workspace_sftp_drop_overlay')).toBeVisible()
+      await dirCdp.send('Input.dispatchDragEvent', { type: 'drop', x: dropX, y: dropY, data: dirDragData })
+    } finally {
+      await dirCdp.detach().catch(() => {})
+    }
+    await expect(sftpAside.locator('.container_workspace_sftp_drop_overlay')).toBeHidden()
+    await expect(page.getByText(/未能解析拖入的本地文件路径/)).toHaveCount(0)
+    await expect
+      .poll(() => readFile(join(sftpServer.homeDir, 'drag-drop-dir', 'nested.txt'), 'utf8').catch(() => ''), {
+        timeout: 15_000
+      })
+      .toBe('ORBIT_SFTP_DIR_DROP_OK\n')
 
     // Real SFTP download
     await sftpAside.getByRole('button', { name: '下载 notes.txt', exact: true }).click()
@@ -2164,6 +2334,16 @@ test('terminal recognizes links with hover underline, pointer cursor and clickab
   orbit
 }) => {
   const { page, app } = orbit
+  // This test inspects DOM spans and their underline styling on the fallback renderer.
+  await page.evaluate(() => {
+    const getContext = HTMLCanvasElement.prototype.getContext
+    HTMLCanvasElement.prototype.getContext = function (
+      this: HTMLCanvasElement,
+      ...args: Parameters<typeof getContext>
+    ) {
+      return args[0] === 'webgl2' ? null : getContext.apply(this, args)
+    } as typeof getContext
+  })
   await page.getByRole('button', { name: '打开本地终端', exact: true }).click()
   await expect(page.getByText('运行中', { exact: true })).toHaveCount(1)
   await expect(page.locator('.xterm-rows').first()).toContainText('PS ', { timeout: 15_000 })
@@ -2300,6 +2480,185 @@ test('terminal recognizes links with hover underline, pointer cursor and clickab
         delete g.__origShowMessageBox
       }
       delete g.__openedLinkPrompts
+    })
+  }
+})
+
+test('bilingual zh/en switch, separate terminal/panel typography & color settings, and select-to-copy', async ({
+  orbit
+}, info) => {
+  const { page, app } = orbit
+  await enableTerminalTextForAssertions(page)
+
+  // 1. Default Simplified Chinese UI + quick language toggle in TitleBar
+  await expect(page.getByText('玄剑天枢 · Graphite Orbit')).toBeVisible()
+  await page.getByTestId('titlebar-lang-toggle').click()
+  await expect(page.locator('html')).toHaveAttribute('lang', 'en-US')
+  await expect(page.getByText('Connections, Effortlessly Aligned.')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Settings', exact: true })).toBeVisible()
+
+  // Navigate to Settings and verify language radio cards sync & persist across reload
+  await page.getByRole('button', { name: 'Settings', exact: true }).click()
+  await expect(page.getByTestId('lang-card-en-US')).toHaveAttribute('aria-checked', 'true')
+  await expect(page.getByTestId('panel-typography-section')).toBeVisible()
+  await expect(page.getByTestId('terminal-typography-section')).toBeVisible()
+  await checkClasses(page)
+
+  // 2. Panel typography & custom text color remain completely independent from terminal typography
+  const panelSection = page.getByTestId('panel-typography-section')
+  const terminalSection = page.getByTestId('terminal-typography-section')
+
+  await panelSection.getByRole('combobox', { name: 'Panel Body Font' }).click()
+  await checkClasses(page)
+  await page.getByRole('option', { name: /LXGW WenKai \(CJK\)/ }).click()
+
+  await panelSection.locator('input[type="range"]').first().fill('16')
+  const primaryColorHex = panelSection.locator('.container_settings_typo_pcswatch_phex')
+  await primaryColorHex.fill('#ffe6a7')
+  await expect
+    .poll(() =>
+      page.evaluate(() => ({
+        uiFont: getComputedStyle(document.documentElement).getPropertyValue('--font-ui').trim(),
+        uiSize: getComputedStyle(document.documentElement).getPropertyValue('--font-ui-size').trim(),
+        uiColor: getComputedStyle(document.documentElement).getPropertyValue('--color-text-primary').trim()
+      }))
+    )
+    .toMatchObject({
+      uiSize: '16px',
+      uiColor: '#ffe6a7'
+    })
+  const uiFontApplied = await page.evaluate(() =>
+    getComputedStyle(document.documentElement).getPropertyValue('--font-ui')
+  )
+  expect(uiFontApplied).toContain('Orbit LXGW WenKai')
+
+  // 3. Configure independent Terminal font (Maple Mono woff2), size, and custom canvas colors
+  await terminalSection.getByRole('combobox', { name: 'Terminal Font' }).click()
+  await page.getByRole('option', { name: /Maple Mono/ }).click()
+  await terminalSection.locator('input[type="range"]').first().fill('17')
+  await terminalSection.locator('.container_settings_typo_tcswatch_fghex').fill('#a6e22e')
+  await terminalSection.locator('.container_settings_typo_tcswatch_bghex').fill('#101820')
+
+  // Verify Panel font & size did NOT get overwritten by Terminal changes
+  const uiAfterTermChange = await page.evaluate(() => ({
+    uiFont: getComputedStyle(document.documentElement).getPropertyValue('--font-ui'),
+    uiSize: getComputedStyle(document.documentElement).getPropertyValue('--font-ui-size').trim()
+  }))
+  expect(uiAfterTermChange.uiFont).toContain('Orbit LXGW WenKai')
+  expect(uiAfterTermChange.uiSize).toBe('16px')
+
+  // 4. Enable BOTH select-to-copy checkboxes and mock Electron clipboard for deterministic verification
+  const panelCopyCheck = panelSection.getByRole('checkbox', {
+    name: /Copy panel text to clipboard automatically on selection/i
+  })
+  const termCopyCheck = terminalSection.getByRole('checkbox', {
+    name: /Copy terminal text automatically on selection/i
+  })
+  await panelCopyCheck.check()
+  await termCopyCheck.check()
+  await expect(panelCopyCheck).toBeChecked()
+  await expect(termCopyCheck).toBeChecked()
+
+  await app.evaluate(({ clipboard }) => {
+    const g = globalThis as { __origWriteText?: typeof clipboard.writeText; __clipboardWrites?: string[] }
+    g.__origWriteText = clipboard.writeText.bind(clipboard)
+    g.__clipboardWrites = []
+    clipboard.writeText = ((text: string) => {
+      g.__clipboardWrites!.push(text)
+      return g.__origWriteText!(text)
+    }) as typeof clipboard.writeText
+  })
+
+  try {
+    // Test Panel select-to-copy by dragging across text inside Panel Live Preview box
+    const panelBodyText = panelSection.locator('.container_settings_typo_ppreview_body')
+    await panelBodyText.scrollIntoViewIfNeeded()
+    const bodyBox = await panelBodyText.boundingBox()
+    expect(bodyBox).not.toBeNull()
+    await page.mouse.move(bodyBox!.x + 12, bodyBox!.y + 12)
+    await page.mouse.down()
+    await page.mouse.move(bodyBox!.x + Math.min(220, bodyBox!.width - 12), bodyBox!.y + 12, { steps: 6 })
+    await page.mouse.up()
+    await expect
+      .poll(() =>
+        app.evaluate(
+          () => (globalThis as { __clipboardWrites?: string[] }).__clipboardWrites?.slice(-1)[0] ?? ''
+        )
+      )
+      .not.toBe('')
+
+    await page.screenshot({ path: info.outputPath('settings-typography-en.png') })
+
+    // Open a local terminal and verify terminal renders custom colors + drag-end select-to-copy copies once
+    await page.getByRole('button', { name: 'Home', exact: true }).click()
+    await page.getByRole('button', { name: 'Open Local Terminal', exact: true }).click()
+    await expect(page.getByText('Running', { exact: true })).toBeVisible()
+    const termTextLocator = page.locator('.xterm-accessibility-tree, .xterm-rows').first()
+    await expect(termTextLocator).toContainText('PS ', { timeout: 15_000 })
+    const paneBg = await page
+      .locator('.container_workspace_terminal_root_base')
+      .first()
+      .evaluate((el) => getComputedStyle(el).getPropertyValue('--pane-terminal-bg').trim())
+    expect(paneBg).toBe('#101820')
+
+    await page.locator('.xterm-helper-textarea').focus()
+    await page.keyboard.type('Write-Output ("CLIP_" + "MARKER")')
+    await page.keyboard.press('Enter')
+    await expect(termTextLocator).toContainText('CLIP_MARKER', { timeout: 10_000 })
+
+    // Drag across the row containing CLIP_MARKER and release: should copy once on pointerup
+    const targetBox = await page.evaluate(() => {
+      const candidates = [
+        ...document.querySelectorAll('.xterm-accessibility-tree [role="listitem"]'),
+        ...document.querySelectorAll('.xterm-rows > div')
+      ]
+      const row = candidates.find((r) => (r.textContent ?? '').includes('CLIP_MARKER'))
+      if (!row) return null
+      const rect = row.getBoundingClientRect()
+      const screenRect = document.querySelector('.xterm-screen')?.getBoundingClientRect()
+      const maxWidth = screenRect ? Math.max(120, screenRect.right - rect.left - 8) : 340
+      const width = Math.min(maxWidth, 340)
+      return { x: rect.left, y: rect.top + rect.height / 2, width }
+    })
+    expect(targetBox).not.toBeNull()
+    const writesBeforeDrag = await app.evaluate(
+      () => ((globalThis as { __clipboardWrites?: string[] }).__clipboardWrites ?? []).length
+    )
+    await page.mouse.move(targetBox!.x + 4, targetBox!.y)
+    await page.mouse.down()
+    await page.mouse.move(targetBox!.x + targetBox!.width, targetBox!.y, { steps: 8 })
+    // Mid-drag should NOT spam clipboard!
+    const writesMidDrag = await app.evaluate(
+      () => ((globalThis as { __clipboardWrites?: string[] }).__clipboardWrites ?? []).length
+    )
+    expect(writesMidDrag).toBe(writesBeforeDrag)
+    await page.mouse.up()
+    await expect
+      .poll(() =>
+        app.evaluate(
+          () => (globalThis as { __clipboardWrites?: string[] }).__clipboardWrites?.slice(-1)[0] ?? ''
+        )
+      )
+      .toContain('CLIP_MARKER')
+    await expect(page.locator('.container_app_status_footer_copied')).toBeVisible()
+
+    // Reload app and confirm persisted en-US locale, fonts, colors, and copy-on-select checkboxes
+    await page.reload()
+    await expect(page.getByRole('button', { name: 'Settings', exact: true })).toBeVisible()
+    await page.getByRole('button', { name: 'Settings', exact: true }).click()
+    await expect(page.getByTestId('lang-card-en-US')).toHaveAttribute('aria-checked', 'true')
+    await expect(panelCopyCheck).toBeChecked()
+    await expect(termCopyCheck).toBeChecked()
+    await expect(terminalSection.getByRole('combobox', { name: 'Terminal Font' })).toContainText('Maple Mono')
+    await expect(panelSection.getByRole('combobox', { name: 'Panel Body Font' })).toContainText('LXGW WenKai')
+  } finally {
+    await app.evaluate(({ clipboard }) => {
+      const g = globalThis as { __origWriteText?: typeof clipboard.writeText; __clipboardWrites?: unknown }
+      if (g.__origWriteText) {
+        clipboard.writeText = g.__origWriteText
+        delete g.__origWriteText
+      }
+      delete g.__clipboardWrites
     })
   }
 })

@@ -7,6 +7,7 @@ import type {
   TunnelRuntimeStatus
 } from '../../../shared/contracts'
 import type { SyncGroupInput, SyncTunnelInput } from '../../../shared/sync'
+import { locale } from '../services/i18n'
 import { recentHostIds, sortHostsByRecency } from '../services/host-recency'
 import {
   bootstrap,
@@ -57,7 +58,7 @@ export const selectedHostDetails = computed(() => hosts.value.find((host) => hos
 
 export async function saveSyncGroup(input: SyncGroupInput): Promise<void> {
   syncGroups.value = await window.orbit.groups.save(input)
-  notify('同步分组已保存')
+  notify(locale.value === 'en-US' ? 'Sync group saved' : '同步分组已保存')
 }
 
 export async function removeSyncGroup(id: string): Promise<void> {
@@ -65,13 +66,13 @@ export async function removeSyncGroup(id: string): Promise<void> {
   syncTunnels.value = syncTunnels.value.map((item) =>
     item.groupId === id ? { ...item, groupId: null } : item
   )
-  notify('同步分组已移除')
+  notify(locale.value === 'en-US' ? 'Sync group removed' : '同步分组已移除')
 }
 
 export async function saveSyncTunnel(input: SyncTunnelInput): Promise<void> {
   syncTunnels.value = await window.orbit.tunnels.save(input)
   await refreshTunnelStatuses()
-  notify('端口转发规则已保存')
+  notify(locale.value === 'en-US' ? 'Port forwarding rule saved' : '端口转发规则已保存')
 }
 
 export async function removeSyncTunnel(id: string): Promise<void> {
@@ -79,7 +80,7 @@ export async function removeSyncTunnel(id: string): Promise<void> {
   const nextStatuses = { ...tunnelStatuses.value }
   delete nextStatuses[id]
   tunnelStatuses.value = nextStatuses
-  notify('端口转发规则已删除')
+  notify(locale.value === 'en-US' ? 'Port forwarding rule deleted' : '端口转发规则已删除')
 }
 
 export async function refreshTunnelStatuses(): Promise<void> {
@@ -101,9 +102,23 @@ export async function toggleTunnelRuntime(id: string, active: boolean): Promise<
     for (const item of list) map[item.tunnelId] = item
     tunnelStatuses.value = map
     syncTunnels.value = syncTunnels.value.map((t) => (t.id === id ? { ...t, enabled: active } : t))
-    notify(active ? '端口转发已启动并监听本地端口' : '端口转发已停止')
+    notify(
+      active
+        ? locale.value === 'en-US'
+          ? 'Port forwarding started and listening locally'
+          : '端口转发已启动并监听本地端口'
+        : locale.value === 'en-US'
+          ? 'Port forwarding stopped'
+          : '端口转发已停止'
+    )
   } catch (error) {
-    notify(error instanceof Error ? error.message : '切换端口转发状态失败')
+    notify(
+      error instanceof Error
+        ? error.message
+        : locale.value === 'en-US'
+          ? 'Failed to toggle tunnel state'
+          : '切换端口转发状态失败'
+    )
   } finally {
     tunnelBusy.value = { ...tunnelBusy.value, [id]: false }
   }
@@ -149,7 +164,9 @@ export async function refreshKnownHosts(): Promise<void> {
 
 export async function removeKnownHostEntry(hostKey: string): Promise<void> {
   knownHosts.value = await window.orbit.knownHosts.remove(hostKey)
-  notify(`已移除 ${hostKey} 的主机指纹`)
+  notify(
+    locale.value === 'en-US' ? `Removed host fingerprint for ${hostKey}` : `已移除 ${hostKey} 的主机指纹`
+  )
 }
 
 export async function setSyncWriteMode(mode: 'realtime' | 'local-only'): Promise<void> {
@@ -167,26 +184,44 @@ export async function setSyncWriteMode(mode: 'realtime' | 'local-only'): Promise
       })
       syncStatus.value = res.status
     } catch (error) {
-      notify(error instanceof Error ? error.message : '更新同步写入模式失败')
+      notify(
+        error instanceof Error
+          ? error.message
+          : locale.value === 'en-US'
+            ? 'Failed to update sync write mode'
+            : '更新同步写入模式失败'
+      )
       return
     }
   }
+  const en = locale.value === 'en-US'
   notify(
     mode === 'realtime'
-      ? '已切换为实时同步：增删改主机/分组/转发规则后将立即同步至服务端'
-      : '已切换为仅保留本地修改：变更将仅保存在本机，不会自动上传到服务端'
+      ? en
+        ? 'Switched to Live Sync: host, group, and tunnel changes sync automatically'
+        : '已切换为实时同步：增删改主机/分组/转发规则后将立即同步至服务端'
+      : en
+        ? 'Switched to Local-Only: changes stay on this device until synced manually'
+        : '已切换为仅保留本地修改：变更将仅保存在本机，不会自动上传到服务端'
   )
 }
 
 export async function refreshShells(): Promise<void> {
   if (shellsRefreshing.value || !bootstrap.value) return
   shellsRefreshing.value = true
+  const en = locale.value === 'en-US'
   try {
     const updated = await window.orbit.shells.refresh()
     if (bootstrap.value) bootstrap.value = { ...bootstrap.value, shells: updated }
-    notify(`已刷新本地终端，发现 ${updated.length} 项配置`)
+    notify(
+      en
+        ? `Refreshed local shells: found ${updated.length} profile(s)`
+        : `已刷新本地终端，发现 ${updated.length} 项配置`
+    )
   } catch (error) {
-    notify(error instanceof Error ? error.message : '刷新本地终端失败')
+    notify(
+      error instanceof Error ? error.message : en ? 'Failed to refresh local shells' : '刷新本地终端失败'
+    )
   } finally {
     shellsRefreshing.value = false
   }
@@ -202,12 +237,14 @@ export async function saveHost(input: HostInput): Promise<void> {
   if (saveBusy.value) return
   saveBusy.value = true
   saveError.value = ''
+  const en = locale.value === 'en-US'
   try {
     hosts.value = await window.orbit.hosts.save(input)
     editor.value = false
-    notify('主机已保存到本机')
+    notify(en ? 'Host saved locally' : '主机已保存到本机')
   } catch (error) {
-    saveError.value = error instanceof Error ? error.message : '保存失败，草稿已保留'
+    saveError.value =
+      error instanceof Error ? error.message : en ? 'Failed to save; draft kept' : '保存失败，草稿已保留'
   } finally {
     input.password = ''
     saveBusy.value = false
@@ -229,6 +266,12 @@ export async function toggleFavorite(host: Host): Promise<void> {
       favorite: !host.favorite
     })
   } catch (error) {
-    notify(error instanceof Error ? error.message : '收藏保存失败')
+    notify(
+      error instanceof Error
+        ? error.message
+        : locale.value === 'en-US'
+          ? 'Failed to update favorite'
+          : '收藏保存失败'
+    )
   }
 }

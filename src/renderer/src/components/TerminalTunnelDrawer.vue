@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import { Play, Plus, Square, Trash2 } from '@lucide/vue'
 import { instanceClass } from '../../../shared/classes'
 import type { SyncTunnel } from '../../../shared/sync'
+import { locale, t } from '../services/i18n'
 import {
   checkPortOccupancy,
   hosts,
@@ -18,11 +19,14 @@ import {
 } from '../stores/workbench'
 import OrbitSelect from './OrbitSelect.vue'
 
-const quickFwdTypeOptions = [
-  { value: 'L', label: '-L 本地转发' },
-  { value: 'R', label: '-R 远端转发' },
-  { value: 'D', label: '-D SOCKS5' }
-]
+const quickFwdTypeOptions = computed(() => {
+  void locale.value
+  return [
+    { value: 'L', label: locale.value === 'en-US' ? '-L Local' : '-L 本地转发' },
+    { value: 'R', label: locale.value === 'en-US' ? '-R Remote' : '-R 远端转发' },
+    { value: 'D', label: '-D SOCKS5' }
+  ]
+})
 
 const props = defineProps<{
   token: string
@@ -62,7 +66,13 @@ async function runPaneConnectivityTest(): Promise<void> {
   const target = probeHostInput.value.trim() || paneHost.value?.address || '127.0.0.1'
   const port = Number(probePortInput.value) || paneHost.value?.port || 22
   const res = await probeConnectivity(target, port, `pane:${props.token}`)
-  notify(res.reachable ? `${target}:${port} 连通 (${res.latencyMs} ms)` : res.message)
+  notify(
+    res.reachable
+      ? locale.value === 'en-US'
+        ? `${target}:${port} reachable (${res.latencyMs} ms)`
+        : `${target}:${port} 连通 (${res.latencyMs} ms)`
+      : res.message
+  )
 }
 
 async function runPanePortCheck(): Promise<void> {
@@ -73,11 +83,11 @@ async function runPanePortCheck(): Promise<void> {
 async function createAndStartPaneTunnel(): Promise<void> {
   const sid = props.hostId ?? hosts.value[0]?.id
   if (!sid) {
-    notify('请先在主机库添加 SSH 服务器再创建端口转发')
+    notify(t('tunnelDrawer.needHostNotice'))
     return
   }
   await saveSyncTunnel({
-    name: `终端转发-${quickFwdType.value}-${quickFwdListenPort.value}`,
+    name: `${locale.value === 'en-US' ? 'Tunnel' : '终端转发'}-${quickFwdType.value}-${quickFwdListenPort.value}`,
     serverId: sid,
     groupId: null,
     type: quickFwdType.value,
@@ -94,12 +104,12 @@ async function createAndStartPaneTunnel(): Promise<void> {
 <template>
   <div :class="c('container_workspace_terminal_tunnel_drawer')">
     <div :class="c('container_workspace_terminal_tunnel_proberow')">
-      <span :class="c('container_workspace_terminal_tunnel_label')">连通/端口检测</span>
+      <span :class="c('container_workspace_terminal_tunnel_label')">{{ t('tunnelDrawer.label') }}</span>
       <input
         v-model="probeHostInput"
         :class="c('container_workspace_terminal_tunnel_probehost')"
         type="text"
-        placeholder="目标地址"
+        :placeholder="t('tunnelDrawer.targetPlaceholder')"
       />
       <input
         v-model.number="probePortInput"
@@ -113,14 +123,14 @@ async function createAndStartPaneTunnel(): Promise<void> {
         type="button"
         @click="runPaneConnectivityTest"
       >
-        测试连通
+        {{ t('tunnelDrawer.testConn') }}
       </button>
       <button
         :class="c('container_workspace_terminal_tunnel_checkport')"
         type="button"
         @click="runPanePortCheck"
       >
-        测本地端口 {{ quickFwdListenPort }}
+        {{ t('tunnelDrawer.checkPort', { port: quickFwdListenPort }) }}
       </button>
       <span v-if="probeResults[`pane:${token}`]" :class="c('container_workspace_terminal_tunnel_proberes')">
         {{ probeResults[`pane:${token}`]?.message }}
@@ -136,7 +146,7 @@ async function createAndStartPaneTunnel(): Promise<void> {
       <OrbitSelect
         :model-value="quickFwdType"
         :options="quickFwdTypeOptions"
-        aria-label="转发模式"
+        :aria-label="t('tunnelDrawer.modeAria')"
         size="sm"
         width="132px"
         :instance="`pane-fwd-${token}`"
@@ -148,14 +158,14 @@ async function createAndStartPaneTunnel(): Promise<void> {
         type="number"
         min="1"
         max="65535"
-        placeholder="本地端口"
+        :placeholder="t('tunnelDrawer.lportPlaceholder')"
       />
       <input
         v-if="quickFwdType !== 'D'"
         v-model="quickFwdDestHost"
         :class="c('container_workspace_terminal_tunnel_dhost')"
         type="text"
-        placeholder="目标地址"
+        :placeholder="t('tunnelDrawer.dhostPlaceholder')"
       />
       <input
         v-if="quickFwdType !== 'D'"
@@ -164,7 +174,7 @@ async function createAndStartPaneTunnel(): Promise<void> {
         type="number"
         min="1"
         max="65535"
-        placeholder="目标端口"
+        :placeholder="t('tunnelDrawer.dportPlaceholder')"
       />
       <button
         :class="c('container_workspace_terminal_tunnel_addbtn')"
@@ -173,51 +183,57 @@ async function createAndStartPaneTunnel(): Promise<void> {
         @click="createAndStartPaneTunnel"
       >
         <Plus :size="12" />
-        添加转发
+        {{ t('tunnelDrawer.addFwd') }}
       </button>
     </div>
     <div v-if="tunnels.length" :class="c('container_workspace_terminal_tunnel_list')">
-      <div v-for="t in tunnels" :key="t.id" :class="c('container_workspace_terminal_tunnel_item', t.id)">
-        <span :class="c('container_workspace_terminal_tunnel_badge', t.id)">-{{ t.type }}</span>
-        <span :class="c('container_workspace_terminal_tunnel_name', t.id)">
-          {{ t.name }}
+      <div
+        v-for="tItem in tunnels"
+        :key="tItem.id"
+        :class="c('container_workspace_terminal_tunnel_item', tItem.id)"
+      >
+        <span :class="c('container_workspace_terminal_tunnel_badge', tItem.id)">-{{ tItem.type }}</span>
+        <span :class="c('container_workspace_terminal_tunnel_name', tItem.id)">
+          {{ tItem.name }}
         </span>
-        <code :class="c('container_workspace_terminal_tunnel_route', t.id)">
-          {{ t.listenHost }}:{{ t.listenPort }} →
-          {{ t.type === 'D' ? 'SOCKS5' : `${t.destHost}:${t.destPort}` }}
+        <code :class="c('container_workspace_terminal_tunnel_route', tItem.id)">
+          {{ tItem.listenHost }}:{{ tItem.listenPort }} →
+          {{ tItem.type === 'D' ? 'SOCKS5' : `${tItem.destHost}:${tItem.destPort}` }}
         </code>
         <button
-          :class="c('container_workspace_terminal_tunnel_toggle', t.id)"
+          :class="c('container_workspace_terminal_tunnel_toggle', tItem.id)"
           type="button"
-          :data-primary="!tunnelStatuses[t.id]?.active"
-          :data-danger="Boolean(tunnelStatuses[t.id]?.active)"
-          :disabled="Boolean(tunnelBusy[t.id])"
-          @click="toggleTunnelRuntime(t.id, !tunnelStatuses[t.id]?.active)"
+          :data-primary="!tunnelStatuses[tItem.id]?.active"
+          :data-danger="Boolean(tunnelStatuses[tItem.id]?.active)"
+          :disabled="Boolean(tunnelBusy[tItem.id])"
+          @click="toggleTunnelRuntime(tItem.id, !tunnelStatuses[tItem.id]?.active)"
         >
-          <Square v-if="tunnelStatuses[t.id]?.active" :size="11" />
+          <Square v-if="tunnelStatuses[tItem.id]?.active" :size="11" />
           <Play v-else :size="11" />
-          {{ tunnelStatuses[t.id]?.active ? '停止' : '启动' }}
+          {{ tunnelStatuses[tItem.id]?.active ? t('tunnelDrawer.stop') : t('tunnelDrawer.start') }}
         </button>
         <button
-          :class="c('container_workspace_terminal_tunnel_portbtn', t.id)"
+          :class="c('container_workspace_terminal_tunnel_portbtn', tItem.id)"
           type="button"
           @click="
-            checkPortOccupancy(t.listenHost, t.listenPort, `pane:${token}`).then((r) => notify(r.message))
+            checkPortOccupancy(tItem.listenHost, tItem.listenPort, `pane:${token}`).then((r) =>
+              notify(r.message)
+            )
           "
         >
-          测端口
+          {{ t('tunnelDrawer.testPortShort') }}
         </button>
         <button
-          :class="c('container_workspace_terminal_tunnel_del', t.id)"
+          :class="c('container_workspace_terminal_tunnel_del', tItem.id)"
           type="button"
           data-danger="true"
-          :disabled="Boolean(tunnelBusy[t.id])"
-          :aria-label="`删除 ${t.name}`"
-          title="删除转发规则"
-          @click="removeSyncTunnel(t.id)"
+          :disabled="Boolean(tunnelBusy[tItem.id])"
+          :aria-label="t('tunnelDrawer.deleteAria', { name: tItem.name })"
+          :title="t('tunnelDrawer.deleteTitle')"
+          @click="removeSyncTunnel(tItem.id)"
         >
           <Trash2 :size="11" />
-          删除
+          {{ t('tunnelDrawer.delete') }}
         </button>
       </div>
     </div>

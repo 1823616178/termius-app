@@ -24,6 +24,8 @@ import {
   IPC,
   MAX_CLIPBOARD_BYTES,
   MAX_SESSIONS,
+  appLocaleSchema,
+  fontsListRequestSchema,
   hostInputSchema,
   idSchema,
   knownHostRemoveSchema,
@@ -43,6 +45,7 @@ import {
   sftpUploadSchema,
   trayPreferencesPatchSchema,
   tunnelToggleSchema,
+  type AppLocale,
   type Bootstrap,
   type EncryptionBackend,
   type Host,
@@ -72,6 +75,7 @@ import {
 } from '../shared/sync'
 import { DataClient } from './data-client'
 import { DiagnosticLog } from './diagnostics'
+import { discoverSystemFonts } from './fonts'
 import { authorizeSender, createIpcRegistrar, isTrustedRendererUrl } from './ipc-auth'
 import { discoverShells } from './shells'
 import { SyncService } from './sync-service'
@@ -117,6 +121,7 @@ let updateService: OrbitUpdateService | undefined
 let diagnostics: DiagnosticLog
 let profiles: ShellProfile[] = []
 let syncPhaseLabel = '本地工作区'
+let currentLocale: AppLocale = 'zh-CN'
 const workers = new Map<'local' | 'ssh', UtilityProcess>()
 const sessions = new Map<string, { owner: number; kind: 'local' | 'ssh'; host?: Host; pid?: number }>()
 const challenges = new Map<string, HostTrust>()
@@ -377,7 +382,7 @@ function registerSessionSecurity(): void {
       responseHeaders: {
         ...details.responseHeaders,
         'Content-Security-Policy': [
-          `default-src 'self'; script-src 'self'; ${styleSrc}; img-src 'self' data:; font-src 'self'; connect-src ${connect}; object-src 'none'; base-uri 'none'; frame-src 'none'`
+          `default-src 'self'; script-src 'self'; ${styleSrc}; img-src 'self' data:; font-src 'self' data:; connect-src ${connect}; object-src 'none'; base-uri 'none'; frame-src 'none'`
         ]
       }
     })
@@ -444,12 +449,15 @@ function registerIpc(): void {
       if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
         throw new Error('出于安全限制，仅允许在浏览器中打开 http/https 链接。')
       }
+      const en = currentLocale === 'en-US'
       const { response } = await dialog.showMessageBox(owner, {
         type: 'question',
-        title: '打开外部链接？',
-        message: '确认在系统默认浏览器中打开此终端链接？',
+        title: en ? 'Open External Link?' : '打开外部链接？',
+        message: en
+          ? 'Open this terminal link in your default system browser?'
+          : '确认在系统默认浏览器中打开此终端链接？',
         detail: parsed.href,
-        buttons: ['取消', '在浏览器中打开'],
+        buttons: en ? ['Cancel', 'Open in Browser'] : ['取消', '在浏览器中打开'],
         defaultId: 0,
         cancelId: 0,
         noLink: true
@@ -457,6 +465,13 @@ function registerIpc(): void {
       if (response === 1) await shell.openExternal(parsed.href)
     },
     { requireFocused: true }
+  )
+  ipc.handleSchema(IPC.localeSet, appLocaleSchema, (nextLocale) => {
+    currentLocale = nextLocale
+    trayManager?.setLocale(nextLocale)
+  })
+  ipc.handleSchema(IPC.fontsListSystem, fontsListRequestSchema, (refresh) =>
+    discoverSystemFonts(Boolean(refresh))
   )
   ipc.handle(IPC.bootstrap, async (owner) => {
     const [hosts, groups, tunnels, sync] = await Promise.all([
@@ -797,11 +812,14 @@ async function createWindow(): Promise<void> {
     const ownedCount = [...sessions.values()].filter((session) => session.owner === windowId).length
     const activeTunnels = tunnelRuntime?.getActiveCount() ?? 0
     if (ownedCount === 0 && activeTunnels === 0) return
+    const en = currentLocale === 'en-US'
     const response = dialog.showMessageBoxSync(win, {
       type: 'question',
-      title: '结束活动会话与转发？',
-      message: `退出将结束 ${ownedCount} 个终端会话与 ${activeTunnels} 条活动端口转发。`,
-      buttons: ['取消', '最小化到后台托盘', '结束并退出'],
+      title: en ? 'Close Active Sessions & Tunnels?' : '结束活动会话与转发？',
+      message: en
+        ? `Quitting will close ${ownedCount} active terminal session(s) and ${activeTunnels} active port forwarding tunnel(s).`
+        : `退出将结束 ${ownedCount} 个终端会话与 ${activeTunnels} 条活动端口转发。`,
+      buttons: en ? ['Cancel', 'Minimize to Tray', 'End & Quit'] : ['取消', '最小化到后台托盘', '结束并退出'],
       defaultId: 1,
       cancelId: 0,
       noLink: true
@@ -879,18 +897,23 @@ else {
           const win = [...windows.values()][0]
           const activeSessions = sessions.size
           const activeTunnels = tunnelRuntime?.getActiveCount() ?? 0
+          const en = currentLocale === 'en-US'
           const extra =
             activeSessions > 0 || activeTunnels > 0
-              ? `\n当前仍有 ${activeSessions} 个终端会话与 ${activeTunnels} 条活动转发将在安装前关闭。`
+              ? en
+                ? `\n${activeSessions} terminal session(s) and ${activeTunnels} active tunnel(s) will be closed before installing.`
+                : `\n当前仍有 ${activeSessions} 个终端会话与 ${activeTunnels} 条活动转发将在安装前关闭。`
               : ''
-          const detail = `安装程序启动后，Graphite Orbit 将自动退出以完成文件更新。${extra}`
+          const detail = en
+            ? `Graphite Orbit will exit automatically once the installer starts to finish updating.${extra}`
+            : `安装程序启动后，Graphite Orbit 将自动退出以完成文件更新。${extra}`
           const result = win
             ? await dialog.showMessageBox(win, {
                 type: 'question',
-                title: '退出并启动更新安装程序？',
-                message: '已准备好安装新版本',
+                title: en ? 'Quit & Launch Installer?' : '退出并启动更新安装程序？',
+                message: en ? 'Ready to Install Update' : '已准备好安装新版本',
                 detail,
-                buttons: ['暂不安装', '退出并安装'],
+                buttons: en ? ['Not Now', 'Quit & Install'] : ['暂不安装', '退出并安装'],
                 defaultId: 1,
                 cancelId: 0,
                 noLink: true
@@ -927,12 +950,15 @@ else {
           if (activeSessions > 0 || activeTunnels > 0) {
             const win = [...windows.values()][0]
             if (win) trayManager?.restoreFromTray(win)
+            const en = currentLocale === 'en-US'
             const response = win
               ? dialog.showMessageBoxSync(win, {
                   type: 'question',
-                  title: '退出 Graphite Orbit？',
-                  message: `后台仍有 ${activeSessions} 个终端会话与 ${activeTunnels} 条活动端口转发，确认全部结束并退出吗？`,
-                  buttons: ['继续后台运行', '全部结束并退出'],
+                  title: en ? 'Quit Graphite Orbit?' : '退出 Graphite Orbit？',
+                  message: en
+                    ? `There are still ${activeSessions} terminal session(s) and ${activeTunnels} active tunnel(s) running in the background. Close all and quit?`
+                    : `后台仍有 ${activeSessions} 个终端会话与 ${activeTunnels} 条活动端口转发，确认全部结束并退出吗？`,
+                  buttons: en ? ['Keep Running', 'Close All & Quit'] : ['继续后台运行', '全部结束并退出'],
                   defaultId: 0,
                   cancelId: 0,
                   noLink: true

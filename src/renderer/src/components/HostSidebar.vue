@@ -16,6 +16,7 @@ import {
 import { instanceClass } from '../../../shared/classes'
 import type { Host } from '../../../shared/contracts'
 import OrbitSelect from './OrbitSelect.vue'
+import { locale, t } from '../services/i18n'
 import { recentHostIds } from '../services/host-recency'
 import {
   bootstrap,
@@ -36,10 +37,13 @@ import {
   windowInstance
 } from '../stores/workbench'
 
-const groupFilterOptions = computed(() => [
-  { value: 'all', label: '所有分组' },
-  ...groups.value.map((item) => ({ value: item, label: item }))
-])
+const groupFilterOptions = computed(() => {
+  void locale.value
+  return [
+    { value: 'all', label: t('sidebar.allGroups') },
+    ...groups.value.map((item) => ({ value: item, label: item }))
+  ]
+})
 
 const searchInput = ref<HTMLInputElement>()
 const listRef = ref<HTMLElement>()
@@ -142,8 +146,8 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
     <button
       class="container_hosts_collapsed_rail_expand"
       type="button"
-      aria-label="展开连接侧栏"
-      title="展开连接侧栏"
+      :aria-label="t('sidebar.expand')"
+      :title="t('sidebar.expand')"
       @click="sidebarCollapsed = false"
     >
       <PanelLeftOpen :size="16" />
@@ -151,13 +155,13 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
   </div>
   <aside v-else class="container_hosts_sidebar_body_base" :style="{ width: `${sidebarWidth}px` }">
     <header class="container_hosts_sidebar_header_base">
-      <h1 class="container_hosts_sidebar_header_title">连接</h1>
+      <h1 class="container_hosts_sidebar_header_title">{{ t('sidebar.title') }}</h1>
       <div class="container_hosts_sidebar_header_actions">
         <button
           class="container_hosts_sidebar_header_add"
           type="button"
-          aria-label="新建主机"
-          title="新建主机"
+          :aria-label="t('sidebar.newHost')"
+          :title="t('sidebar.newHost')"
           :disabled="!bootstrap"
           @click="openEditor()"
         >
@@ -166,8 +170,8 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
         <button
           class="container_hosts_sidebar_header_collapse"
           type="button"
-          aria-label="收起连接侧栏"
-          title="收起连接侧栏"
+          :aria-label="t('sidebar.collapse')"
+          :title="t('sidebar.collapse')"
           @click="sidebarCollapsed = true"
         >
           <PanelLeftClose :size="16" />
@@ -180,8 +184,8 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
         ref="searchInput"
         v-model="query"
         class="container_hosts_search_body_input"
-        aria-label="搜索主机"
-        placeholder="搜索主机…"
+        :aria-label="t('sidebar.searchLabel')"
+        :placeholder="t('sidebar.searchPlaceholder')"
       />
       <span class="container_hosts_search_body_shortcut">Ctrl+K</span>
     </label>
@@ -192,14 +196,14 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
         :aria-pressed="!favorites"
         @click="favorites = false"
       >
-        全部主机
+        {{ t('sidebar.allHosts') }}
         <span class="container_hosts_filter_toolbar_count">{{ hosts.length }}</span>
       </button>
       <button
         class="container_hosts_filter_toolbar_favorite"
         type="button"
         :aria-pressed="favorites"
-        aria-label="仅显示收藏主机"
+        :aria-label="t('sidebar.favoritesOnly')"
         @click="favorites = !favorites"
       >
         <Star :size="13" />
@@ -209,7 +213,7 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
       <OrbitSelect
         v-model="group"
         :options="groupFilterOptions"
-        aria-label="按分组筛选"
+        :aria-label="t('sidebar.filterGroupAria')"
         size="md"
         block
         instance="sidebar-group"
@@ -230,7 +234,7 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
         <button
           :class="c('container_hosts_list_row_select', host.id)"
           type="button"
-          :aria-label="`选择主机 ${host.name}`"
+          :aria-label="t('sidebar.selectHostAria', { name: host.name })"
           @click="handleHostRowClick(host)"
           @dblclick="handleHostRowDoubleClick(host)"
           @keydown.enter.prevent="connectHost(host)"
@@ -249,8 +253,8 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
         <button
           :class="c('container_hosts_list_row_connect', host.id)"
           type="button"
-          :aria-label="`连接 ${host.name}`"
-          title="新建 SSH 会话"
+          :aria-label="t('sidebar.connectHostAria', { name: host.name })"
+          :title="t('sidebar.newSshSession')"
           @click="connectHost(host)"
         >
           <ArrowUpRight :size="15" />
@@ -262,7 +266,7 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
         :style="{ height: `${visibleRange.bottomPad}px` }"
       />
       <p v-if="!filteredHosts.length" class="container_hosts_list_body_empty">
-        {{ query || favorites || group !== 'all' ? '没有符合条件的主机' : '还没有主机，从新建连接开始。' }}
+        {{ query || favorites || group !== 'all' ? t('sidebar.emptyFiltered') : t('sidebar.emptyAll') }}
       </p>
     </div>
     <section class="container_local_shells_sidebar_base">
@@ -274,7 +278,7 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
       >
         <ChevronDown v-if="shellsExpanded" :size="13" />
         <ChevronRight v-else :size="13" />
-        <span class="container_local_shells_header_title">本地终端</span>
+        <span class="container_local_shells_header_title">{{ t('sidebar.localTerminals') }}</span>
         <span class="container_local_shells_header_count">{{ bootstrap?.shells.length ?? 0 }}</span>
       </button>
       <div v-show="shellsExpanded" class="container_local_shells_body_list">
@@ -290,19 +294,19 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
           <Plus :size="13" />
         </button>
         <p v-if="bootstrap && !bootstrap.shells.length" class="container_local_shells_body_empty">
-          未发现可用 Shell
+          {{ t('sidebar.noShells') }}
         </p>
       </div>
     </section>
     <footer class="container_hosts_sidebar_footer_base">
       <ShieldCheck :size="13" />
-      <span class="container_hosts_sidebar_footer_text">本地优先 · 配置保存在此设备</span>
+      <span class="container_hosts_sidebar_footer_text">{{ t('sidebar.footerLocal') }}</span>
     </footer>
     <div
       class="container_hosts_sidebar_resize_handle"
       role="slider"
       tabindex="0"
-      aria-label="调整连接侧栏宽度"
+      :aria-label="t('sidebar.resizeAria')"
       :aria-valuenow="sidebarWidth"
       aria-valuemin="200"
       aria-valuemax="360"
@@ -359,8 +363,10 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
 }
 .container_hosts_sidebar_header_title {
   margin: 0;
-  font-size: 15px;
-  font-weight: 600;
+  font-family: var(--font-display);
+  font-size: var(--font-size-ui-lg);
+  font-weight: var(--font-ui-heading-weight);
+  color: var(--color-text-heading);
 }
 .container_hosts_sidebar_header_actions {
   display: flex;
@@ -395,7 +401,7 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
   border: 0;
   padding: 7px 0;
   background: transparent;
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
   outline: 0 none;
   &:focus,
   &:focus-visible {
@@ -405,7 +411,7 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
 }
 .container_hosts_search_body_shortcut {
   flex-shrink: 0;
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
   color: var(--color-text-muted);
 }
 .container_hosts_filter_toolbar_base {
@@ -415,7 +421,7 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
 }
 .container_hosts_filter_toolbar_all {
   margin-right: auto;
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
   padding: 4px 6px;
   &[aria-pressed='true'] {
     color: var(--color-text-primary);
@@ -424,7 +430,7 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
 .container_hosts_filter_toolbar_count {
   margin-left: 4px;
   color: var(--color-text-muted);
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
 }
 .container_hosts_filter_toolbar_favorite {
   padding: 4px;
@@ -477,7 +483,7 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
   gap: 2px;
 }
 .container_hosts_list_row_name {
-  font-size: 13px;
+  font-size: var(--font-size-ui-sm);
   color: var(--color-text-primary);
   font-weight: 500;
   overflow: hidden;
@@ -485,7 +491,7 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
   white-space: nowrap;
 }
 .container_hosts_list_row_address {
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
   color: var(--color-text-muted);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -504,7 +510,7 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
 .container_hosts_list_body_empty {
   padding: 16px 13px;
   margin: 0;
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
   line-height: 1.8;
   color: var(--color-text-muted);
   text-align: center;
@@ -516,12 +522,12 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
 .container_local_shells_header_toggle {
   width: 100%;
   padding: 4px 1px 8px;
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
   justify-content: flex-start;
 }
 .container_local_shells_header_count {
   margin-left: auto;
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
   color: var(--color-text-muted);
 }
 .container_local_shells_body_list {
@@ -532,7 +538,7 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
   width: 100%;
   justify-content: flex-start;
   padding: 7px;
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
   gap: 10px;
 }
 .container_local_shells_row_name {
@@ -542,7 +548,7 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
   white-space: nowrap;
 }
 .container_local_shells_body_empty {
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
   color: var(--color-text-muted);
 }
 .container_hosts_sidebar_footer_base {
@@ -553,6 +559,6 @@ onBeforeUnmount(() => clearTimeout(clickTimer))
   padding: 10px 6px;
   border-top: 1px solid var(--color-border);
   color: var(--color-text-muted);
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
 }
 </style>

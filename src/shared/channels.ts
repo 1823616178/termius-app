@@ -73,5 +73,7 @@ export const IPC = {
   sftpPickDownloadFile: 'orbit:sftp-pick-download-file',
   sftpExpandLocalUploads: 'orbit:sftp-expand-local-uploads',
   sftpRevealLocal: 'orbit:sftp-reveal-local',
-  sftpProgress: 'orbit:sftp-progress'
+  sftpProgress: 'orbit:sftp-progress',
+  fontsListSystem: 'orbit:fonts-list-system',
+  localeSet: 'orbit:locale-set'
 } as const

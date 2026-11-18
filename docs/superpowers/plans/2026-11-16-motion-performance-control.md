@@ -15,6 +15,7 @@
 ### Task 1: 可测试的动效性能判定
 
 **Files:**
+
 - Create: `src/renderer/src/services/motion-performance.ts`
 - Test: `tests/unit/motion-performance.test.ts`
 
@@ -22,7 +23,11 @@
 
 ```ts
 import { describe, expect, it } from 'vitest'
-import { assessMotionCapability, resolveMotionPreference, sampleMotionFrame } from '../../src/renderer/src/services/motion-performance'
+import {
+  assessMotionCapability,
+  resolveMotionPreference,
+  sampleMotionFrame
+} from '../../src/renderer/src/services/motion-performance'
 
 it.each([
   [{ webgl2Supported: true, hardwareConcurrency: 16, deviceMemory: 16 }, 'full'],
@@ -170,6 +175,7 @@ Expected: 全部通过，包括未知硬件参数不惩罚、软件显卡变体�
 ### Task 2: 统一偏好、能力检测和帧率反馈
 
 **Files:**
+
 - Modify: `src/renderer/src/stores/workbench.ts:1-42,109-121,328-423,dispose`
 - Modify: `src/renderer/src/App.vue:21-55,123-131`
 - Test: `tests/e2e/workbench.spec.ts:181-297`
@@ -226,6 +232,7 @@ Expected: 新偏好和实际档位类型区分正确，无隐式 DOM 扩展类�
 ### Task 3: 首页采样、资源释放与强制覆盖 CSS
 
 **Files:**
+
 - Modify: `src/renderer/src/components/OrbitStage3D.vue`
 - Modify: `src/renderer/src/components/BorderFlyingSword.vue`
 - Modify: `src/renderer/src/pages/WorkspacePage.vue`
@@ -277,6 +284,7 @@ Expected: 全部通过，页面无 pageerror。
 ### Task 4: 设置页、文档和端到端验收
 
 **Files:**
+
 - Modify: `src/renderer/src/pages/SettingsPage.vue:18-48,104-108,304-322,797-815`
 - Modify: `doc/03-UI-DESIGN-SYSTEM.md:234-246`
 - Modify: `doc/02-FUNCTIONAL-SPEC.md:169`

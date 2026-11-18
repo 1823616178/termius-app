@@ -22,6 +22,7 @@ import {
 } from '../../../shared/sync'
 import SyncConflictSection from '../components/SyncConflictSection.vue'
 import SyncManageSection from '../components/SyncManageSection.vue'
+import { locale, t } from '../services/i18n'
 import {
   bootstrap,
   hosts,
@@ -65,15 +66,17 @@ const manageLoading = ref(false)
 
 const phaseText = computed(() => {
   const phase = syncStatus.value?.phase
-  if (phase === 'synced') return '已同步'
-  if (phase === 'syncing') return '同步中'
-  if (phase === 'conflict') return '需要解决冲突'
-  if (phase === 'vault-locked') return syncStatus.value?.vaultConfigured ? '保管库已锁定' : '待创建保管库'
-  if (phase === 'offline') return '离线模式'
-  if (phase === 'read-only-schema') return '高版本只读保护'
-  if (phase === 'signed-out') return '未登录'
-  if (phase === 'error') return '同步异常'
-  return '未配置同步'
+  if (phase === 'synced') return t('sync.phase.synced')
+  if (phase === 'syncing') return t('sync.phase.syncing')
+  if (phase === 'conflict') return t('sync.phase.conflict')
+  if (phase === 'vault-locked') {
+    return syncStatus.value?.vaultConfigured ? t('sync.phase.vaultLocked') : t('sync.phase.vaultUnconfigured')
+  }
+  if (phase === 'offline') return t('sync.phase.offline')
+  if (phase === 'read-only-schema') return t('sync.phase.readOnly')
+  if (phase === 'signed-out') return t('sync.phase.signedOut')
+  if (phase === 'error') return t('sync.phase.error')
+  return t('sync.phase.unconfigured')
 })
 
 const insecureHttpWarning = computed(() => isInsecureHttpSyncUrl(serverUrl.value))
@@ -136,7 +139,8 @@ onMounted(() => {
 })
 
 function formatIpcError(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error ?? '操作失败')
+  const en = locale.value === 'en-US'
+  const raw = error instanceof Error ? error.message : String(error ?? (en ? 'Operation failed' : '操作失败'))
   const stripped = raw.replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '').trim()
   if (stripped.startsWith('[')) {
     try {
@@ -144,12 +148,12 @@ function formatIpcError(error: unknown): string {
       const messages = issues
         .map((item) => (typeof item?.message === 'string' ? item.message : ''))
         .filter(Boolean)
-      if (messages.length > 0) return messages.join('；')
+      if (messages.length > 0) return messages.join(en ? '; ' : '；')
     } catch {
       /* Fallback to stripped text */
     }
   }
-  return stripped || '操作失败'
+  return stripped || (en ? 'Operation failed' : '操作失败')
 }
 
 async function runAction(fn: () => Promise<void>) {
@@ -166,6 +170,7 @@ async function runAction(fn: () => Promise<void>) {
 }
 
 async function handleAuthSubmit() {
+  const en = locale.value === 'en-US'
   await runAction(async () => {
     const basePayload = {
       serverUrl: serverUrl.value,
@@ -185,49 +190,61 @@ async function handleAuthSubmit() {
     syncStatus.value = next
     authPassword.value = ''
     inviteCode.value = ''
-    notify(authMode.value === 'register' ? '已注册并登录同步账号' : '已登录同步账号')
+    notify(
+      authMode.value === 'register'
+        ? en
+          ? 'Registered and signed in to sync account'
+          : '已注册并登录同步账号'
+        : en
+          ? 'Signed in to sync account'
+          : '已登录同步账号'
+    )
     await loadManageData()
   })
 }
 
 async function handleLogout() {
+  const en = locale.value === 'en-US'
   await runAction(async () => {
     syncStatus.value = await window.orbit.sync.logout()
     devices.value = []
     revisions.value = []
     pendingRecoveryKey.value = ''
     rotateConfirmVisible.value = false
-    notify('已退出登录，本机加密配置仍保留')
+    notify(en ? 'Signed out (local encrypted config retained)' : '已退出登录，本机加密配置仍保留')
     await loadFormDefaults()
   })
 }
 
 async function handleCreateVault() {
+  const en = locale.value === 'en-US'
   await runAction(async () => {
     if (masterPassword.value !== confirmMasterPassword.value) {
-      throw new Error('两次输入的主密码不一致')
+      throw new Error(en ? 'Master passwords do not match' : '两次输入的主密码不一致')
     }
     const result = await window.orbit.sync.createVault({ masterPassword: masterPassword.value })
     syncStatus.value = result.status
     pendingRecoveryKey.value = result.recoveryKey
     masterPassword.value = ''
     confirmMasterPassword.value = ''
-    notify('端到端加密保管库已创建并完成初次同步')
+    notify(en ? 'Encrypted vault created and initial sync completed' : '端到端加密保管库已创建并完成初次同步')
     await loadManageData()
   })
 }
 
 async function handleUnlockVault() {
+  const en = locale.value === 'en-US'
   await runAction(async () => {
     const status = await window.orbit.sync.unlockVault({ masterPassword: masterPassword.value })
     syncStatus.value = status
     masterPassword.value = ''
-    notify('保管库已解锁')
+    notify(en ? 'Vault unlocked' : '保管库已解锁')
     await loadManageData()
   })
 }
 
 async function handleRecoverVault() {
+  const en = locale.value === 'en-US'
   await runAction(async () => {
     const payload = resetMasterPassword.value
       ? {
@@ -241,31 +258,34 @@ async function handleRecoverVault() {
     recoveryKeyInput.value = ''
     resetMasterPassword.value = ''
     recoverAccountPassword.value = ''
-    notify('已通过恢复密钥解锁保管库')
+    notify(en ? 'Vault unlocked via recovery key' : '已通过恢复密钥解锁保管库')
     await loadManageData()
   })
 }
 
 async function handleLockVault() {
+  const en = locale.value === 'en-US'
   await runAction(async () => {
     syncStatus.value = await window.orbit.sync.lockVault()
     rotateConfirmVisible.value = false
-    notify('已立即锁定保管库并清除内存密钥')
+    notify(en ? 'Vault locked and memory keys cleared' : '已立即锁定保管库并清除内存密钥')
   })
 }
 
 async function handleSyncNow() {
+  const en = locale.value === 'en-US'
   await runAction(async () => {
     syncStatus.value = await window.orbit.sync.syncNow()
-    notify('远程同步完成')
+    notify(en ? 'Remote sync completed' : '远程同步完成')
     await loadManageData()
   })
 }
 
 async function handleResolveConflicts(resolutions: SyncConflictResolutionItem[]) {
+  const en = locale.value === 'en-US'
   await runAction(async () => {
     syncStatus.value = await window.orbit.sync.resolveConflicts(resolutions)
-    notify('冲突已解决并完成同步')
+    notify(en ? 'Conflicts resolved and synced' : '冲突已解决并完成同步')
     await loadManageData()
   })
 }
@@ -296,7 +316,11 @@ async function handleTogglePasswordSync() {
     await runAction(async () => {
       const res = await window.orbit.sync.updatePreferences({ syncPasswords: true })
       syncStatus.value = res.status
-      notify('已开启密码加密同步并推送当前主机密码')
+      notify(
+        locale.value === 'en-US'
+          ? 'Enabled E2EE password sync and uploaded current host passwords'
+          : '已开启密码加密同步并推送当前主机密码'
+      )
     })
   } else {
     rotateConfirmVisible.value = !rotateConfirmVisible.value
@@ -304,6 +328,7 @@ async function handleTogglePasswordSync() {
 }
 
 async function handleConfirmDisablePasswordSync() {
+  const en = locale.value === 'en-US'
   await runAction(async () => {
     const res = await window.orbit.sync.updatePreferences({
       syncPasswords: false,
@@ -317,18 +342,25 @@ async function handleConfirmDisablePasswordSync() {
     if (res.rotatedRecoveryKey) {
       pendingRecoveryKey.value = res.rotatedRecoveryKey
     }
-    notify('已关闭密码同步、轮换保管库密钥并上传剥离密码后的文档')
+    notify(
+      en
+        ? 'Disabled password sync, rotated vault key, and uploaded clean document'
+        : '已关闭密码同步、轮换保管库密钥并上传剥离密码后的文档'
+    )
     await loadManageData()
   })
 }
 
 async function copyRecoveryKey() {
   if (!pendingRecoveryKey.value) return
+  const en = locale.value === 'en-US'
   try {
     await window.orbit.clipboard.writeText(pendingRecoveryKey.value)
-    notify('已复制恢复密钥到剪贴板，请离线保存')
+    notify(
+      en ? 'Recovery key copied to clipboard; keep it safe offline' : '已复制恢复密钥到剪贴板，请离线保存'
+    )
   } catch (error) {
-    actionError.value = error instanceof Error ? error.message : '复制失败'
+    actionError.value = error instanceof Error ? error.message : en ? 'Copy failed' : '复制失败'
   }
 }
 
@@ -350,14 +382,18 @@ async function loadManageData() {
 async function handleRevokeDevice(deviceId: string) {
   await runAction(async () => {
     devices.value = await window.orbit.sync.revokeDevice(deviceId)
-    notify('已吊销目标设备会话')
+    notify(locale.value === 'en-US' ? 'Device session revoked' : '已吊销目标设备会话')
   })
 }
 
 async function handleRestoreRevision(revision: string) {
   await runAction(async () => {
     syncStatus.value = await window.orbit.sync.restoreRevision(revision)
-    notify(`已回滚并生成新同步版本（源自 rev-${revision}）`)
+    notify(
+      locale.value === 'en-US'
+        ? `Restored revision from rev-${revision}`
+        : `已回滚并生成新同步版本（源自 rev-${revision}）`
+    )
     await loadManageData()
   })
 }
@@ -367,23 +403,25 @@ async function handleRestoreRevision(revision: string) {
   <section v-if="page === 'sync'" class="container_sync_page_body_base">
     <header class="container_sync_page_header_base">
       <div class="container_sync_page_header_info">
-        <span class="container_sync_page_header_eyebrow">万里传书 · 玄密归真</span>
+        <span class="container_sync_page_header_eyebrow">{{ t('sync.eyebrow') }}</span>
         <h2 class="container_sync_page_header_title">
-          端到端加密远程同步
+          {{ t('sync.title') }}
           <span class="container_sync_page_header_badge" :data-phase="syncStatus?.phase ?? 'unconfigured'">
             {{ phaseText }}
           </span>
         </h2>
         <p class="container_sync_page_header_description">
           <template v-if="syncStatus?.lastSyncAt">
-            最近同步：{{ new Date(syncStatus.lastSyncAt).toLocaleString() }} · 版本 rev-{{
-              syncStatus.lastRevision ?? '0'
+            {{
+              t('sync.lastSyncMeta', {
+                time: new Date(syncStatus.lastSyncAt).toLocaleString(locale),
+                rev: syncStatus.lastRevision ?? '0'
+              })
             }}
-            <template v-if="syncStatus.pendingChanges">· 有待上传本地变更</template>
+            <template v-if="syncStatus.pendingChanges">{{ t('sync.pendingMeta') }}</template>
           </template>
           <template v-else>
-            本地优先，可离线使用；连接同步服务器并解锁保管库后自动使用 Argon2id + AES-256-GCM
-            同步主机与隧道规则。
+            {{ t('sync.defaultDesc') }}
           </template>
         </p>
       </div>
@@ -397,7 +435,7 @@ async function handleRestoreRevision(revision: string) {
           @click="handleSyncNow"
         >
           <RefreshCw :size="15" />
-          {{ syncStatus.phase === 'syncing' ? '同步中…' : '立即同步' }}
+          {{ syncStatus.phase === 'syncing' ? t('status.syncing') : t('sync.syncNow') }}
         </button>
       </div>
     </header>
@@ -410,28 +448,26 @@ async function handleRestoreRevision(revision: string) {
     <div v-if="syncStatus?.readOnlyRemoteSchema" class="container_sync_alert_body_readonly" role="status">
       <AlertTriangle :size="16" />
       <span class="container_sync_alert_body_readonly-text">
-        远端文档版本（schemaVersion={{
-          syncStatus.remoteSchemaVersion
-        }}）高于当前桌面客户端支持版本，已自动锁定写入以免丢失新版字段。请升级应用后再上传更改。
+        {{ t('sync.readonlyBanner', { version: syncStatus.remoteSchemaVersion ?? '' }) }}
       </span>
     </div>
 
     <div v-if="pendingRecoveryKey" class="container_sync_recovery_body_banner" role="status">
       <div class="container_sync_recovery_body_head">
         <KeyRound :size="17" />
-        <strong class="container_sync_recovery_body_title">一次性 SPM1 恢复密钥（关闭后不再显示）</strong>
+        <strong class="container_sync_recovery_body_title">{{ t('sync.recoveryTitle') }}</strong>
       </div>
       <p class="container_sync_recovery_body_hint">
-        如忘记主密码，可使用下方恢复密钥解封 Vault Key。请复制并存放在安全位置，切勿泄露给他人。
+        {{ t('sync.recoveryHint') }}
       </p>
       <div class="container_sync_recovery_body_code-row">
         <code class="container_sync_recovery_body_code">{{ pendingRecoveryKey }}</code>
         <button class="container_sync_recovery_body_copy" type="button" @click="copyRecoveryKey">
           <Copy :size="14" />
-          复制恢复密钥
+          {{ t('sync.copyRecoveryKey') }}
         </button>
         <button class="container_sync_recovery_body_dismiss" type="button" @click="pendingRecoveryKey = ''">
-          我已保存，关闭
+          {{ t('sync.dismissRecoveryKey') }}
         </button>
       </div>
     </div>
@@ -447,7 +483,7 @@ async function handleRestoreRevision(revision: string) {
       <section class="container_sync_account_body_card">
         <div class="container_sync_account_header_base">
           <Cloud :size="18" />
-          <h3 class="container_sync_account_header_title">同步服务器与账号</h3>
+          <h3 class="container_sync_account_header_title">{{ t('sync.accountCardTitle') }}</h3>
         </div>
 
         <template v-if="!syncStatus?.signedIn">
@@ -458,7 +494,7 @@ async function handleRestoreRevision(revision: string) {
               :data-active="authMode === 'login' ? 'true' : 'false'"
               @click="authMode = 'login'"
             >
-              登录已有账号
+              {{ t('sync.tabLogin') }}
             </button>
             <button
               class="container_sync_account_body_tab-register"
@@ -466,12 +502,12 @@ async function handleRestoreRevision(revision: string) {
               :data-active="authMode === 'register' ? 'true' : 'false'"
               @click="authMode = 'register'"
             >
-              注册新账号
+              {{ t('sync.tabRegister') }}
             </button>
           </div>
           <form class="container_sync_account_body_form" @submit.prevent="handleAuthSubmit">
             <label class="container_sync_account_body_url-label">
-              同步服务地址（默认要求 HTTPS；仅本机回环地址可直接 HTTP）
+              {{ t('sync.serverUrlLabel') }}
               <input
                 v-model="serverUrl"
                 class="container_sync_account_body_url-input"
@@ -484,12 +520,11 @@ async function handleRestoreRevision(revision: string) {
               <div class="container_sync_account_body_http-warn-head">
                 <AlertTriangle :size="15" />
                 <strong class="container_sync_account_body_http-warn-title">
-                  检测到非本机明文 HTTP 同步地址
+                  {{ t('sync.httpWarnTitle') }}
                 </strong>
               </div>
               <p class="container_sync_account_body_http-warn-desc">
-                主机库与凭据仍会先在本地端到端加密，但同步账号密码与刷新令牌会通过 HTTP
-                明文传输。仅建议在受信任的内网或 VPN 环境使用。
+                {{ t('sync.httpWarnDesc') }}
               </p>
               <label class="container_sync_account_body_insecure-label">
                 <input
@@ -497,11 +532,11 @@ async function handleRestoreRevision(revision: string) {
                   class="container_sync_account_body_insecure-check"
                   type="checkbox"
                 />
-                我已知晓明文传输账号与令牌的风险，仍允许连接此 HTTP 服务
+                {{ t('sync.allowHttpLabel') }}
               </label>
             </div>
             <label class="container_sync_account_body_email-label">
-              账号邮箱
+              {{ t('sync.emailLabel') }}
               <input
                 v-model="email"
                 class="container_sync_account_body_email-input"
@@ -511,11 +546,7 @@ async function handleRestoreRevision(revision: string) {
               />
             </label>
             <label class="container_sync_account_body_password-label">
-              {{
-                authMode === 'register'
-                  ? '账号密码（至少 10 位，仅用于服务端认证）'
-                  : '账号密码（仅用于服务端认证，不用于数据加密）'
-              }}
+              {{ authMode === 'register' ? t('sync.pwRegisterLabel') : t('sync.pwLoginLabel') }}
               <input
                 v-model="authPassword"
                 class="container_sync_account_body_password-input"
@@ -525,14 +556,14 @@ async function handleRestoreRevision(revision: string) {
               />
             </label>
             <label v-if="authMode === 'register'" class="container_sync_account_body_invite-label">
-              注册邀请码（如服务端启用邀请制则必填）
+              {{ t('sync.inviteLabel') }}
               <input
                 v-model="inviteCode"
                 class="container_sync_account_body_invite-input"
                 type="text"
                 minlength="8"
                 maxlength="64"
-                placeholder="选填，至少 8 位"
+                :placeholder="t('sync.invitePlaceholder')"
               />
             </label>
             <label class="container_sync_account_body_remember-label">
@@ -541,7 +572,7 @@ async function handleRestoreRevision(revision: string) {
                 class="container_sync_account_body_remember-check"
                 type="checkbox"
               />
-              记住邮箱（非敏感标识）
+              {{ t('sync.rememberEmail') }}
             </label>
             <label class="container_sync_account_body_keep-label">
               <input
@@ -550,14 +581,16 @@ async function handleRestoreRevision(revision: string) {
                 type="checkbox"
                 :disabled="!encryptionAvailable"
               />
-              {{
-                encryptionAvailable
-                  ? '保持登录状态（刷新令牌通过系统凭据保护加密保存）'
-                  : '保持登录状态不可用（未检测到系统 Keyring / 凭据保护）'
-              }}
+              {{ encryptionAvailable ? t('sync.keepSignedInAvail') : t('sync.keepSignedInUnavail') }}
             </label>
             <button class="container_sync_account_body_submit" type="submit" data-primary :disabled="busy">
-              {{ busy ? '连接中…' : authMode === 'register' ? '注册并连接' : '登录并连接' }}
+              {{
+                busy
+                  ? t('sync.connecting')
+                  : authMode === 'register'
+                    ? t('sync.registerAndConnect')
+                    : t('sync.loginAndConnect')
+              }}
             </button>
           </form>
         </template>
@@ -566,15 +599,15 @@ async function handleRestoreRevision(revision: string) {
           <div v-if="signedInInsecureHttp" class="container_sync_account_body_http-active" role="status">
             <AlertTriangle :size="15" />
             <span class="container_sync_account_body_http-active-text">
-              当前同步连接使用明文 HTTP 协议（已手动确认风险），账号认证令牌未受传输层加密保护。
+              {{ t('sync.activeHttpWarn') }}
             </span>
           </div>
           <dl class="container_sync_account_body_meta">
-            <dt class="container_sync_account_body_meta-url-label">服务器</dt>
+            <dt class="container_sync_account_body_meta-url-label">{{ t('sync.metaServer') }}</dt>
             <dd class="container_sync_account_body_meta-url">{{ syncStatus.serverUrl }}</dd>
-            <dt class="container_sync_account_body_meta-email-label">账号邮箱</dt>
+            <dt class="container_sync_account_body_meta-email-label">{{ t('sync.metaEmail') }}</dt>
             <dd class="container_sync_account_body_meta-email">{{ syncStatus.email }}</dd>
-            <dt class="container_sync_account_body_meta-device-label">当前设备</dt>
+            <dt class="container_sync_account_body_meta-device-label">{{ t('sync.metaDevice') }}</dt>
             <dd class="container_sync_account_body_meta-device">
               {{ syncStatus.deviceName }} ({{ syncStatus.deviceId.slice(0, 8) }})
             </dd>
@@ -588,7 +621,7 @@ async function handleRestoreRevision(revision: string) {
                 :disabled="busy"
                 @change="handleToggleAutoSync"
               />
-              启用 3 秒防抖自动同步
+              {{ t('sync.autoSyncLabel') }}
             </label>
             <label class="container_sync_account_body_persist-label">
               <input
@@ -598,21 +631,17 @@ async function handleRestoreRevision(revision: string) {
                 :disabled="busy || !encryptionAvailable"
                 @change="handleToggleKeepSignedIn"
               />
-              {{
-                encryptionAvailable
-                  ? '保持登录状态（刷新令牌与保管库解锁凭据由系统凭据保护记忆）'
-                  : '保持登录状态不可用（未检测到系统 Keyring / 凭据保护）'
-              }}
+              {{ encryptionAvailable ? t('sync.keepSignedInLabel') : t('sync.keepSignedInUnavail') }}
             </label>
             <div class="container_sync_account_body_mode-row">
-              <span class="container_sync_account_body_mode-label">主机/规则变更策略：</span>
+              <span class="container_sync_account_body_mode-label">{{ t('sync.writeModeLabel') }}</span>
               <button
                 class="container_sync_account_body_mode-realtime"
                 type="button"
                 :data-active="syncWriteMode === 'realtime'"
                 @click="setSyncWriteMode('realtime')"
               >
-                增删改实时同步到服务端
+                {{ t('hosts.syncRealtime') }}
               </button>
               <button
                 class="container_sync_account_body_mode-local"
@@ -620,7 +649,7 @@ async function handleRestoreRevision(revision: string) {
                 :data-active="syncWriteMode === 'local-only'"
                 @click="setSyncWriteMode('local-only')"
               >
-                仅保存在本地修改
+                {{ t('hosts.syncLocalOnly') }}
               </button>
             </div>
           </div>
@@ -631,7 +660,7 @@ async function handleRestoreRevision(revision: string) {
             @click="handleLogout"
           >
             <LogOut :size="14" />
-            退出登录（保留本机主机数据）
+            {{ t('sync.logoutBtn') }}
           </button>
         </template>
       </section>
@@ -640,21 +669,20 @@ async function handleRestoreRevision(revision: string) {
         <div class="container_sync_vault_header_base">
           <Lock v-if="!syncStatus?.vaultUnlocked" :size="18" />
           <Unlock v-else :size="18" />
-          <h3 class="container_sync_vault_header_title">端到端加密保管库 (Vault)</h3>
+          <h3 class="container_sync_vault_header_title">{{ t('sync.vaultTitle') }}</h3>
         </div>
 
         <p v-if="!syncStatus?.signedIn" class="container_sync_vault_body_placeholder">
-          请先在左侧登录同步账号，随后可在此创建或解锁端到端加密保管库。主密码仅留在本地派生密钥，绝不发送到服务端。
+          {{ t('sync.vaultNotSignedIn') }}
         </p>
 
         <template v-else-if="!syncStatus.vaultConfigured">
           <p class="container_sync_vault_body_hint">
-            该账号尚未创建云端保管库。请设置至少 8 位主密码，客户端将使用 Argon2id + AES-256-GCM 包裹随机
-            Vault Key，并生成一次性 SPM1 恢复密钥。
+            {{ t('sync.vaultCreateHint') }}
           </p>
           <form class="container_sync_vault_body_create-form" @submit.prevent="handleCreateVault">
             <label class="container_sync_vault_body_create-pw-label">
-              设置保管库主密码
+              {{ t('sync.masterPwLabel') }}
               <input
                 v-model="masterPassword"
                 class="container_sync_vault_body_create-pw-input"
@@ -664,7 +692,7 @@ async function handleRestoreRevision(revision: string) {
               />
             </label>
             <label class="container_sync_vault_body_create-confirm-label">
-              确认保管库主密码
+              {{ t('sync.confirmMasterPwLabel') }}
               <input
                 v-model="confirmMasterPassword"
                 class="container_sync_vault_body_create-confirm-input"
@@ -679,7 +707,7 @@ async function handleRestoreRevision(revision: string) {
               data-primary
               :disabled="busy"
             >
-              创建加密保管库并上传初始文档
+              {{ t('sync.createVaultBtn') }}
             </button>
           </form>
         </template>
@@ -692,7 +720,7 @@ async function handleRestoreRevision(revision: string) {
               :data-active="vaultMode === 'unlock' ? 'true' : 'false'"
               @click="vaultMode = 'unlock'"
             >
-              主密码解锁
+              {{ t('sync.unlockTabPw') }}
             </button>
             <button
               class="container_sync_vault_body_unlock-tab-recovery"
@@ -700,7 +728,7 @@ async function handleRestoreRevision(revision: string) {
               :data-active="vaultMode === 'recover' ? 'true' : 'false'"
               @click="vaultMode = 'recover'"
             >
-              SPM1 恢复密钥恢复
+              {{ t('sync.unlockTabRecovery') }}
             </button>
           </div>
           <form
@@ -710,7 +738,7 @@ async function handleRestoreRevision(revision: string) {
             @submit.prevent="handleUnlockVault"
           >
             <label class="container_sync_vault_body_unlock-pw-label">
-              保管库主密码（Vault v{{ syncStatus.keyVersion }}）
+              {{ t('sync.unlockPwLabel', { version: syncStatus.keyVersion }) }}
               <input
                 v-model="masterPassword"
                 class="container_sync_vault_body_unlock-pw-input"
@@ -724,7 +752,7 @@ async function handleRestoreRevision(revision: string) {
               data-primary
               :disabled="busy"
             >
-              解锁保管库并拉取同步
+              {{ t('sync.unlockBtn') }}
             </button>
           </form>
           <form
@@ -734,7 +762,7 @@ async function handleRestoreRevision(revision: string) {
             @submit.prevent="handleRecoverVault"
           >
             <label class="container_sync_vault_body_recover-key-label">
-              SPM1 恢复密钥
+              {{ t('sync.recoveryKeyLabel') }}
               <input
                 v-model="recoveryKeyInput"
                 class="container_sync_vault_body_recover-key-input"
@@ -744,7 +772,7 @@ async function handleRestoreRevision(revision: string) {
               />
             </label>
             <label class="container_sync_vault_body_recover-newpw-label">
-              重设主密码（可选，留空仅临时解锁）
+              {{ t('sync.resetMasterPwLabel') }}
               <input
                 v-model="resetMasterPassword"
                 class="container_sync_vault_body_recover-newpw-input"
@@ -756,7 +784,7 @@ async function handleRestoreRevision(revision: string) {
               v-if="resetMasterPassword.length > 0"
               class="container_sync_vault_body_recover-acctpw-label"
             >
-              当前账号登录密码（重设主密码时用于更新云端信封）
+              {{ t('sync.recoverAccountPwLabel') }}
               <input
                 v-model="recoverAccountPassword"
                 class="container_sync_vault_body_recover-acctpw-input"
@@ -770,16 +798,16 @@ async function handleRestoreRevision(revision: string) {
               data-primary
               :disabled="busy"
             >
-              校验恢复密钥并解锁
+              {{ t('sync.recoverBtn') }}
             </button>
           </form>
         </template>
 
         <template v-else>
           <dl class="container_sync_vault_body_active-meta">
-            <dt class="container_sync_vault_body_id-label">保管库 ID</dt>
+            <dt class="container_sync_vault_body_id-label">{{ t('sync.vaultIdLabel') }}</dt>
             <dd class="container_sync_vault_body_id">{{ syncStatus.vaultId }}</dd>
-            <dt class="container_sync_vault_body_kv-label">密钥版本</dt>
+            <dt class="container_sync_vault_body_kv-label">{{ t('sync.keyVersionLabel') }}</dt>
             <dd class="container_sync_vault_body_kv">v{{ syncStatus.keyVersion }}</dd>
           </dl>
           <label class="container_sync_vault_body_pwsync-label">
@@ -790,26 +818,25 @@ async function handleRestoreRevision(revision: string) {
               :disabled="busy"
               @change="handleTogglePasswordSync"
             />
-            允许将主机保存密码纳入 E2EE 同步文档（默认关闭）
+            {{ t('sync.pwSyncLabel') }}
           </label>
           <div v-if="rotateConfirmVisible" class="container_sync_vault_body_rotate-box">
             <p class="container_sync_vault_body_rotate-hint">
-              关闭密码同步将执行保管库密钥轮换（Vault Key
-              Rotation）并上传剥离密码后的新版本文档，防止历史密文被旧密钥读取：
+              {{ t('sync.rotateHint') }}
             </p>
             <input
               v-model="rotateAccountPassword"
               class="container_sync_vault_body_rotate-acctpw-input"
               type="password"
-              placeholder="请输入当前账号登录密码（用于服务端身份校验）"
-              aria-label="输入当前账号登录密码以确认密钥轮换"
+              :placeholder="t('sync.rotateAcctPwPlaceholder')"
+              :aria-label="t('sync.rotateAcctPwAria')"
             />
             <input
               v-model="rotateMasterPassword"
               class="container_sync_vault_body_rotate-input"
               type="password"
-              placeholder="请输入保管库新主密码（至少 8 位，用于加密新密钥）"
-              aria-label="输入保管库新主密码以加密新密钥"
+              :placeholder="t('sync.rotateMasterPwPlaceholder')"
+              :aria-label="t('sync.rotateMasterPwAria')"
             />
             <div class="container_sync_vault_body_rotate-actions">
               <button
@@ -819,14 +846,14 @@ async function handleRestoreRevision(revision: string) {
                 :disabled="busy || rotateAccountPassword.length < 1 || rotateMasterPassword.length < 8"
                 @click="handleConfirmDisablePasswordSync"
               >
-                确认轮换密钥并关闭密码同步
+                {{ t('sync.rotateConfirm') }}
               </button>
               <button
                 class="container_sync_vault_body_rotate-cancel"
                 type="button"
                 @click="rotateConfirmVisible = false"
               >
-                取消
+                {{ t('actionDialog.cancel') }}
               </button>
             </div>
           </div>
@@ -837,9 +864,9 @@ async function handleRestoreRevision(revision: string) {
               {{
                 encryptionAvailable
                   ? bootstrap?.platform === 'linux'
-                    ? '已启用本机 Keyring 解锁记忆，下次重启自动保持已解锁状态。'
-                    : '已启用本机 DPAPI 解锁记忆，下次重启自动保持已解锁状态。'
-                  : '当前系统未检测到可用的 Keyring / 凭据保护，重启后需重新输入主密码解锁。'
+                    ? t('sync.capAvailLinux')
+                    : t('sync.capAvailWin')
+                  : t('sync.capUnavail')
               }}
             </span>
           </div>
@@ -850,7 +877,7 @@ async function handleRestoreRevision(revision: string) {
             @click="handleLockVault"
           >
             <Lock :size="14" />
-            立即锁定保管库
+            {{ t('sync.lockVaultBtn') }}
           </button>
         </template>
       </section>
@@ -873,18 +900,19 @@ async function handleRestoreRevision(revision: string) {
       <div class="container_sync_overview_card_hosts">
         <div class="container_sync_groups_header_base">
           <FolderKanban :size="17" />
-          <h3 class="container_sync_groups_header_title">主机与同步分组 ({{ syncGroups.length }})</h3>
+          <h3 class="container_sync_groups_header_title">
+            {{ t('sync.overviewHostsTitle', { count: syncGroups.length }) }}
+          </h3>
         </div>
         <p class="container_sync_groups_body_hint">
-          当前已纳管 {{ hosts.length }} 台主机、{{ syncGroups.length }}
-          个同步分组。分组筛选、增删与凭据管理已归位至「主机库」与左侧导航「凭据与分组」页面。
+          {{ t('sync.overviewHostsDesc', { hosts: hosts.length, groups: syncGroups.length }) }}
         </p>
         <div class="container_sync_overview_nav_actions">
           <button class="container_sync_overview_go_hosts" type="button" @click="page = 'hosts'">
-            管理主机与分组
+            {{ t('sync.goHosts') }}
           </button>
           <button class="container_sync_overview_go_identities" type="button" @click="page = 'identities'">
-            前往凭据与分组中心
+            {{ t('sync.goIdentities') }}
           </button>
         </div>
       </div>
@@ -892,11 +920,12 @@ async function handleRestoreRevision(revision: string) {
       <div class="container_sync_overview_card_tunnels">
         <div class="container_sync_tunnels_header_base">
           <Network :size="17" />
-          <h3 class="container_sync_tunnels_header_title">端口转发与隧道规则 ({{ syncTunnels.length }})</h3>
+          <h3 class="container_sync_tunnels_header_title">
+            {{ t('sync.overviewTunnelsTitle', { count: syncTunnels.length }) }}
+          </h3>
         </div>
         <p class="container_sync_tunnels_body_hint">
-          端口转发 (-L / -R / -D)、TCP
-          连通探测与本地端口占用检测已接入「端口转发中心」、每台服务器行与终端工具栏。
+          {{ t('sync.overviewTunnelsDesc') }}
         </p>
         <div class="container_sync_overview_tunnel_actions">
           <button
@@ -905,7 +934,7 @@ async function handleRestoreRevision(revision: string) {
             data-primary="true"
             @click="page = 'tunnels'"
           >
-            打开端口转发中心
+            {{ t('sync.goTunnels') }}
           </button>
         </div>
       </div>
@@ -928,7 +957,7 @@ async function handleRestoreRevision(revision: string) {
   margin-bottom: 24px;
 }
 .container_sync_page_header_eyebrow {
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
   letter-spacing: 1.5px;
   color: var(--color-accent-primary);
 }
@@ -937,8 +966,10 @@ async function handleRestoreRevision(revision: string) {
   align-items: center;
   flex-wrap: wrap;
   gap: 12px;
-  font-size: 22px;
-  font-weight: 500;
+  font-family: var(--font-display);
+  font-size: var(--font-size-ui-title);
+  font-weight: var(--font-ui-heading-weight);
+  color: var(--color-text-heading);
   margin: 10px 0;
 }
 .container_sync_page_header_badge {

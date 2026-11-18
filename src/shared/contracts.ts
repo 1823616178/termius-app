@@ -95,6 +95,14 @@ export interface Host {
 }
 export type ShellKind = 'powershell' | 'cmd' | 'wsl' | 'bash' | 'zsh' | 'fish' | 'sh'
 export type OrbitPlatform = 'win32' | 'linux' | 'darwin' | (string & {})
+export type AppLocale = 'zh-CN' | 'en-US'
+export const appLocaleSchema = z.enum(['zh-CN', 'en-US'])
+export const fontsListRequestSchema = z.boolean().optional()
+
+export interface SystemFontInfo {
+  family: string
+  category: 'monospace' | 'sans' | 'serif' | 'other'
+}
 export type EncryptionBackend =
   | 'dpapi'
   | 'keychain'
@@ -416,6 +424,8 @@ export interface Bridge {
   onSessionFailure(callback: (request: { id: string; message: string }) => void): () => void
   clipboard: { readText(): Promise<string>; writeText(text: string): Promise<void> }
   shell: { openExternal(url: string): Promise<void> }
+  locale: { set(locale: AppLocale): Promise<void> }
+  fonts: { listSystem(refresh?: boolean): Promise<SystemFontInfo[]> }
   window: {
     minimize(): void
     maximize(): void

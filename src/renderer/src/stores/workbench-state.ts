@@ -6,11 +6,21 @@ import type {
   KnownHostEntry,
   NetProbeResult,
   PortCheckResult,
+  SystemFontInfo,
   TrayState
 } from '../../../shared/contracts'
 import type { TunnelRuntimeStatus } from '../../../shared/contracts'
 import { DEFAULT_UPDATE_REPOSITORY, type UpdateStatusSnapshot } from '../../../shared/updater'
 import type { SyncGroup, SyncStatusSnapshot, SyncTunnel } from '../../../shared/sync'
+import {
+  DEFAULT_PANEL_DISPLAY_FONT_ID,
+  DEFAULT_PANEL_FONT_ID,
+  DEFAULT_PANEL_TEXT_COLORS,
+  DEFAULT_TERMINAL_CUSTOM_COLORS,
+  DEFAULT_TERMINAL_FONT_ID,
+  type PanelTextColors,
+  type TerminalCustomColors
+} from '../services/fonts'
 import { type MotionCapability, type MotionPreference, type MotionTier } from '../services/motion-performance'
 import type { CursorShape, TerminalThemeId } from '../services/terminal-themes'
 import { DEFAULT_CUSTOM_COLORS, type CustomUiColors, type UiThemeId } from '../services/ui-themes'
@@ -90,11 +100,37 @@ export const promptBusy = ref(false)
 let promptAttempt = 0
 
 export const fontSize = ref(14)
+export const terminalGpuEnabled = ref(true)
 export const terminalTheme = ref<TerminalThemeId>('orbit-vivid')
 export const lineHeight = ref(1.28)
 export const cursorStyle = ref<CursorShape>('block')
 export const cursorBlink = ref(true)
 export const copyOnSelect = ref(false)
+export const panelCopyOnSelect = ref(false)
+export const copiedFeedback = ref<{ count: number; seq: number } | null>(null)
+export const systemFonts = ref<SystemFontInfo[]>([])
+export const systemFontsLoading = ref(false)
+
+export const terminalFontId = ref<string>(DEFAULT_TERMINAL_FONT_ID)
+export const terminalCustomFont = ref('')
+export const terminalFontWeight = ref('400')
+export const terminalFontWeightBold = ref('600')
+export const terminalLetterSpacing = ref(0)
+export const terminalLigatures = ref(true)
+export const terminalMinimumContrast = ref(4.5)
+export const terminalCustomColorsEnabled = ref(false)
+export const terminalCustomColors = ref<TerminalCustomColors>({ ...DEFAULT_TERMINAL_CUSTOM_COLORS })
+
+export const panelFontId = ref<string>(DEFAULT_PANEL_FONT_ID)
+export const panelCustomFont = ref('')
+export const panelDisplayFontId = ref<string>(DEFAULT_PANEL_DISPLAY_FONT_ID)
+export const panelCustomDisplayFont = ref('')
+export const panelFontSize = ref(13)
+export const panelFontWeight = ref('400')
+export const panelLineHeight = ref(1.5)
+export const panelLetterSpacing = ref(0)
+export const panelCustomColorsEnabled = ref(false)
+export const panelCustomColors = ref<PanelTextColors>({ ...DEFAULT_PANEL_TEXT_COLORS })
 export const activeTerminalDimensions = ref<{ cols: number; rows: number }>({ cols: 120, rows: 32 })
 export const selectedShellId = ref('')
 export const motionPreference = ref<MotionPreference>('auto')
@@ -132,7 +168,7 @@ export const trayState = ref<TrayState>({
 })
 export const updateState = ref<UpdateStatusSnapshot>({
   phase: 'idle',
-  currentVersion: '0.1.0',
+  currentVersion: '1.0.0',
   repository: { ...DEFAULT_UPDATE_REPOSITORY },
   preferences: {
     autoCheckOnStartup: true,
@@ -166,6 +202,8 @@ export const paneContainers = new Map<string, HTMLElement>()
 const groupTokens = new Map<string, string>()
 let noticeTimeout: ReturnType<typeof setTimeout> | undefined
 let splitAnimationTimer: ReturnType<typeof setTimeout> | undefined
+let copiedFeedbackTimer: ReturnType<typeof setTimeout> | undefined
+let copiedSeq = 0
 
 export function registerPaneContainer(tabToken: string, el: HTMLElement | null): void {
   if (el) paneContainers.set(tabToken, el)
@@ -210,6 +248,17 @@ export function notify(message: string): void {
   }, 6000)
 }
 
+export function notifyCopiedSelection(text: string): void {
+  const length = text.length
+  if (!length) return
+  const seq = ++copiedSeq
+  copiedFeedback.value = { count: length, seq }
+  clearTimeout(copiedFeedbackTimer)
+  copiedFeedbackTimer = setTimeout(() => {
+    if (copiedFeedback.value?.seq === seq) copiedFeedback.value = null
+  }, 2200)
+}
+
 export function advancePromptQueue(): void {
   if (prompt.value) return
   const nextTrust = trustQueue.value.shift()
@@ -242,4 +291,5 @@ export function dismissStalePanePrompts(paneToken: string): void {
 export function clearWorkbenchStateTimers(): void {
   clearTimeout(noticeTimeout)
   clearTimeout(splitAnimationTimer)
+  clearTimeout(copiedFeedbackTimer)
 }

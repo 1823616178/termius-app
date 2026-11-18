@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { Terminal, Server, SquareTerminal, Network, KeyRound, Cloud, CircleHelp, Settings } from '@lucide/vue'
 import { computed } from 'vue'
+import { t } from '../services/i18n'
 import { activateTab, activeTab, page, showHelp, syncStatus, tunnelStatuses } from '../stores/workbench'
 
 const activeTunnelCount = computed(
@@ -15,20 +16,20 @@ const avatarLetter = computed(() => {
 
 const avatarTitle = computed(() => {
   if (syncStatus.value?.signedIn) {
-    return `${syncStatus.value.email} · 点击管理端到端加密同步`
+    return t('nav.avatarSignedIn', { email: syncStatus.value.email ?? '' })
   }
-  return '本地工作区 · 点击登录或配置云同步'
+  return t('nav.avatarLocal')
 })
 </script>
 
 <template>
-  <nav class="container_app_navigation_sidebar_base" aria-label="主导航">
+  <nav class="container_app_navigation_sidebar_base" :aria-label="t('nav.aria')">
     <button
       class="container_app_navigation_sidebar_workspace"
       type="button"
       :aria-current="page === 'workspace' ? 'page' : undefined"
-      aria-label="工作台"
-      title="工作台"
+      :aria-label="t('nav.workspace')"
+      :title="t('nav.workspace')"
       @click="activeTab ? activateTab(activeTab) : (page = 'workspace')"
     >
       <Terminal :size="21" />
@@ -37,8 +38,8 @@ const avatarTitle = computed(() => {
       class="container_app_navigation_sidebar_hosts"
       type="button"
       :aria-current="page === 'hosts' ? 'page' : undefined"
-      aria-label="主机"
-      title="主机"
+      :aria-label="t('nav.hosts')"
+      :title="t('nav.hosts')"
       @click="page = 'hosts'"
     >
       <Server :size="20" />
@@ -47,8 +48,8 @@ const avatarTitle = computed(() => {
       class="container_app_navigation_sidebar_local"
       type="button"
       :aria-current="page === 'local' ? 'page' : undefined"
-      aria-label="本地终端"
-      title="本地终端"
+      :aria-label="t('nav.local')"
+      :title="t('nav.local')"
       @click="page = 'local'"
     >
       <SquareTerminal :size="21" />
@@ -58,8 +59,8 @@ const avatarTitle = computed(() => {
       class="container_app_navigation_sidebar_tunnels"
       type="button"
       :aria-current="page === 'tunnels' ? 'page' : undefined"
-      aria-label="端口转发"
-      title="端口转发与网络探测中心"
+      :aria-label="t('nav.tunnels')"
+      :title="t('nav.tunnelsTitle')"
       @click="page = 'tunnels'"
     >
       <Network :size="20" />
@@ -71,8 +72,8 @@ const avatarTitle = computed(() => {
       class="container_app_navigation_sidebar_identities"
       type="button"
       :aria-current="page === 'identities' ? 'page' : undefined"
-      aria-label="凭据与分组"
-      title="凭据管理、服务器分组与主机指纹库"
+      :aria-label="t('nav.identities')"
+      :title="t('nav.identitiesTitle')"
       @click="page = 'identities'"
     >
       <KeyRound :size="20" />
@@ -83,8 +84,8 @@ const avatarTitle = computed(() => {
       type="button"
       :data-phase="syncStatus?.phase ?? 'unconfigured'"
       :aria-current="page === 'sync' ? 'page' : undefined"
-      aria-label="远程同步"
-      title="远程同步（端到端加密）"
+      :aria-label="t('nav.sync')"
+      :title="t('nav.syncTitle')"
       @click="page = 'sync'"
     >
       <Cloud :size="20" />
@@ -96,9 +97,9 @@ const avatarTitle = computed(() => {
     <button
       class="container_app_navigation_sidebar_help"
       type="button"
-      aria-label="快捷键说明"
+      :aria-label="t('nav.help')"
       :aria-expanded="showHelp"
-      title="快捷键说明"
+      :title="t('nav.help')"
       @click="showHelp = !showHelp"
     >
       <CircleHelp :size="20" />
@@ -107,8 +108,8 @@ const avatarTitle = computed(() => {
       class="container_app_navigation_sidebar_settings"
       type="button"
       :aria-current="page === 'settings' ? 'page' : undefined"
-      aria-label="设置"
-      title="设置"
+      :aria-label="t('nav.settings')"
+      :title="t('nav.settings')"
       @click="page = 'settings'"
     >
       <Settings :size="20" />

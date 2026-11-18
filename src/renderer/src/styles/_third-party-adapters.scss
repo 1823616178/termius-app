@@ -6,9 +6,14 @@
   height: 100%;
   padding: 8px 10px 10px 12px;
   font-family: var(--font-mono);
-  font-feature-settings:
-    'calt' 1,
-    'liga' 1;
+  font-feature-settings: var(--font-mono-ligatures);
+  letter-spacing: normal;
+  &[data-ligatures='false'] {
+    font-feature-settings:
+      'calt' 0,
+      'liga' 0;
+    font-variant-ligatures: none;
+  }
 }
 .xterm .xterm-viewport {
   background: transparent !important;
@@ -46,8 +51,8 @@
   background: var(--color-surface-2, #171e1c);
   color: var(--color-text-primary, #efe9da);
   box-shadow: var(--shadow-3d-sm, 0 4px 14px rgba(0, 0, 0, 0.45));
-  font-family: var(--font-sans, system-ui, sans-serif);
-  font-size: 12px;
+  font-family: var(--font-ui);
+  font-size: var(--font-size-ui-sm);
   line-height: 1.35;
   cursor: pointer;
   user-select: none;

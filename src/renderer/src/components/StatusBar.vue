@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { Check } from '@lucide/vue'
+import { getFontDisplayName } from '../services/fonts'
+import { locale, t } from '../services/i18n'
 import { cycleTerminalTheme, getTerminalTheme } from '../services/terminal-themes'
 import {
   activeTerminalDimensions,
   bootstrap,
+  copiedFeedback,
   focusedPane,
   fontSize,
   hasVisibleUpdate,
@@ -11,27 +15,37 @@ import {
   page,
   runningCount,
   syncStatus,
+  terminalCustomFont,
+  terminalFontId,
   terminalTheme,
   updateState
 } from '../stores/workbench'
 
 const activeTheme = computed(() => getTerminalTheme(terminalTheme.value))
+const activeThemeLabel = computed(() =>
+  locale.value === 'en-US' ? activeTheme.value.nameEn : activeTheme.value.name
+)
+const activeTerminalFontName = computed(() =>
+  getFontDisplayName(terminalFontId.value, locale.value, terminalCustomFont.value)
+)
 
 const syncLabel = computed(() => {
   const s = syncStatus.value
-  if (!s) return '本地工作区'
-  if (s.phase === 'syncing') return '同步中…'
-  if (s.phase === 'conflict') return `同步冲突 (${s.conflicts.length})`
-  if (s.phase === 'read-only-schema') return '只读保护（版本过高）'
-  if (s.phase === 'offline') return '离线模式'
-  if (s.phase === 'vault-locked') return s.vaultConfigured ? '保管库已锁定' : '待创建保管库'
-  if (s.phase === 'signed-out') return '同步未登录'
-  if (s.phase === 'error') return '同步异常'
-  if (s.phase === 'synced') {
-    const rev = s.lastRevision ? `rev-${s.lastRevision}` : '已连接'
-    return s.pendingChanges ? `云同步 · ${rev}（待推送）` : `已同步 · ${rev}`
+  if (!s) return t('status.localWorkspace')
+  if (s.phase === 'syncing') return t('status.syncing')
+  if (s.phase === 'conflict') return t('status.conflict', { count: s.conflicts.length })
+  if (s.phase === 'read-only-schema') return t('status.readOnly')
+  if (s.phase === 'offline') return t('status.offline')
+  if (s.phase === 'vault-locked') {
+    return s.vaultConfigured ? t('status.vaultLocked') : t('status.vaultUnconfigured')
   }
-  return '本地工作区（未开启同步）'
+  if (s.phase === 'signed-out') return t('status.signedOut')
+  if (s.phase === 'error') return t('status.syncError')
+  if (s.phase === 'synced') {
+    const rev = s.lastRevision ? `rev-${s.lastRevision}` : t('status.connected')
+    return s.pendingChanges ? t('status.syncedPending', { rev }) : t('status.synced', { rev })
+  }
+  return t('status.localOnly')
 })
 </script>
 
@@ -41,23 +55,30 @@ const syncLabel = computed(() => {
     <button
       class="container_app_status_footer_sync"
       type="button"
-      title="打开端到端加密远程同步面板"
+      :title="t('status.syncTitle')"
       @click="page = 'sync'"
     >
       {{ syncLabel }}
     </button>
-    <span class="container_app_status_footer_sessions">{{ runningCount }} 个运行中终端</span>
+    <span class="container_app_status_footer_sessions">
+      {{ t('status.runningTerminals', { count: runningCount }) }}
+    </span>
+    <span v-if="copiedFeedback" class="container_app_status_footer_copied" role="status">
+      <Check :size="11" />
+      {{ t('status.copiedFeedback', { count: copiedFeedback.count }) }}
+    </span>
     <span class="container_app_status_footer_spacer" />
     <span v-if="focusedPane" class="container_app_status_footer_metrics">
-      {{ activeTerminalDimensions.cols }}×{{ activeTerminalDimensions.rows }} · {{ fontSize }}px · UTF-8
+      {{ activeTerminalDimensions.cols }}×{{ activeTerminalDimensions.rows }} · {{ activeTerminalFontName }} ·
+      {{ fontSize }}px · UTF-8
     </span>
     <button
       class="container_app_status_footer_theme"
       type="button"
-      title="点击切换终端配色主题"
+      :title="t('status.switchTerminalTheme')"
       @click="terminalTheme = cycleTerminalTheme(terminalTheme)"
     >
-      {{ activeTheme.name }}
+      {{ activeThemeLabel }}
     </button>
     <span class="container_app_status_footer_protocol">
       {{
@@ -65,18 +86,22 @@ const syncLabel = computed(() => {
           ? 'SSH · TrueColor'
           : focusedPane
             ? `${bootstrap?.platform === 'win32' ? 'ConPTY' : 'PTY'} · TrueColor`
-            : '准备就绪'
+            : t('status.ready')
       }}
     </span>
     <button
       class="container_app_status_footer_version"
       type="button"
       :data-update="hasVisibleUpdate"
-      title="查看版本信息与 GitHub 更新检查"
+      :title="t('status.versionTitle')"
       @click="openUpdateSettings"
     >
-      v{{ bootstrap?.versions.app ?? '0.1.0'
-      }}{{ hasVisibleUpdate && updateState.latest ? ` · 可升级 v${updateState.latest.version}` : '' }}
+      v{{ bootstrap?.versions.app ?? '1.0.0'
+      }}{{
+        hasVisibleUpdate && updateState.latest
+          ? ` · ${t('status.upgradeAvailable', { version: updateState.latest.version })}`
+          : ''
+      }}
     </button>
   </footer>
 </template>
@@ -125,6 +150,17 @@ const syncLabel = computed(() => {
 }
 .container_app_status_footer_sessions {
   margin-left: 10px;
+}
+.container_app_status_footer_copied {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 7px;
+  border-radius: 4px;
+  border: 1px solid rgba(89, 214, 160, 0.4);
+  background: rgba(89, 214, 160, 0.12);
+  color: #86efac;
+  font-size: 11px;
 }
 .container_app_status_footer_spacer {
   flex: 1;

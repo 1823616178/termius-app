@@ -1,8 +1,19 @@
-import type { Terminal } from '@xterm/xterm'
+import type { FontWeight, Terminal } from '@xterm/xterm'
+import { watch } from 'vue'
+import { terminalGpuEnabled } from '../stores/workbench-state'
 import type { SearchAddon } from '@xterm/addon-search'
 import type { OpenSessionInput, SessionInfo, TerminalEvent } from '../../../shared/contracts'
+import {
+  DEFAULT_TERMINAL_FONT_ID,
+  ensureFontFamilyLoaded,
+  resolveEffectiveTerminalTheme,
+  resolveTerminalFontFamily,
+  type TerminalCustomColors
+} from './fonts'
+import { locale, t } from './i18n'
 import { createTerminalLinkIntegration } from './terminal-links'
-import { getTerminalTheme, type CursorShape, type TerminalThemeId } from './terminal-themes'
+import { attachTerminalWebgl, loadTerminalWebgl } from './terminal-webgl'
+import { type CursorShape, type TerminalThemeId } from './terminal-themes'
 
 interface XtermModules {
   Terminal: typeof import('@xterm/xterm').Terminal
@@ -34,8 +45,16 @@ function loadXtermModules(): Promise<XtermModules> {
 
 export interface TerminalAppearanceOptions {
   themeId: TerminalThemeId
+  fontFamily?: string
   fontSize: number
+  fontWeight?: string
+  fontWeightBold?: string
   lineHeight: number
+  letterSpacing?: number
+  minimumContrastRatio?: number
+  ligatures?: boolean
+  customColorsEnabled?: boolean
+  customColors?: Partial<TerminalCustomColors>
   cursorStyle: CursorShape
   cursorBlink: boolean
 }
@@ -76,8 +95,15 @@ interface RegistryEntry {
 
 const DEFAULT_APPEARANCE: TerminalAppearanceOptions = {
   themeId: 'orbit-vivid',
+  fontFamily: resolveTerminalFontFamily(DEFAULT_TERMINAL_FONT_ID),
   fontSize: 14,
+  fontWeight: '400',
+  fontWeightBold: '600',
   lineHeight: 1.28,
+  letterSpacing: 0,
+  minimumContrastRatio: 4.5,
+  ligatures: true,
+  customColorsEnabled: false,
   cursorStyle: 'block',
   cursorBlink: true
 }
@@ -128,33 +154,42 @@ export async function createTerminal(
   if (existingBeforeLoad) {
     return existingBeforeLoad.reattach(element, onState, initialScreenReaderMode, initialAppearance)
   }
-  const { Terminal, FitAddon, SearchAddon } = await loadXtermModules()
+  const [{ Terminal, FitAddon, SearchAddon }, Webgl] = await Promise.all([
+    loadXtermModules(),
+    terminalGpuEnabled.value ? loadTerminalWebgl() : undefined
+  ])
   const existingAfterLoad = registry.get(token)
   if (existingAfterLoad) {
     return existingAfterLoad.reattach(element, onState, initialScreenReaderMode, initialAppearance)
   }
-  const preset = getTerminalTheme(initialAppearance.themeId)
+  const resolvedTheme = resolveEffectiveTerminalTheme(
+    initialAppearance.themeId,
+    Boolean(initialAppearance.customColorsEnabled),
+    initialAppearance.customColors ?? {}
+  )
+  const initialFontFamily =
+    initialAppearance.fontFamily || resolveTerminalFontFamily(DEFAULT_TERMINAL_FONT_ID)
   const terminal = new Terminal({
-    fontFamily:
-      "'Cascadia Mono', 'Cascadia Code', 'JetBrains Mono', 'Sarasa Term SC', 'Consolas', 'Microsoft YaHei UI', monospace",
+    fontFamily: initialFontFamily,
     fontSize: initialAppearance.fontSize,
     lineHeight: initialAppearance.lineHeight,
-    fontWeight: '400',
-    fontWeightBold: '600',
+    letterSpacing: initialAppearance.letterSpacing ?? 0,
+    fontWeight: (initialAppearance.fontWeight ?? '400') as FontWeight,
+    fontWeightBold: (initialAppearance.fontWeightBold ?? '600') as FontWeight,
     cursorStyle: initialAppearance.cursorStyle,
     cursorWidth: 2,
     cursorBlink: initialAppearance.cursorBlink,
     cursorInactiveStyle: 'outline',
-    minimumContrastRatio: 4.5,
+    minimumContrastRatio: initialAppearance.minimumContrastRatio ?? 4.5,
     drawBoldTextInBrightColors: true,
     customGlyphs: true,
     rescaleOverlappingGlyphs: true,
-    smoothScrollDuration: 80,
+    smoothScrollDuration: 0,
     scrollback: 10_000,
     allowProposedApi: true,
     overviewRuler: { width: 10 },
     screenReaderMode: initialScreenReaderMode,
-    theme: preset.theme
+    theme: resolvedTheme.theme
   })
   const fit = new FitAddon()
   const search = new SearchAddon()
@@ -167,6 +202,19 @@ export async function createTerminal(
   terminal.loadAddon(fit)
   terminal.loadAddon(search)
   terminal.open(element)
+  if (terminal.element) {
+    terminal.element.dataset.ligatures = initialAppearance.ligatures === false ? 'false' : 'true'
+  }
+  void ensureFontFamilyLoaded(initialFontFamily, initialAppearance.fontSize).then(() => {
+    if (!disposed) {
+      try {
+        terminal.clearTextureAtlas()
+      } catch {
+        /* ignore if renderer not initialized */
+      }
+      refresh()
+    }
+  })
 
   let port: MessagePort | undefined
   let session: SessionInfo | undefined
@@ -213,22 +261,72 @@ export async function createTerminal(
     if (terminal.rows > 0) terminal.refresh(0, terminal.rows - 1)
   }
 
+  const stopGpuPreference = watch(
+    terminalGpuEnabled,
+    async (enabled, _, onCleanup) => {
+      if (!enabled) return
+      let cancelled = false
+      let release: (() => void) | undefined
+      onCleanup(() => {
+        cancelled = true
+        release?.()
+        if (!disposed) refresh()
+      })
+      const Renderer = Webgl ?? (await loadTerminalWebgl())
+      if (!cancelled && Renderer) release = attachTerminalWebgl(terminal, Renderer, refresh)
+    },
+    { immediate: true }
+  )
   void document.fonts?.ready.then(() => {
     if (disposed) return
-    terminal.clearTextureAtlas()
     refresh()
   })
 
+  let applyFontSeq = 0
   const applyAppearance = (opts: TerminalAppearanceOptions) => {
     if (disposed) return
-    const nextPreset = getTerminalTheme(opts.themeId)
-    terminal.options.theme = nextPreset.theme
+    const nextResolvedTheme = resolveEffectiveTerminalTheme(
+      opts.themeId,
+      Boolean(opts.customColorsEnabled),
+      opts.customColors ?? {}
+    )
+    const nextFontFamily = opts.fontFamily || resolveTerminalFontFamily(DEFAULT_TERMINAL_FONT_ID)
+    const fontFamilyChanged = terminal.options.fontFamily !== nextFontFamily
+    const weightChanged =
+      terminal.options.fontWeight !== (opts.fontWeight ?? '400') ||
+      terminal.options.fontWeightBold !== (opts.fontWeightBold ?? '600')
+    terminal.options.theme = nextResolvedTheme.theme
+    terminal.options.fontFamily = nextFontFamily
     terminal.options.fontSize = opts.fontSize
+    terminal.options.fontWeight = (opts.fontWeight ?? '400') as FontWeight
+    terminal.options.fontWeightBold = (opts.fontWeightBold ?? '600') as FontWeight
     terminal.options.lineHeight = opts.lineHeight
+    terminal.options.letterSpacing = opts.letterSpacing ?? 0
+    terminal.options.minimumContrastRatio = opts.minimumContrastRatio ?? 4.5
     terminal.options.cursorStyle = opts.cursorStyle
     terminal.options.cursorBlink = opts.cursorBlink
-    terminal.clearTextureAtlas()
-    refresh()
+    if (terminal.element) {
+      terminal.element.dataset.ligatures = opts.ligatures === false ? 'false' : 'true'
+    }
+    if (fontFamilyChanged || weightChanged) {
+      const seq = ++applyFontSeq
+      void ensureFontFamilyLoaded(nextFontFamily, opts.fontSize).then(() => {
+        if (disposed || seq !== applyFontSeq) return
+        try {
+          terminal.clearTextureAtlas()
+        } catch {
+          /* ignore */
+        }
+        refresh()
+      })
+    } else {
+      try {
+        terminal.clearTextureAtlas()
+      } catch {
+        /* ignore */
+      }
+      refresh()
+    }
   }
 
   const watchDpr = () => {
@@ -239,7 +337,6 @@ export async function createTerminal(
 
   const onDprChange = () => {
     if (disposed) return
-    terminal.clearTextureAtlas()
     refresh()
     watchDpr()
   }
@@ -278,6 +375,10 @@ export async function createTerminal(
 
   const enqueueInput = (data: string) => {
     if (finished || disposed || !data) return
+    if (!pumpingInput && data.length <= 16384) {
+      send({ type: 'input', data })
+      return
+    }
     for (let start = 0; start < data.length; ) {
       let end = Math.min(start + 16384, data.length)
       const last = data.charCodeAt(end - 1)
@@ -326,6 +427,7 @@ export async function createTerminal(
       port.close()
     }
     if (session) void window.orbit.sessions.close(session.id).catch(() => {})
+    stopGpuPreference()
     terminal.dispose()
     registry.delete(token)
   }
@@ -377,7 +479,7 @@ export async function createTerminal(
           window.addEventListener('message', listener)
           timeout = setTimeout(() => {
             timedOut = true
-            reject(new Error('终端数据通道初始化超时'))
+            reject(new Error(t('terminal.channelTimeout')))
           }, 20_000)
         })
         // Observe early rejection while the control request is still awaiting the backend.
@@ -434,7 +536,14 @@ export async function createTerminal(
           }
           port.addEventListener('close', () => {
             if (!disposed && !finished)
-              emitState({ type: 'state', state: 'error', message: '终端后台通道已关闭，请新建会话。' })
+              emitState({
+                type: 'state',
+                state: 'error',
+                message:
+                  locale.value === 'en-US'
+                    ? 'Terminal background channel closed; please open a new session.'
+                    : '终端后台通道已关闭，请新建会话。'
+              })
           })
           port.start()
           // A resize before the port arrived was only applied locally.

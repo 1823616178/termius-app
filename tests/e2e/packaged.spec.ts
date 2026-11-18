@@ -37,12 +37,15 @@ test('Desktop packaged app loads SQLite, preload and PTY from ASAR', async ({}, 
     expect(await app.evaluate(({ app }) => app.isPackaged)).toBe(true)
     await page.getByRole('button', { name: '打开本地终端', exact: true }).click()
     await expect(page.getByText('运行中', { exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '切换终端屏幕阅读器模式' }).click()
     await page.locator('.xterm-helper-textarea').focus()
     await page.keyboard.type(
       isLinux ? 'printf "PACKAGED_%s\\n" PTY_READY' : 'Write-Output ("PACKAGED_" + "PTY_READY")'
     )
     await page.keyboard.press('Enter')
-    await expect(page.locator('.xterm-rows')).toContainText('PACKAGED_PTY_READY', { timeout: 15_000 })
+    await expect(page.locator('.xterm-accessibility-tree')).toContainText('PACKAGED_PTY_READY', {
+      timeout: 15_000
+    })
     await page.screenshot({ path: info.outputPath('packaged-terminal.png') })
     const closeTarget = isLinux ? defaultShell.name : 'Windows PowerShell'
     await page.getByRole('button', { name: `关闭标签 ${closeTarget}`, exact: true }).click()

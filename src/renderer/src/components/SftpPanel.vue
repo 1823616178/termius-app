@@ -52,9 +52,22 @@ import {
   uploadLocalPathsToCurrentDir,
   visibleSftpEntries
 } from '../services/sftp-store'
+import { t } from '../services/i18n'
 import { notify, windowInstance } from '../stores/workbench'
 import OrbitSelect from './OrbitSelect.vue'
 import SftpTransferQueue from './SftpTransferQueue.vue'
+
+const chmodPermissions = computed(() => [
+  { label: t('sftp.permOwnerRead'), shift: 8 },
+  { label: t('sftp.permOwnerWrite'), shift: 7 },
+  { label: t('sftp.permOwnerExec'), shift: 6 },
+  { label: t('sftp.permGroupRead'), shift: 5 },
+  { label: t('sftp.permGroupWrite'), shift: 4 },
+  { label: t('sftp.permGroupExec'), shift: 3 },
+  { label: t('sftp.permOtherRead'), shift: 2 },
+  { label: t('sftp.permOtherWrite'), shift: 1 },
+  { label: t('sftp.permOtherExec'), shift: 0 }
+])
 
 function safeTokenPart(raw: string): string {
   if (/^[a-z0-9-]+$/.test(raw)) return raw
@@ -110,7 +123,7 @@ const targetSelectorOptions = computed(() => {
     options.push({
       value: `pane:${pane.token}`,
       label: pane.title,
-      hint: pane.state === 'running' ? '会话' : '连接中'
+      hint: pane.state === 'running' ? t('sftp.sessionHint') : t('sftp.connectingHint')
     })
   }
   for (const host of availableSshHosts()) {
@@ -186,7 +199,7 @@ function goHome(): void {
   if (!sessionId || !isReady.value) return
   void window.orbit.sftp.home(sessionId).then(
     (homePath) => navigateTo(homePath),
-    (error) => notify(error instanceof Error ? error.message : '无法定位主目录')
+    (error) => notify(error instanceof Error ? error.message : t('sftp.homeLocateFailed'))
   )
 }
 
@@ -248,16 +261,16 @@ async function submitMkdir(): Promise<void> {
   const name = mkdirName.value.trim()
   if (!sessionId || !name) return
   if (name.includes('/') || name.includes('\\')) {
-    notify('文件夹名称不能包含路径分隔符')
+    notify(t('sftp.invalidSlashName'))
     return
   }
   mkdirDialogOpen.value = false
   try {
     await window.orbit.sftp.mkdir(sessionId, joinRemotePosixPath(sftpCurrentPath.value, name))
-    notify(`已创建目录 ${name}`)
+    notify(t('sftp.mkdirSuccess', { name }))
     await refreshSftpDirectory(sftpCurrentPath.value)
   } catch (error) {
-    notify(error instanceof Error ? error.message : '创建目录失败')
+    notify(error instanceof Error ? error.message : t('sftp.mkdirFailed'))
   }
 }
 
@@ -276,7 +289,7 @@ async function submitRename(): Promise<void> {
   const nextName = renameValue.value.trim()
   if (!sessionId || !target || !nextName) return
   if (nextName.includes('/') || nextName.includes('\\')) {
-    notify('名称不能包含路径分隔符')
+    notify(t('sftp.invalidSlashName'))
     return
   }
   renameTarget.value = null
@@ -285,10 +298,10 @@ async function submitRename(): Promise<void> {
     const parent = target.path.slice(0, Math.max(1, target.path.lastIndexOf('/')))
     const nextPath = joinRemotePosixPath(parent === target.path ? '/' : parent, nextName)
     await window.orbit.sftp.rename(sessionId, target.path, nextPath)
-    notify(`已重命名为 ${nextName}`)
+    notify(t('sftp.renameSuccess', { name: nextName }))
     await refreshSftpDirectory(sftpCurrentPath.value)
   } catch (error) {
-    notify(error instanceof Error ? error.message : '重命名失败')
+    notify(error instanceof Error ? error.message : t('sftp.renameFailed'))
   }
 }
 
@@ -320,16 +333,16 @@ async function submitChmod(): Promise<void> {
   if (!sessionId || !target) return
   const parsed = Number.parseInt(chmodOctal.value.trim(), 8)
   if (!Number.isFinite(parsed) || parsed < 0 || parsed > 0o7777) {
-    notify('请输入有效的八进制权限值（如 0755 或 0644）')
+    notify(t('sftp.invalidOctalMode'))
     return
   }
   chmodTarget.value = null
   try {
     await window.orbit.sftp.chmod(sessionId, target.path, parsed)
-    notify(`已更新 ${target.name} 权限为 ${formatOctalMode(parsed)}`)
+    notify(t('sftp.chmodSuccess', { name: target.name, mode: formatOctalMode(parsed) }))
     await refreshSftpDirectory(sftpCurrentPath.value)
   } catch (error) {
-    notify(error instanceof Error ? error.message : '修改权限失败')
+    notify(error instanceof Error ? error.message : t('sftp.chmodFailed'))
   }
 }
 
@@ -348,11 +361,11 @@ async function confirmDelete(): Promise<void> {
     for (const entry of targets) {
       await window.orbit.sftp.remove(sessionId, entry.path, entry.kind === 'directory')
     }
-    notify(`已删除 ${targets.length} 个项目`)
+    notify(t('sftp.deletedItems', { count: targets.length }))
     selectedPaths.value = new Set()
     await refreshSftpDirectory(sftpCurrentPath.value)
   } catch (error) {
-    notify(error instanceof Error ? error.message : '删除失败')
+    notify(error instanceof Error ? error.message : t('sftp.deleteFailed'))
   }
 }
 
@@ -366,9 +379,14 @@ async function pickAndUploadDirs(): Promise<void> {
   if (paths.length) await uploadLocalPathsToCurrentDir(paths)
 }
 
+function hasFileDragPayload(dataTransfer: DataTransfer | null | undefined): boolean {
+  if (!dataTransfer) return false
+  return dataTransfer.types.includes('Files') || dataTransfer.types.includes('text/uri-list')
+}
+
 function onDragEnter(event: DragEvent): void {
   if (!isReady.value) return
-  if (!event.dataTransfer?.types.includes('Files')) return
+  if (!hasFileDragPayload(event.dataTransfer)) return
   dragDepth.value += 1
   dragOverActive.value = true
 }
@@ -379,7 +397,7 @@ function onDragLeave(): void {
 }
 
 function onDragOver(event: DragEvent): void {
-  const acceptsFiles = isReady.value && Boolean(event.dataTransfer?.types.includes('Files'))
+  const acceptsFiles = isReady.value && hasFileDragPayload(event.dataTransfer)
   dragOverActive.value = acceptsFiles
   if (acceptsFiles && event.dataTransfer) {
     event.preventDefault()
@@ -387,13 +405,30 @@ function onDragOver(event: DragEvent): void {
   }
 }
 
+function extractDroppedFiles(dataTransfer: DataTransfer): File[] {
+  if (dataTransfer.files.length > 0) {
+    return Array.from(dataTransfer.files)
+  }
+  const files: File[] = []
+  for (const item of Array.from(dataTransfer.items ?? [])) {
+    if (item.kind !== 'file') continue
+    const file = item.getAsFile()
+    if (file) files.push(file)
+  }
+  return files
+}
+
 async function onDropFiles(event: DragEvent): Promise<void> {
   dragDepth.value = 0
   dragOverActive.value = false
-  if (!isReady.value || !event.dataTransfer?.files.length) return
-  const paths = window.orbit.sftp.getDroppedPaths(event.dataTransfer.files)
+  if (!isReady.value || !event.dataTransfer) return
+  // Convert FileList to File[] before crossing contextBridge; FileList loses indexed items over IPC boundary.
+  const droppedFiles = extractDroppedFiles(event.dataTransfer)
+  const paths = window.orbit.sftp.getDroppedPaths(droppedFiles)
   if (!paths.length) {
-    notify('未能解析拖入的本地文件路径')
+    if (droppedFiles.length > 0 || event.dataTransfer.types.includes('text/uri-list')) {
+      notify(t('sftp.dropNoLocalPaths'))
+    }
     return
   }
   await uploadLocalPathsToCurrentDir(paths)
@@ -402,8 +437,8 @@ async function onDropFiles(event: DragEvent): Promise<void> {
 function copyRemotePath(path: string): void {
   contextMenu.value = null
   void window.orbit.clipboard.writeText(path).then(
-    () => notify(`已复制路径：${path}`),
-    () => notify('无法写入剪贴板')
+    () => notify(t('sftp.copiedPath', { path })),
+    () => notify(t('sftp.clipboardFailed'))
   )
 }
 
@@ -434,12 +469,12 @@ function revealLocalFile(localPath: string): void {
   <aside
     ref="panelRoot"
     class="container_workspace_sftp_panel_base"
-    aria-label="SFTP 文件管理"
+    :aria-label="t('sftp.panelAria')"
     @click="contextMenu = null"
     @dragenter.prevent="onDragEnter"
     @dragover="onDragOver"
     @dragleave.prevent="onDragLeave"
-    @drop.prevent="onDropFiles"
+    @drop.prevent.stop="onDropFiles"
   >
     <header class="container_workspace_sftp_header_base">
       <div class="container_workspace_sftp_header_title">
@@ -449,20 +484,20 @@ function revealLocalFile(localPath: string): void {
           v-if="targetSelectorOptions.length"
           :model-value="selectedTargetValue"
           :options="targetSelectorOptions"
-          aria-label="选择 SFTP 目标主机"
-          placeholder="选择 SSH 主机"
+          :aria-label="t('sftp.selectTargetAria')"
+          :placeholder="t('sftp.selectTargetPlaceholder')"
           size="sm"
           width="176px"
           instance="workspace-sftp-target"
           @update:model-value="onTargetChanged"
         />
-        <span v-else class="container_workspace_sftp_header_empty-host">未选择主机</span>
+        <span v-else class="container_workspace_sftp_header_empty-host">{{ t('sftp.noHostSelected') }}</span>
       </div>
       <button
         class="container_workspace_sftp_header_close"
         type="button"
-        aria-label="关闭 SFTP 面板"
-        title="关闭 SFTP 文件面板"
+        :aria-label="t('sftp.closeAria')"
+        :title="t('sftp.closeTitle')"
         @click="sftpDrawerOpen = false"
       >
         <X :size="14" />
@@ -473,8 +508,8 @@ function revealLocalFile(localPath: string): void {
       <button
         class="container_workspace_sftp_toolbar_up"
         type="button"
-        aria-label="上级目录"
-        title="返回上级目录"
+        :aria-label="t('sftp.upAria')"
+        :title="t('sftp.upTitle')"
         :disabled="!isReady || breadcrumbs.length <= 1"
         @click="goUp"
       >
@@ -483,8 +518,8 @@ function revealLocalFile(localPath: string): void {
       <button
         class="container_workspace_sftp_toolbar_home"
         type="button"
-        aria-label="主目录"
-        title="返回远端主目录"
+        :aria-label="t('sftp.homeAria')"
+        :title="t('sftp.homeTitle')"
         :disabled="!isReady"
         @click="goHome"
       >
@@ -493,8 +528,8 @@ function revealLocalFile(localPath: string): void {
       <button
         class="container_workspace_sftp_toolbar_refresh"
         type="button"
-        aria-label="刷新目录"
-        title="刷新当前远端目录"
+        :aria-label="t('sftp.refreshAria')"
+        :title="t('sftp.refreshTitle')"
         :disabled="!isReady || sftpLoading"
         @click="refreshSftpDirectory(sftpCurrentPath)"
       >
@@ -503,8 +538,8 @@ function revealLocalFile(localPath: string): void {
       <button
         class="container_workspace_sftp_toolbar_hidden"
         type="button"
-        aria-label="显示隐藏文件"
-        title="显示或隐藏以 . 开头的文件"
+        :aria-label="t('sftp.hiddenAria')"
+        :title="t('sftp.hiddenTitle')"
         :aria-pressed="sftpShowHidden"
         @click="sftpShowHidden = !sftpShowHidden"
       >
@@ -514,8 +549,8 @@ function revealLocalFile(localPath: string): void {
       <button
         class="container_workspace_sftp_toolbar_mkdir"
         type="button"
-        aria-label="新建远端文件夹"
-        title="新建远端文件夹"
+        :aria-label="t('sftp.mkdirAria')"
+        :title="t('sftp.mkdirAria')"
         :disabled="!isReady"
         @click="openMkdirModal"
       >
@@ -526,21 +561,21 @@ function revealLocalFile(localPath: string): void {
         type="button"
         data-primary
         :disabled="!isReady"
-        title="选择本地文件上传到当前目录"
+        :title="t('sftp.uploadFileTitle')"
         @click="pickAndUploadFiles"
       >
         <Upload :size="13" />
-        上传文件
+        {{ t('sftp.uploadFile') }}
       </button>
       <button
         class="container_workspace_sftp_toolbar_upload-dir"
         type="button"
         :disabled="!isReady"
-        title="选择本地文件夹递归上传到当前目录"
+        :title="t('sftp.uploadDirTitle')"
         @click="pickAndUploadDirs"
       >
         <FolderUp :size="13" />
-        传目录
+        {{ t('sftp.uploadDir') }}
       </button>
     </div>
 
@@ -550,10 +585,10 @@ function revealLocalFile(localPath: string): void {
           ref="pathInputEl"
           v-model="pathInputValue"
           class="container_workspace_sftp_path_input"
-          aria-label="远端路径"
+          :aria-label="t('sftp.remotePathAria')"
           @keydown.esc="pathEditMode = false"
         />
-        <button class="container_workspace_sftp_path_go" type="submit" aria-label="跳转路径">
+        <button class="container_workspace_sftp_path_go" type="submit" :aria-label="t('sftp.jumpPathAria')">
           <Check :size="13" />
         </button>
       </form>
@@ -570,8 +605,8 @@ function revealLocalFile(localPath: string): void {
         <button
           class="container_workspace_sftp_path_edit"
           type="button"
-          aria-label="编辑远端路径"
-          title="输入远端路径跳转"
+          :aria-label="t('sftp.editPathAria')"
+          :title="t('sftp.editPathTitle')"
           :disabled="!isReady"
           @click="openPathEdit"
         >
@@ -585,8 +620,8 @@ function revealLocalFile(localPath: string): void {
         v-model="sftpFilter"
         class="container_workspace_sftp_filter_input"
         type="text"
-        aria-label="过滤远端文件"
-        placeholder="过滤当前目录…"
+        :aria-label="t('sftp.filterAria')"
+        :placeholder="t('sftp.filterPlaceholder')"
       />
       <button
         class="container_workspace_sftp_sort_name"
@@ -594,7 +629,7 @@ function revealLocalFile(localPath: string): void {
         :data-active="sftpSortBy === 'name'"
         @click="toggleSort('name')"
       >
-        名称
+        {{ t('sftp.sortName') }}
       </button>
       <button
         class="container_workspace_sftp_sort_size"
@@ -602,7 +637,7 @@ function revealLocalFile(localPath: string): void {
         :data-active="sftpSortBy === 'size'"
         @click="toggleSort('size')"
       >
-        大小
+        {{ t('sftp.sortSize') }}
       </button>
       <button
         class="container_workspace_sftp_sort_mtime"
@@ -610,17 +645,23 @@ function revealLocalFile(localPath: string): void {
         :data-active="sftpSortBy === 'mtime'"
         @click="toggleSort('mtime')"
       >
-        时间
+        {{ t('sftp.sortTime') }}
       </button>
-      <span class="container_workspace_sftp_filter_count">{{ visibleSftpEntries.length }} 项</span>
+      <span class="container_workspace_sftp_filter_count">
+        {{ t('sftp.itemCount', { count: visibleSftpEntries.length }) }}
+      </span>
     </div>
 
     <div class="container_workspace_sftp_body_main" :aria-busy="sftpLoading">
       <div v-if="sftpPasswordPrompt" class="container_workspace_sftp_auth_box">
         <p class="container_workspace_sftp_auth_title">
-          连接 {{ sftpPasswordPrompt.host.name }} ({{ sftpPasswordPrompt.host.username }}@{{
-            sftpPasswordPrompt.host.address
-          }})
+          {{
+            t('sftp.authConnectTitle', {
+              name: sftpPasswordPrompt.host.name,
+              user: sftpPasswordPrompt.host.username,
+              host: sftpPasswordPrompt.host.address
+            })
+          }}
         </p>
         <p v-if="sftpPasswordPrompt.error" class="container_workspace_sftp_auth_error">
           {{ sftpPasswordPrompt.error }}
@@ -630,17 +671,19 @@ function revealLocalFile(localPath: string): void {
             v-model="standalonePassword"
             class="container_workspace_sftp_auth_input"
             type="password"
-            aria-label="SFTP 登录密码"
-            placeholder="请输入 SSH 登录密码"
+            :aria-label="t('sftp.passwordInputAria')"
+            :placeholder="t('sftp.passwordPlaceholder')"
           />
-          <button class="container_workspace_sftp_auth_submit" type="submit" data-primary>连接</button>
+          <button class="container_workspace_sftp_auth_submit" type="submit" data-primary>
+            {{ t('sftp.connectAction') }}
+          </button>
         </form>
       </div>
 
       <div v-else-if="!activeSftpContext" class="container_workspace_sftp_nohost_base">
-        <p class="container_workspace_sftp_nohost_title">尚未连接到 SSH 主机</p>
+        <p class="container_workspace_sftp_nohost_title">{{ t('sftp.noHostTitle') }}</p>
         <p class="container_workspace_sftp_nohost_desc">
-          打开 SSH 终端会话或在顶部下拉菜单中选择已保存主机，即可浏览与传输远端文件。
+          {{ t('sftp.noHostDesc') }}
         </p>
         <div v-if="availableSshHosts().length" class="container_workspace_sftp_host_quicklist">
           <button
@@ -659,10 +702,10 @@ function revealLocalFile(localPath: string): void {
         <p class="container_workspace_sftp_pending_title">
           {{
             activeSftpContext.state === 'error'
-              ? 'SFTP 通道未就绪'
+              ? t('sftp.notReadyError')
               : activeSftpContext.state === 'exited'
-                ? 'SSH 会话已断开'
-                : '正在建立安全通道…'
+                ? t('sftp.notReadyExited')
+                : t('sftp.notReadyEstablishing')
           }}
         </p>
         <p v-if="activeSftpContext.message" class="container_workspace_sftp_pending_desc">
@@ -677,7 +720,7 @@ function revealLocalFile(localPath: string): void {
           type="button"
           @click="refreshSftpDirectory(sftpCurrentPath)"
         >
-          重试
+          {{ t('sftp.retryAction') }}
         </button>
       </div>
 
@@ -685,13 +728,13 @@ function revealLocalFile(localPath: string): void {
         v-else-if="sftpLoading && !visibleSftpEntries.length"
         class="container_workspace_sftp_loading_base"
       >
-        <p class="container_workspace_sftp_loading_title">正在读取远端目录…</p>
+        <p class="container_workspace_sftp_loading_title">{{ t('sftp.loadingDir') }}</p>
       </div>
 
       <div v-else-if="!visibleSftpEntries.length" class="container_workspace_sftp_empty_base">
-        <p class="container_workspace_sftp_empty_title">目录为空</p>
+        <p class="container_workspace_sftp_empty_title">{{ t('sftp.emptyDirTitle') }}</p>
         <p class="container_workspace_sftp_empty_desc">
-          可拖放本地文件到此窗口直接上传，或点击上方上传按钮。
+          {{ t('sftp.emptyDirDesc') }}
         </p>
       </div>
 
@@ -720,7 +763,8 @@ function revealLocalFile(localPath: string): void {
               </em>
             </span>
             <span :class="c('container_workspace_sftp_row_meta', entry.path)">
-              {{ isDirEntry(entry) ? '目录' : formatBytes(entry.size) }} · {{ formatOctalMode(entry.mode) }} ·
+              {{ isDirEntry(entry) ? t('sftp.dirLabel') : formatBytes(entry.size) }} ·
+              {{ formatOctalMode(entry.mode) }} ·
               {{ formatMtime(entry.mtime) }}
             </span>
           </div>
@@ -728,8 +772,8 @@ function revealLocalFile(localPath: string): void {
             <button
               :class="c('container_workspace_sftp_row_download', entry.path)"
               type="button"
-              :aria-label="`下载 ${entry.name}`"
-              title="下载到本地"
+              :aria-label="t('sftp.downloadAria', { name: entry.name })"
+              :title="t('sftp.downloadTitle')"
               @click.stop="downloadRemoteEntries([entry])"
             >
               <Download :size="12" />
@@ -737,8 +781,8 @@ function revealLocalFile(localPath: string): void {
             <button
               :class="c('container_workspace_sftp_row_rename', entry.path)"
               type="button"
-              :aria-label="`重命名 ${entry.name}`"
-              title="重命名"
+              :aria-label="t('sftp.renameAria', { name: entry.name })"
+              :title="t('sftp.rename')"
               @click.stop="openRenameModal(entry)"
             >
               <Pencil :size="12" />
@@ -746,8 +790,8 @@ function revealLocalFile(localPath: string): void {
             <button
               :class="c('container_workspace_sftp_row_delete', entry.path)"
               type="button"
-              :aria-label="`删除 ${entry.name}`"
-              title="删除"
+              :aria-label="t('sftp.deleteAria', { name: entry.name })"
+              :title="t('sftp.delete')"
               @click.stop="requestDelete([entry])"
             >
               <Trash2 :size="12" />
@@ -758,19 +802,23 @@ function revealLocalFile(localPath: string): void {
 
       <div v-if="dragOverActive" class="container_workspace_sftp_drop_overlay">
         <Upload :size="24" />
-        <span class="container_workspace_sftp_drop_text">释放以上传到 {{ sftpCurrentPath }}</span>
+        <span class="container_workspace_sftp_drop_text">
+          {{ t('sftp.dropToUpload', { path: sftpCurrentPath }) }}
+        </span>
       </div>
     </div>
 
     <div v-if="selectedEntries.length > 0 && isReady" class="container_workspace_sftp_batch_bar">
-      <span class="container_workspace_sftp_batch_label">已选 {{ selectedEntries.length }} 项</span>
+      <span class="container_workspace_sftp_batch_label">
+        {{ t('sftp.selectedCount', { count: selectedEntries.length }) }}
+      </span>
       <button
         class="container_workspace_sftp_batch_download"
         type="button"
         @click="downloadRemoteEntries(selectedEntries)"
       >
         <Download :size="12" />
-        下载
+        {{ t('sftp.download') }}
       </button>
       <button
         class="container_workspace_sftp_batch_delete"
@@ -778,10 +826,10 @@ function revealLocalFile(localPath: string): void {
         @click="requestDelete(selectedEntries)"
       >
         <Trash2 :size="12" />
-        删除
+        {{ t('sftp.delete') }}
       </button>
       <button class="container_workspace_sftp_batch_clear" type="button" @click="selectedPaths = new Set()">
-        取消选择
+        {{ t('sftp.clearSelection') }}
       </button>
     </div>
 
@@ -806,7 +854,7 @@ function revealLocalFile(localPath: string): void {
         "
       >
         <Download :size="13" />
-        下载到本地
+        {{ t('sftp.menuDownload') }}
       </button>
       <button
         class="container_workspace_sftp_menu_rename"
@@ -814,7 +862,7 @@ function revealLocalFile(localPath: string): void {
         @click="openRenameModal(contextMenu.entry)"
       >
         <Pencil :size="13" />
-        重命名
+        {{ t('sftp.rename') }}
       </button>
       <button
         class="container_workspace_sftp_menu_chmod"
@@ -822,7 +870,7 @@ function revealLocalFile(localPath: string): void {
         @click="openChmodModal(contextMenu.entry)"
       >
         <Shield :size="13" />
-        修改权限 (chmod)
+        {{ t('sftp.menuChmod') }}
       </button>
       <button
         class="container_workspace_sftp_menu_copypath"
@@ -830,7 +878,7 @@ function revealLocalFile(localPath: string): void {
         @click="copyRemotePath(contextMenu.entry.path)"
       >
         <Copy :size="13" />
-        复制远端路径
+        {{ t('sftp.menuCopyPath') }}
       </button>
       <button
         class="container_workspace_sftp_menu_insertpath"
@@ -844,7 +892,7 @@ function revealLocalFile(localPath: string): void {
         "
       >
         <Terminal :size="13" />
-        插入路径到终端
+        {{ t('sftp.menuInsertPath') }}
       </button>
       <button
         class="container_workspace_sftp_menu_delete"
@@ -852,19 +900,19 @@ function revealLocalFile(localPath: string): void {
         @click="requestDelete([contextMenu.entry])"
       >
         <Trash2 :size="13" />
-        删除
+        {{ t('sftp.delete') }}
       </button>
     </div>
 
     <div v-if="mkdirDialogOpen" class="container_workspace_sftp_mkdir_backdrop">
       <form class="container_workspace_sftp_mkdir_card" @submit.prevent="submitMkdir">
-        <strong class="container_workspace_sftp_mkdir_title">新建远端文件夹</strong>
+        <strong class="container_workspace_sftp_mkdir_title">{{ t('sftp.mkdirTitle') }}</strong>
         <input
           ref="mkdirInputEl"
           v-model="mkdirName"
           class="container_workspace_sftp_mkdir_input"
-          aria-label="新建文件夹名称"
-          placeholder="输入目录名称"
+          :aria-label="t('sftp.mkdirAriaInput')"
+          :placeholder="t('sftp.mkdirPlaceholder')"
           @keydown.esc="mkdirDialogOpen = false"
         />
         <div class="container_workspace_sftp_mkdir_actions">
@@ -873,55 +921,53 @@ function revealLocalFile(localPath: string): void {
             type="button"
             @click="mkdirDialogOpen = false"
           >
-            取消
+            {{ t('actionDialog.cancel') }}
           </button>
-          <button class="container_workspace_sftp_mkdir_confirm" type="submit" data-primary>创建</button>
+          <button class="container_workspace_sftp_mkdir_confirm" type="submit" data-primary>
+            {{ t('sftp.create') }}
+          </button>
         </div>
       </form>
     </div>
 
     <div v-if="renameTarget" class="container_workspace_sftp_rename_backdrop">
       <form class="container_workspace_sftp_rename_card" @submit.prevent="submitRename">
-        <strong class="container_workspace_sftp_rename_title">重命名 {{ renameTarget.name }}</strong>
+        <strong class="container_workspace_sftp_rename_title">
+          {{ t('sftp.renameTitle', { name: renameTarget.name }) }}
+        </strong>
         <input
           ref="renameInputEl"
           v-model="renameValue"
           class="container_workspace_sftp_rename_input"
-          aria-label="重命名文件名"
+          :aria-label="t('sftp.renameAriaInput')"
           @keydown.esc="renameTarget = null"
         />
         <div class="container_workspace_sftp_rename_actions">
           <button class="container_workspace_sftp_rename_cancel" type="button" @click="renameTarget = null">
-            取消
+            {{ t('actionDialog.cancel') }}
           </button>
-          <button class="container_workspace_sftp_rename_confirm" type="submit" data-primary>确定</button>
+          <button class="container_workspace_sftp_rename_confirm" type="submit" data-primary>
+            {{ t('sftp.confirm') }}
+          </button>
         </div>
       </form>
     </div>
 
     <div v-if="chmodTarget" class="container_workspace_sftp_chmod_backdrop">
       <form class="container_workspace_sftp_chmod_card" @submit.prevent="submitChmod">
-        <strong class="container_workspace_sftp_chmod_title">修改权限 · {{ chmodTarget.name }}</strong>
+        <strong class="container_workspace_sftp_chmod_title">
+          {{ t('sftp.chmodTitle', { name: chmodTarget.name }) }}
+        </strong>
         <input
           ref="chmodInputEl"
           v-model="chmodOctal"
           class="container_workspace_sftp_chmod_input"
-          aria-label="八进制权限"
+          :aria-label="t('sftp.chmodAriaInput')"
           placeholder="0755"
         />
         <div class="container_workspace_sftp_chmod_grid">
           <label
-            v-for="bit in [
-              { label: '主读', shift: 8 },
-              { label: '主写', shift: 7 },
-              { label: '主执', shift: 6 },
-              { label: '组读', shift: 5 },
-              { label: '组写', shift: 4 },
-              { label: '组执', shift: 3 },
-              { label: '他读', shift: 2 },
-              { label: '他写', shift: 1 },
-              { label: '他执', shift: 0 }
-            ]"
+            v-for="bit in chmodPermissions"
             :key="bit.shift"
             :class="c('container_workspace_sftp_chmod_cell', String(bit.shift))"
           >
@@ -936,20 +982,26 @@ function revealLocalFile(localPath: string): void {
         </div>
         <div class="container_workspace_sftp_chmod_actions">
           <button class="container_workspace_sftp_chmod_cancel" type="button" @click="chmodTarget = null">
-            取消
+            {{ t('actionDialog.cancel') }}
           </button>
-          <button class="container_workspace_sftp_chmod_confirm" type="submit" data-primary>应用</button>
+          <button class="container_workspace_sftp_chmod_confirm" type="submit" data-primary>
+            {{ t('sftp.apply') }}
+          </button>
         </div>
       </form>
     </div>
 
     <div v-if="deleteTarget" class="container_workspace_sftp_delete_backdrop">
-      <div class="container_workspace_sftp_delete_card" role="dialog" aria-label="确认删除远端项目">
+      <div
+        class="container_workspace_sftp_delete_card"
+        role="dialog"
+        :aria-label="t('sftp.deleteDialogAria')"
+      >
         <strong class="container_workspace_sftp_delete_title">
-          确认删除以下 {{ deleteTarget.length }} 项？
+          {{ t('sftp.deleteTitle', { count: deleteTarget.length }) }}
         </strong>
         <p class="container_workspace_sftp_delete_desc">
-          目录将递归删除内部文件；符号链接仅移除链接本身，不穿过目标目录。
+          {{ t('sftp.deleteDesc') }}
         </p>
         <ul class="container_workspace_sftp_delete_list">
           <li
@@ -962,7 +1014,7 @@ function revealLocalFile(localPath: string): void {
         </ul>
         <div class="container_workspace_sftp_delete_actions">
           <button class="container_workspace_sftp_delete_cancel" type="button" @click="deleteTarget = null">
-            取消
+            {{ t('actionDialog.cancel') }}
           </button>
           <button
             class="container_workspace_sftp_delete_confirm"
@@ -970,23 +1022,33 @@ function revealLocalFile(localPath: string): void {
             data-danger
             @click="confirmDelete"
           >
-            确认删除
+            {{ t('sftp.deleteConfirmBtn') }}
           </button>
         </div>
       </div>
     </div>
 
     <div v-if="sftpConflictPrompt" class="container_workspace_sftp_conflict_backdrop">
-      <div class="container_workspace_sftp_conflict_card" role="dialog" aria-label="文件已存在冲突">
-        <strong class="container_workspace_sftp_conflict_title">目标文件已存在</strong>
+      <div
+        class="container_workspace_sftp_conflict_card"
+        role="dialog"
+        :aria-label="t('sftp.conflictDialogAria')"
+      >
+        <strong class="container_workspace_sftp_conflict_title">{{ t('sftp.conflictTitle') }}</strong>
         <p class="container_workspace_sftp_conflict_desc">
-          {{ sftpConflictPrompt.direction === 'upload' ? '远端' : '本地' }}已存在「{{
-            sftpConflictPrompt.name
-          }}」，请选择处理方式：
+          {{
+            t('sftp.conflictDesc', {
+              side:
+                sftpConflictPrompt.direction === 'upload'
+                  ? t('sftp.conflictRemote')
+                  : t('sftp.conflictLocal'),
+              name: sftpConflictPrompt.name
+            })
+          }}
         </p>
         <label class="container_workspace_sftp_conflict_check">
           <input v-model="conflictApplyAll" class="container_workspace_sftp_conflict_box" type="checkbox" />
-          <span class="container_workspace_sftp_conflict_label">应用到本批后续冲突</span>
+          <span class="container_workspace_sftp_conflict_label">{{ t('sftp.conflictApplyAll') }}</span>
         </label>
         <div class="container_workspace_sftp_conflict_actions">
           <button
@@ -994,14 +1056,14 @@ function revealLocalFile(localPath: string): void {
             type="button"
             @click="sftpConflictPrompt.resolve({ decision: 'skip', applyAll: conflictApplyAll })"
           >
-            跳过
+            {{ t('sftp.conflictSkip') }}
           </button>
           <button
             class="container_workspace_sftp_conflict_rename"
             type="button"
             @click="sftpConflictPrompt.resolve({ decision: 'rename', applyAll: conflictApplyAll })"
           >
-            重命名保留
+            {{ t('sftp.conflictRename') }}
           </button>
           <button
             class="container_workspace_sftp_conflict_confirm"
@@ -1009,7 +1071,7 @@ function revealLocalFile(localPath: string): void {
             data-primary
             @click="sftpConflictPrompt.resolve({ decision: 'overwrite', applyAll: conflictApplyAll })"
           >
-            覆盖
+            {{ t('sftp.conflictOverwrite') }}
           </button>
         </div>
       </div>

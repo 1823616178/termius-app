@@ -26,24 +26,110 @@ export interface SwordPose {
 
 export interface FormationMeta {
   name: string
+  nameEn: string
   sub: string
+  subEn: string
   link: 'none' | 'threads' | 'grid' | 'ring'
   linkColor: 0 | 1 | 2
 }
 
 export const FORMATIONS: FormationMeta[] = [
-  { name: '诛仙剑阵', sub: '四门诛戮陷绝 · 杀意朝心', link: 'none', linkColor: 0 },
-  { name: '大庚剑阵', sub: '庚金剑丝 · 隐匿穿空', link: 'threads', linkColor: 0 },
-  { name: '春黎剑阵', sub: '幻术为基 · 春影重叠', link: 'none', linkColor: 1 },
-  { name: '青蟠剑阵', sub: '青元高阶 · 蟠龙绕柱', link: 'none', linkColor: 1 },
-  { name: '小千剑阵', sub: '千剑层叠 · 六重呼吸', link: 'none', linkColor: 0 },
-  { name: '大千剑阵', sub: '大千世界 · 三环浑天', link: 'none', linkColor: 0 },
-  { name: '恒山剑阵', sub: '七人一队 · 攻守相济', link: 'none', linkColor: 1 },
-  { name: '六脉神剑阵', sub: '六脉剑气 · 依次奔涌', link: 'none', linkColor: 0 },
-  { name: '罗汉剑阵', sub: '少林罗汉 · 立剑如僧', link: 'none', linkColor: 0 },
-  { name: '九宫八卦剑阵', sub: '九宫方位 · 交织剑网', link: 'grid', linkColor: 1 },
-  { name: '五行连环剑阵', sub: '五行相生 · 连环合击', link: 'ring', linkColor: 0 },
-  { name: '五九剑阵', sub: '四五长剑 · 旋盘不息', link: 'none', linkColor: 0 }
+  {
+    name: '诛仙剑阵',
+    nameEn: 'Zhu Xian Array',
+    sub: '四门诛戮陷绝 · 杀意朝心',
+    subEn: 'Four Gates of Slaughter · Blades Converged',
+    link: 'none',
+    linkColor: 0
+  },
+  {
+    name: '大庚剑阵',
+    nameEn: 'Da Geng Sword Array',
+    sub: '庚金剑丝 · 隐匿穿空',
+    subEn: 'Gilded Wire Threads · Silent Void Pierce',
+    link: 'threads',
+    linkColor: 0
+  },
+  {
+    name: '春黎剑阵',
+    nameEn: 'Chun Li Array',
+    sub: '幻术为基 · 春影重叠',
+    subEn: 'Illusion Foundation · Layered Dawn Shadows',
+    link: 'none',
+    linkColor: 1
+  },
+  {
+    name: '青蟠剑阵',
+    nameEn: 'Qing Pan Array',
+    sub: '青元高阶 · 蟠龙绕柱',
+    subEn: 'Azure Essence · Coiling Dragon Pillars',
+    link: 'none',
+    linkColor: 1
+  },
+  {
+    name: '小千剑阵',
+    nameEn: 'Xiao Qian Array',
+    sub: '千剑层叠 · 六重呼吸',
+    subEn: 'Thousand Layered Blades · Sixfold Breath',
+    link: 'none',
+    linkColor: 0
+  },
+  {
+    name: '大千剑阵',
+    nameEn: 'Da Qian Array',
+    sub: '大千世界 · 三环浑天',
+    subEn: 'Grand Cosmos · Tri-Ring Celestial Sphere',
+    link: 'none',
+    linkColor: 0
+  },
+  {
+    name: '恒山剑阵',
+    nameEn: 'Heng Shan Array',
+    sub: '七人一队 · 攻守相济',
+    subEn: 'Seven-Star Phalanx · Balanced Guard & Strike',
+    link: 'none',
+    linkColor: 1
+  },
+  {
+    name: '六脉神剑阵',
+    nameEn: 'Six Meridians Array',
+    sub: '六脉剑气 · 依次奔涌',
+    subEn: 'Six Meridian Qi · Cascading Surge',
+    link: 'none',
+    linkColor: 0
+  },
+  {
+    name: '罗汉剑阵',
+    nameEn: 'Arhat Sword Array',
+    sub: '少林罗汉 · 立剑如僧',
+    subEn: 'Shaolin Arhat · Standing Blades in Serenity',
+    link: 'none',
+    linkColor: 0
+  },
+  {
+    name: '九宫八卦剑阵',
+    nameEn: 'Bagua Nine-Palace Array',
+    sub: '九宫方位 · 交织剑网',
+    subEn: 'Nine Palaces · Interwoven Trigram Lattice',
+    link: 'grid',
+    linkColor: 1
+  },
+  {
+    name: '五行连环剑阵',
+    nameEn: 'Five Elements Ring',
+    sub: '五行相生 · 连环合击',
+    subEn: 'Wu Xing Cycle · Linked Orbital Strike',
+    link: 'ring',
+    linkColor: 0
+  },
+  {
+    name: '五九剑阵',
+    nameEn: 'Five-Nine Vortex Array',
+    sub: '四五长剑 · 旋盘不息',
+    subEn: 'Forty-Five Longswords · Perpetual Spiral',
+    link: 'none',
+    linkColor: 0
+  }
 ]
 
 export interface FormationWeights {

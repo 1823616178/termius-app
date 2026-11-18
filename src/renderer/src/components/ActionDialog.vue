@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted, onBeforeUnmount, nextTick, useId } from 'vue'
 import { ShieldCheck, TriangleAlert } from '@lucide/vue'
+import { t } from '../services/i18n'
 
 defineProps<{
   kind: 'password' | 'trust' | 'delete'
@@ -55,7 +56,7 @@ onBeforeUnmount(() => {
       <p class="container_shared_action_body_description">{{ description }}</p>
       <template v-if="kind === 'password'">
         <label class="container_shared_action_body_password-label">
-          本次连接密码
+          {{ t('actionDialog.passwordLabel') }}
           <input
             ref="field"
             v-model="password"
@@ -66,19 +67,21 @@ onBeforeUnmount(() => {
         </label>
         <label v-if="encryptionAvailable" class="container_shared_action_body_save-label">
           <input v-model="savePassword" class="container_shared_action_body_save-input" type="checkbox" />
-          {{
-            hasSavedPassword ? '更新并保存密码到此主机（系统凭据保护）' : '保存密码到此主机（系统凭据保护）'
-          }}
+          {{ hasSavedPassword ? t('actionDialog.updateSavedPassword') : t('actionDialog.savePassword') }}
         </label>
         <p v-else class="container_shared_action_body_nokeyring">
-          当前环境未检测到可用系统 Keyring，本次密码仅在会话内存中临时使用，不会落盘保存。
+          {{ t('actionDialog.noKeyring') }}
         </p>
       </template>
       <template v-if="kind === 'trust'">
-        <span class="container_shared_action_body_fingerprint-label">服务器公钥指纹</span>
+        <span class="container_shared_action_body_fingerprint-label">
+          {{ t('actionDialog.fingerprintLabel') }}
+        </span>
         <code class="container_shared_action_body_fingerprint">{{ fingerprint }}</code>
         <template v-if="previous">
-          <span class="container_shared_action_body_previous-label">之前信任的指纹</span>
+          <span class="container_shared_action_body_previous-label">
+            {{ t('actionDialog.previousLabel') }}
+          </span>
           <code class="container_shared_action_body_previous">{{ previous }}</code>
           <label class="container_shared_action_body_acknowledge-label">
             <input
@@ -86,11 +89,11 @@ onBeforeUnmount(() => {
               class="container_shared_action_body_acknowledge-input"
               type="checkbox"
             />
-            我已通过独立渠道核实主机密钥变更
+            {{ t('actionDialog.acknowledgeChangedKey') }}
           </label>
         </template>
         <p class="container_shared_action_body_trust-help">
-          请与服务器管理员或可信渠道提供的 SHA256 指纹核对。
+          {{ t('actionDialog.trustHelp') }}
         </p>
       </template>
       <footer class="container_shared_action_footer_base">
@@ -100,7 +103,7 @@ onBeforeUnmount(() => {
           :disabled="busy"
           @click="emit('cancel')"
         >
-          取消
+          {{ t('actionDialog.cancel') }}
         </button>
         <button
           class="container_shared_action_footer_confirm"
@@ -112,14 +115,14 @@ onBeforeUnmount(() => {
         >
           {{
             busy
-              ? '处理中…'
+              ? t('actionDialog.processing')
               : kind === 'trust'
-                ? '信任并继续'
+                ? t('actionDialog.trustContinue')
                 : kind === 'delete'
-                  ? '删除配置'
+                  ? t('actionDialog.deleteConfirm')
                   : alertMessage
-                    ? '重新连接'
-                    : '连接'
+                    ? t('actionDialog.reconnect')
+                    : t('actionDialog.connect')
           }}
         </button>
       </footer>
@@ -152,12 +155,17 @@ onBeforeUnmount(() => {
 }
 .container_shared_action_header_title {
   margin: 0;
-  font-size: 20px;
+  font-family: var(--font-display);
+  font-size: var(--font-size-ui-2xl);
+  font-weight: var(--font-ui-heading-weight);
+  color: var(--color-text-heading);
 }
 .container_shared_action_body_description {
   margin: 0;
+  font-size: var(--font-size-ui-sm);
   color: var(--color-text-secondary);
-  line-height: 1.8;
+  line-height: var(--font-ui-line-height);
+  letter-spacing: var(--font-ui-letter-spacing);
   overflow-wrap: anywhere;
 }
 .container_shared_action_body_alert {
@@ -167,27 +175,27 @@ onBeforeUnmount(() => {
   background: var(--color-warning-soft);
   border: 1px solid rgba(245, 196, 107, 0.35);
   color: var(--color-warning);
-  font-size: 13px;
+  font-size: var(--font-size-ui-sm);
   line-height: 1.6;
 }
 .container_shared_action_body_password-label {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
   color: var(--color-text-secondary);
 }
 .container_shared_action_body_save-label {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
   color: var(--color-text-secondary);
   cursor: pointer;
 }
 .container_shared_action_body_nokeyring {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
   color: var(--color-text-muted);
   line-height: 1.6;
 }

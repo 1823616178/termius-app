@@ -1,6 +1,18 @@
 import type { TrayPreferencesPatch } from '../../../shared/contracts'
 import type { UpdatePreferencesPatch } from '../../../shared/updater'
+import {
+  applyPanelTypographyToDocument,
+  DEFAULT_PANEL_DISPLAY_FONT_ID,
+  DEFAULT_PANEL_FONT_ID,
+  DEFAULT_PANEL_TEXT_COLORS,
+  DEFAULT_TERMINAL_CUSTOM_COLORS,
+  DEFAULT_TERMINAL_FONT_ID,
+  mergeAvailableSystemFonts,
+  type PanelTextColors,
+  type TerminalCustomColors
+} from '../services/fonts'
 import { loadHostRecency } from '../services/host-recency'
+import { applyLocaleToDocument, locale, parseAppLocale } from '../services/i18n'
 import {
   assessMotionCapability,
   parseMotionPreference,
@@ -8,7 +20,7 @@ import {
   resolveMotionPreference,
   sampleMotionFrame
 } from '../services/motion-performance'
-import { TERMINAL_THEMES, type TerminalThemeId } from '../services/terminal-themes'
+import { getTerminalTheme, TERMINAL_THEMES, type TerminalThemeId } from '../services/terminal-themes'
 import {
   applyUiThemeToDocument,
   DEFAULT_CUSTOM_COLORS,
@@ -17,6 +29,7 @@ import {
   type UiThemeId
 } from '../services/ui-themes'
 import {
+  bootstrap,
   copyOnSelect,
   cursorBlink,
   cursorStyle,
@@ -32,10 +45,33 @@ import {
   motionTier,
   notify,
   page,
+  panelCopyOnSelect,
+  panelCustomColors,
+  panelCustomColorsEnabled,
+  panelCustomDisplayFont,
+  panelCustomFont,
+  panelDisplayFontId,
+  panelFontId,
+  panelFontSize,
+  panelFontWeight,
+  panelLetterSpacing,
+  panelLineHeight,
   screenReaderDefault,
   selectedShellId,
   sidebarWidth,
   syncWriteMode,
+  systemFonts,
+  systemFontsLoading,
+  terminalCustomColors,
+  terminalCustomColorsEnabled,
+  terminalCustomFont,
+  terminalFontId,
+  terminalFontWeight,
+  terminalFontWeightBold,
+  terminalGpuEnabled,
+  terminalLetterSpacing,
+  terminalLigatures,
+  terminalMinimumContrast,
   terminalTheme,
   trayState,
   uiTheme,
@@ -61,6 +97,18 @@ export function applyVisualPreferences(): void {
   applyMotionPreferences()
   document.documentElement.dataset.contrast = highContrast.value ? 'high' : 'standard'
   applyUiThemeToDocument(uiTheme.value, customUiColors.value)
+  applyPanelTypographyToDocument({
+    fontId: panelFontId.value,
+    customFont: panelCustomFont.value,
+    displayFontId: panelDisplayFontId.value,
+    customDisplayFont: panelCustomDisplayFont.value,
+    fontSize: panelFontSize.value,
+    fontWeight: panelFontWeight.value,
+    lineHeight: panelLineHeight.value,
+    letterSpacing: panelLetterSpacing.value,
+    customColorsEnabled: panelCustomColorsEnabled.value,
+    textColors: panelCustomColors.value
+  })
 }
 
 export function refreshMotionPreference(): void {
@@ -135,14 +183,74 @@ export function cycleUiTheme(): void {
   const next = order[(idx + 1) % order.length]!
   setUiTheme(next)
   const preset = UI_THEME_PRESETS.find((item) => item.id === next)
-  if (preset) notify(`已切换主题：${preset.name}`)
+  if (preset) {
+    notify(locale.value === 'en-US' ? `UI theme switched: ${preset.nameEn}` : `已切换主题：${preset.name}`)
+  }
+}
+
+export function syncTerminalCustomColorsWithPreset(): void {
+  const preset = getTerminalTheme(terminalTheme.value)
+  terminalCustomColors.value = {
+    foreground: preset.theme.foreground || DEFAULT_TERMINAL_CUSTOM_COLORS.foreground,
+    background: preset.background || DEFAULT_TERMINAL_CUSTOM_COLORS.background,
+    cursor: preset.theme.cursor || DEFAULT_TERMINAL_CUSTOM_COLORS.cursor,
+    selection: DEFAULT_TERMINAL_CUSTOM_COLORS.selection
+  }
+}
+
+export function resetTerminalTypography(): void {
+  terminalFontId.value = DEFAULT_TERMINAL_FONT_ID
+  terminalCustomFont.value = ''
+  fontSize.value = 14
+  lineHeight.value = 1.28
+  terminalFontWeight.value = '400'
+  terminalFontWeightBold.value = '600'
+  terminalLetterSpacing.value = 0
+  terminalLigatures.value = true
+  terminalMinimumContrast.value = 4.5
+  terminalCustomColorsEnabled.value = false
+  syncTerminalCustomColorsWithPreset()
+}
+
+export function resetPanelTypography(): void {
+  panelFontId.value = DEFAULT_PANEL_FONT_ID
+  panelCustomFont.value = ''
+  panelDisplayFontId.value = DEFAULT_PANEL_DISPLAY_FONT_ID
+  panelCustomDisplayFont.value = ''
+  panelFontSize.value = 13
+  panelFontWeight.value = '400'
+  panelLineHeight.value = 1.5
+  panelLetterSpacing.value = 0
+  panelCustomColorsEnabled.value = false
+  panelCustomColors.value = { ...DEFAULT_PANEL_TEXT_COLORS }
+  applyVisualPreferences()
+}
+
+export async function loadSystemFonts(forceRefresh = false): Promise<void> {
+  if (systemFontsLoading.value) return
+  systemFontsLoading.value = true
+  try {
+    const discovered = (await window.orbit?.fonts?.listSystem?.(forceRefresh).catch(() => [])) ?? []
+    systemFonts.value = mergeAvailableSystemFonts(discovered, bootstrap.value?.platform)
+  } finally {
+    systemFontsLoading.value = false
+  }
 }
 
 export function loadSavedPreferences(): void {
   loadHostRecency()
   try {
+    const savedLocale = parseAppLocale(localStorage.getItem('orbit:locale'))
+    locale.value = savedLocale
+    applyLocaleToDocument(savedLocale)
+    try {
+      void window.orbit?.locale?.set?.(savedLocale).catch(() => {})
+    } catch {
+      /* bridge optional */
+    }
+
     const savedSize = Number(localStorage.getItem('orbit:font-size'))
-    if (savedSize >= 10 && savedSize <= 24) fontSize.value = savedSize
+    if (savedSize >= 10 && savedSize <= 28) fontSize.value = savedSize
     const savedTheme = localStorage.getItem('orbit:terminal-theme')
     if (TERMINAL_THEMES.some((item) => item.id === savedTheme)) {
       terminalTheme.value = savedTheme as TerminalThemeId
@@ -171,7 +279,7 @@ export function loadSavedPreferences(): void {
       syncWriteMode.value = savedWriteMode
     }
     const savedLineHeight = Number(localStorage.getItem('orbit:line-height'))
-    if (savedLineHeight >= 1.1 && savedLineHeight <= 1.6) {
+    if (savedLineHeight >= 1.0 && savedLineHeight <= 1.8) {
       lineHeight.value = Number(savedLineHeight.toFixed(2))
     }
     const savedCursorStyle = localStorage.getItem('orbit:cursor-style')
@@ -183,6 +291,8 @@ export function loadSavedPreferences(): void {
       cursorBlink.value = savedCursorBlink === 'true'
     }
     copyOnSelect.value = localStorage.getItem('orbit:copy-on-select') === 'true'
+    panelCopyOnSelect.value = localStorage.getItem('orbit:panel-copy-on-select') === 'true'
+    terminalGpuEnabled.value = localStorage.getItem('orbit:terminal-gpu') !== 'false'
     const savedShell = localStorage.getItem('orbit:default-shell')
     if (savedShell) selectedShellId.value = savedShell
     motionPreference.value = parseMotionPreference(localStorage.getItem('orbit:motion-tier'))
@@ -190,9 +300,83 @@ export function loadSavedPreferences(): void {
     screenReaderDefault.value = localStorage.getItem('orbit:screen-reader') === 'true'
     const savedSidebar = Number(localStorage.getItem('orbit:sidebar-width'))
     if (savedSidebar >= 200 && savedSidebar <= 360) sidebarWidth.value = savedSidebar
+
+    const savedTermFontId = localStorage.getItem('orbit:terminal-font-id')
+    if (savedTermFontId) terminalFontId.value = savedTermFontId
+    const savedTermCustomFont = localStorage.getItem('orbit:terminal-custom-font')
+    if (savedTermCustomFont !== null) terminalCustomFont.value = savedTermCustomFont
+    const savedTermWeight = localStorage.getItem('orbit:terminal-font-weight')
+    if (savedTermWeight) terminalFontWeight.value = savedTermWeight
+    const savedTermBoldWeight = localStorage.getItem('orbit:terminal-font-weight-bold')
+    if (savedTermBoldWeight) terminalFontWeightBold.value = savedTermBoldWeight
+    const savedTermLetterSpacing = Number(localStorage.getItem('orbit:terminal-letter-spacing'))
+    if (
+      Number.isFinite(savedTermLetterSpacing) &&
+      savedTermLetterSpacing >= -1 &&
+      savedTermLetterSpacing <= 4
+    ) {
+      terminalLetterSpacing.value = savedTermLetterSpacing
+    }
+    const savedTermLigatures = localStorage.getItem('orbit:terminal-ligatures')
+    if (savedTermLigatures === 'true' || savedTermLigatures === 'false') {
+      terminalLigatures.value = savedTermLigatures === 'true'
+    }
+    const savedMinContrast = Number(localStorage.getItem('orbit:terminal-min-contrast'))
+    if (Number.isFinite(savedMinContrast) && savedMinContrast >= 1 && savedMinContrast <= 21) {
+      terminalMinimumContrast.value = savedMinContrast
+    }
+    terminalCustomColorsEnabled.value =
+      localStorage.getItem('orbit:terminal-custom-colors-enabled') === 'true'
+    const savedTermColorsRaw = localStorage.getItem('orbit:terminal-custom-colors')
+    if (savedTermColorsRaw) {
+      const parsed = JSON.parse(savedTermColorsRaw) as Partial<TerminalCustomColors>
+      terminalCustomColors.value = {
+        foreground: parsed.foreground || DEFAULT_TERMINAL_CUSTOM_COLORS.foreground,
+        background: parsed.background || DEFAULT_TERMINAL_CUSTOM_COLORS.background,
+        cursor: parsed.cursor || DEFAULT_TERMINAL_CUSTOM_COLORS.cursor,
+        selection: parsed.selection || DEFAULT_TERMINAL_CUSTOM_COLORS.selection
+      }
+    }
+
+    const savedPanelFontId = localStorage.getItem('orbit:panel-font-id')
+    if (savedPanelFontId) panelFontId.value = savedPanelFontId
+    const savedPanelCustomFont = localStorage.getItem('orbit:panel-custom-font')
+    if (savedPanelCustomFont !== null) panelCustomFont.value = savedPanelCustomFont
+    const savedPanelDisplayFontId = localStorage.getItem('orbit:panel-display-font-id')
+    if (savedPanelDisplayFontId) panelDisplayFontId.value = savedPanelDisplayFontId
+    const savedPanelCustomDisplayFont = localStorage.getItem('orbit:panel-custom-display-font')
+    if (savedPanelCustomDisplayFont !== null) panelCustomDisplayFont.value = savedPanelCustomDisplayFont
+    const savedPanelFontSize = Number(localStorage.getItem('orbit:panel-font-size'))
+    if (savedPanelFontSize >= 11 && savedPanelFontSize <= 20) panelFontSize.value = savedPanelFontSize
+    const savedPanelWeight = localStorage.getItem('orbit:panel-font-weight')
+    if (savedPanelWeight) panelFontWeight.value = savedPanelWeight
+    const savedPanelLineHeight = Number(localStorage.getItem('orbit:panel-line-height'))
+    if (savedPanelLineHeight >= 1.15 && savedPanelLineHeight <= 1.9) {
+      panelLineHeight.value = Number(savedPanelLineHeight.toFixed(2))
+    }
+    const savedPanelLetterSpacing = Number(localStorage.getItem('orbit:panel-letter-spacing'))
+    if (
+      Number.isFinite(savedPanelLetterSpacing) &&
+      savedPanelLetterSpacing >= -0.5 &&
+      savedPanelLetterSpacing <= 3
+    ) {
+      panelLetterSpacing.value = savedPanelLetterSpacing
+    }
+    panelCustomColorsEnabled.value = localStorage.getItem('orbit:panel-custom-colors-enabled') === 'true'
+    const savedPanelColorsRaw = localStorage.getItem('orbit:panel-custom-colors')
+    if (savedPanelColorsRaw) {
+      const parsed = JSON.parse(savedPanelColorsRaw) as Partial<PanelTextColors>
+      panelCustomColors.value = {
+        primary: parsed.primary || DEFAULT_PANEL_TEXT_COLORS.primary,
+        secondary: parsed.secondary || DEFAULT_PANEL_TEXT_COLORS.secondary,
+        muted: parsed.muted || DEFAULT_PANEL_TEXT_COLORS.muted,
+        heading: parsed.heading || DEFAULT_PANEL_TEXT_COLORS.heading
+      }
+    }
   } catch {
     /* preferences are optional */
   }
+  systemFonts.value = mergeAvailableSystemFonts([], bootstrap.value?.platform)
   if (!motionMediaQuery) {
     motionMediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)')
     motionMediaQuery.addEventListener('change', handleSystemMotionChange)
@@ -214,52 +398,64 @@ export function openUpdateSettings(): void {
 }
 
 export async function checkForUpdates(): Promise<void> {
+  const en = locale.value === 'en-US'
   try {
     const next = await window.orbit.update.checkForUpdates()
     updateState.value = next
     if (next.phase === 'available' && next.latest) {
-      notify(`发现新版本 v${next.latest.version}`)
+      notify(en ? `New release found: v${next.latest.version}` : `发现新版本 v${next.latest.version}`)
     } else if (next.phase === 'up-to-date') {
       notify(next.message)
     } else if (next.phase === 'error' && next.error) {
-      notify(`检查更新失败：${next.error}`)
+      notify(en ? `Update check failed: ${next.error}` : `检查更新失败：${next.error}`)
     }
   } catch (error) {
-    notify(error instanceof Error ? error.message : '检查更新失败')
+    notify(error instanceof Error ? error.message : en ? 'Update check failed' : '检查更新失败')
   }
 }
 
 export async function downloadAvailableUpdate(): Promise<void> {
+  const en = locale.value === 'en-US'
   try {
     updateState.value = await window.orbit.update.downloadUpdate()
   } catch (error) {
-    notify(error instanceof Error ? error.message : '下载更新失败')
+    notify(error instanceof Error ? error.message : en ? 'Failed to download update' : '下载更新失败')
   }
 }
 
 export async function cancelUpdateDownload(): Promise<void> {
   updateState.value = await window.orbit.update.cancelDownload()
-  notify('已取消更新下载')
+  notify(locale.value === 'en-US' ? 'Update download cancelled' : '已取消更新下载')
 }
 
 export async function installDownloadedUpdate(): Promise<void> {
+  const en = locale.value === 'en-US'
   try {
     await window.orbit.update.installUpdate()
   } catch (error) {
-    notify(error instanceof Error ? error.message : '启动安装程序失败')
+    notify(error instanceof Error ? error.message : en ? 'Failed to launch installer' : '启动安装程序失败')
   }
 }
 
 export async function revealDownloadedUpdate(): Promise<void> {
   const revealed = await window.orbit.update.revealDownloadedFile()
-  if (!revealed) notify('未找到已下载的安装包文件')
+  if (!revealed) {
+    notify(locale.value === 'en-US' ? 'Downloaded installer file not found' : '未找到已下载的安装包文件')
+  }
 }
 
 export async function openUpdateReleasePage(): Promise<void> {
+  const en = locale.value === 'en-US'
   try {
     await window.orbit.update.openReleasePage()
   } catch (error) {
-    notify(error instanceof Error ? error.message : '打开 GitHub 发布页失败')
+    notify(
+      error instanceof Error
+        ? error.message
+        : en
+          ? 'Failed to open GitHub release page'
+          : '打开 GitHub 发布页失败'
+    )
   }
 }
 

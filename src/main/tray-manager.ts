@@ -5,6 +5,7 @@ import {
   normalizeStoredTrayPreferences,
   resolveTrayPreferences,
   trayPreferencesSchema,
+  type AppLocale,
   type TrayAction,
   type TrayPreferences,
   type TrayState
@@ -85,11 +86,18 @@ export class OrbitTrayManager {
   private prefs: TrayPreferences
   private tray: Tray | undefined
   private balloonShown = false
+  private locale: AppLocale = 'zh-CN'
 
   constructor(userDataDir: string, callbacks: TrayCallbacks) {
     this.prefsPath = join(userDataDir, 'tray-preferences.json')
     this.callbacks = callbacks
     this.prefs = this.loadPreferences()
+  }
+
+  setLocale(locale: AppLocale): void {
+    if (this.locale === locale) return
+    this.locale = locale
+    this.refresh()
   }
 
   private loadPreferences(): TrayPreferences {
@@ -184,13 +192,22 @@ export class OrbitTrayManager {
 
   refresh(): void {
     if (!this.tray || this.tray.isDestroyed()) return
+    const en = this.locale === 'en-US'
     const sessionCount = this.callbacks.getSessionCount()
     const tunnelCount = this.callbacks.getActiveTunnelCount()
     const syncLabel = this.callbacks.getSyncLabel()
     const hidden = this.hiddenWindowIds.size > 0
-    const modeLabel = hidden ? '后台运行中' : '前台运行中'
+    const modeLabel = en
+      ? hidden
+        ? 'Running in Background'
+        : 'Active'
+      : hidden
+        ? '后台运行中'
+        : '前台运行中'
     this.tray.setToolTip(
-      `Graphite Orbit · ${modeLabel}\n活动终端: ${sessionCount} · 活动隧道: ${tunnelCount}`
+      en
+        ? `Graphite Orbit · ${modeLabel}\nActive Terminals: ${sessionCount} · Active Tunnels: ${tunnelCount}`
+        : `Graphite Orbit · ${modeLabel}\n活动终端: ${sessionCount} · 活动隧道: ${tunnelCount}`
     )
 
     const template: MenuItemConstructorOptions[] = [
@@ -199,30 +216,38 @@ export class OrbitTrayManager {
         enabled: false
       },
       {
-        label: `终端 ${sessionCount} · 隧道 ${tunnelCount} · ${syncLabel}`,
+        label: en
+          ? `Terminals ${sessionCount} · Tunnels ${tunnelCount} · ${syncLabel}`
+          : `终端 ${sessionCount} · 隧道 ${tunnelCount} · ${syncLabel}`,
         enabled: false
       },
       { type: 'separator' },
       {
-        label: hidden ? '显示 Graphite Orbit 主窗口' : '隐藏到后台托盘',
+        label: en
+          ? hidden
+            ? 'Show Graphite Orbit Window'
+            : 'Hide to System Tray'
+          : hidden
+            ? '显示 Graphite Orbit 主窗口'
+            : '隐藏到后台托盘',
         click: () => this.toggleMainWindow()
       },
       {
-        label: '新建本地终端',
+        label: en ? 'New Local Terminal' : '新建本地终端',
         click: () => {
           this.restoreFromTray()
           this.callbacks.onDispatchAction('new-local')
         }
       },
       {
-        label: '打开主机列表',
+        label: en ? 'Open Hosts' : '打开主机列表',
         click: () => {
           this.restoreFromTray()
           this.callbacks.onDispatchAction('open-hosts')
         }
       },
       {
-        label: '打开端口转发中心',
+        label: en ? 'Open Port Forwarding' : '打开端口转发中心',
         click: () => {
           this.restoreFromTray()
           this.callbacks.onDispatchAction('open-tunnels')
@@ -230,7 +255,7 @@ export class OrbitTrayManager {
       },
       { type: 'separator' },
       {
-        label: '最小化时隐藏到右下角系统托盘',
+        label: en ? 'Minimize to System Tray' : '最小化时隐藏到右下角系统托盘',
         type: 'checkbox',
         checked: this.prefs.minimizeToTray,
         click: (item) => {
@@ -238,10 +263,10 @@ export class OrbitTrayManager {
         }
       },
       {
-        label: '点击关闭按钮（×）时',
+        label: en ? 'When Closing Window (×)' : '点击关闭按钮（×）时',
         submenu: [
           {
-            label: '彻底关闭并退出程序',
+            label: en ? 'Quit Application' : '彻底关闭并退出程序',
             type: 'radio',
             checked: this.prefs.closeAction === 'quit',
             click: () => {
@@ -249,7 +274,7 @@ export class OrbitTrayManager {
             }
           },
           {
-            label: '最小化到后台系统托盘',
+            label: en ? 'Minimize to System Tray' : '最小化到后台系统托盘',
             type: 'radio',
             checked: this.prefs.closeAction === 'tray',
             click: () => {
@@ -257,7 +282,7 @@ export class OrbitTrayManager {
             }
           },
           {
-            label: '最小化到系统任务栏',
+            label: en ? 'Minimize to Taskbar' : '最小化到系统任务栏',
             type: 'radio',
             checked: this.prefs.closeAction === 'minimize',
             click: () => {
@@ -267,7 +292,7 @@ export class OrbitTrayManager {
         ]
       },
       {
-        label: '始终显示系统托盘图标',
+        label: en ? 'Always Show System Tray Icon' : '始终显示系统托盘图标',
         type: 'checkbox',
         checked: this.prefs.trayVisibility === 'always',
         click: (item) => {
@@ -276,7 +301,7 @@ export class OrbitTrayManager {
       },
       { type: 'separator' },
       {
-        label: '退出 Graphite Orbit',
+        label: en ? 'Quit Graphite Orbit' : '退出 Graphite Orbit',
         click: () => this.callbacks.onQuit()
       }
     ]
@@ -308,8 +333,12 @@ export class OrbitTrayManager {
     ) {
       this.balloonShown = true
       tray.displayBalloon({
-        title: 'Graphite Orbit 已在后台运行',
-        content: '最小化图标已出现在右侧系统托盘，点击图标即可随时恢复窗口。'
+        title:
+          this.locale === 'en-US' ? 'Graphite Orbit is running in background' : 'Graphite Orbit 已在后台运行',
+        content:
+          this.locale === 'en-US'
+            ? 'Click the system tray icon at the bottom-right anytime to restore the window.'
+            : '最小化图标已出现在右侧系统托盘，点击图标即可随时恢复窗口。'
       })
     }
   }

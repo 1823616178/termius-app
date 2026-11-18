@@ -15,6 +15,7 @@ import {
 import { instanceClass } from '../../../shared/classes'
 import OrbitSelect from '../components/OrbitSelect.vue'
 import WorkspaceWelcome from '../components/WorkspaceWelcome.vue'
+import { locale, t } from '../services/i18n'
 
 const SftpPanel = defineAsyncComponent(() => import('../components/SftpPanel.vue'))
 const TerminalPane = defineAsyncComponent(() => import('../components/TerminalPane.vue'))
@@ -154,14 +155,15 @@ const shellOptions = computed(() =>
   }))
 )
 
-const terminalThemeOptions = computed(() =>
-  TERMINAL_THEMES.map((preset) => ({
+const terminalThemeOptions = computed(() => {
+  const en = locale.value === 'en-US'
+  return TERMINAL_THEMES.map((preset) => ({
     value: preset.id,
-    label: preset.name,
-    hint: preset.badge,
+    label: en ? preset.nameEn : preset.name,
+    hint: en ? preset.badgeEn : preset.badge,
     swatch: preset.swatches[1] || preset.swatches[0]
   }))
-)
+})
 
 const c = (base: string, token: string) => instanceClass(base, windowInstance(token))
 const draggedTabInfo = computed(() => tabs.value.find((item) => item.token === draggedTab.value))
@@ -176,27 +178,21 @@ const canDetachDraggedPane = computed(() => {
 function splitOverlayText(targetToken: string): string {
   const zone = splitDropZone.value ?? 'right'
   if (draggedPane.value) {
-    const merging = draggedPane.value.tabToken !== targetToken
-    if (zone === 'left') return merging ? '并入左侧分屏' : '移至左侧分屏'
-    if (zone === 'right') return merging ? '并入右侧分屏' : '移至右侧分屏'
-    if (zone === 'top') return merging ? '并入上方分屏' : '移至上方分屏'
-    return merging ? '并入下方分屏' : '移至下方分屏'
+    const mode = draggedPane.value.tabToken !== targetToken ? 'merge' : 'move'
+    return t(`workspace.splitDock.${zone}.${mode}`)
   }
-  const merging = draggedTab.value !== targetToken
-  if (zone === 'left') return merging ? '并入左侧分屏' : '向左侧分屏'
-  if (zone === 'right') return merging ? '并入右侧分屏' : '向右侧分屏'
-  if (zone === 'top') return merging ? '并入上方分屏' : '向上方分屏'
-  return merging ? '并入下方分屏' : '向下方分屏'
+  const mode = draggedTab.value !== targetToken ? 'merge' : 'new'
+  return t(`workspace.splitDock.${zone}.${mode}`)
 }
 
 function splitOverlayHintText(): string {
   if (draggedPane.value) {
     if (!splitDropZone.value) {
-      return `${draggedPane.value.title} · 拖至其他窗格、上/下边缘或标签栏拆分`
+      return t('workspace.splitOverlayHintPaneNone', { title: draggedPane.value.title })
     }
-    return `${draggedPane.value.title} · 释放完成位置调整`
+    return t('workspace.splitOverlayHintPaneDrop', { title: draggedPane.value.title })
   }
-  return `${dragSourceTitle.value} · 释放即完成分屏`
+  return t('workspace.splitOverlayHintTab', { title: dragSourceTitle.value })
 }
 
 function splitPreviewStyle(): Record<string, string> {
@@ -698,7 +694,7 @@ function onTabListWheel(event: WheelEvent) {
         ref="tabListRef"
         class="container_workspace_tabs_header_list"
         role="tablist"
-        aria-label="终端会话"
+        :aria-label="t('workspace.tablistAria')"
         :data-detach-ready="dropTargetTabbarEmpty && Boolean(draggedPane) && canDetachDraggedPane"
         @dragover.prevent="onTabListDragOver($event)"
         @dragleave="onTabListDragLeave"
@@ -717,7 +713,7 @@ function onTabListWheel(event: WheelEvent) {
             dropTargetTab === tab.token && draggedTab !== tab.token && draggedPane?.tabToken !== tab.token
           "
           draggable="true"
-          :title="`${tab.title} · 拖动排序；拖入其他会话的终端区域合并分屏`"
+          :title="t('workspace.tabItemTitle', { title: tab.title })"
           @dragstart="onTabDragStart($event, tab)"
           @dragover.prevent.stop="onTabDragOver($event, tab.token)"
           @dragleave="dropTargetTab === tab.token && (dropTargetTab = '')"
@@ -741,32 +737,34 @@ function onTabListWheel(event: WheelEvent) {
               v-if="tab.panes.length > 1"
               :class="c('container_workspace_tabs_header_split-badge', tab.token)"
             >
-              {{ tab.panes.length }}分屏
+              {{ t('workspace.splitBadge', { count: tab.panes.length }) }}
             </span>
           </button>
           <button
             :class="c('container_workspace_tabs_header_close', tab.token)"
             type="button"
-            :aria-label="`关闭标签 ${tab.title}`"
+            :aria-label="t('workspace.closeTabAria', { title: tab.title })"
             @click="closeTab(tab.token)"
           >
             <X :size="12" />
           </button>
         </div>
-        <span v-if="!tabs.length" class="container_workspace_tabs_header_empty">工作台</span>
+        <span v-if="!tabs.length" class="container_workspace_tabs_header_empty">
+          {{ t('workspace.emptyTabbar') }}
+        </span>
         <span
           v-if="draggedPane && canDetachDraggedPane"
           class="container_workspace_tabs_header_detach-pill"
           :data-active="dropTargetTabbarEmpty"
         >
-          + 释放拆分为独立标签
+          {{ t('workspace.detachPill') }}
         </span>
       </div>
       <button
         v-if="tabOverflow"
         class="container_workspace_tabs_header_scroll-left"
         type="button"
-        aria-label="向左滚动页签"
+        :aria-label="t('workspace.scrollLeft')"
         :disabled="!canScrollTabsLeft"
         @click="scrollTabs(-1)"
       >
@@ -776,7 +774,7 @@ function onTabListWheel(event: WheelEvent) {
         v-if="tabOverflow"
         class="container_workspace_tabs_header_scroll-right"
         type="button"
-        aria-label="向右滚动页签"
+        :aria-label="t('workspace.scrollRight')"
         :disabled="!canScrollTabsRight"
         @click="scrollTabs(1)"
       >
@@ -786,8 +784,8 @@ function onTabListWheel(event: WheelEvent) {
         <OrbitSelect
           :model-value="selectedShellId || bootstrap.shells[0]?.id"
           :options="shellOptions"
-          aria-label="选择新建本地终端类型"
-          title="选择新建本地终端类型"
+          :aria-label="t('workspace.shellSelectAria')"
+          :title="t('workspace.shellSelectAria')"
           size="sm"
           width="146px"
           instance="workspace-shell"
@@ -797,8 +795,8 @@ function onTabListWheel(event: WheelEvent) {
       <button
         class="container_workspace_tabs_header_add"
         type="button"
-        aria-label="新建本地会话"
-        title="新建本地会话 · Ctrl+Shift+T"
+        :aria-label="t('workspace.addSession')"
+        :title="t('workspace.addSessionTitle')"
         :disabled="!defaultShellProfile"
         @click="defaultShellProfile && openLocal(defaultShellProfile)"
       >
@@ -808,8 +806,8 @@ function onTabListWheel(event: WheelEvent) {
         <OrbitSelect
           :model-value="terminalTheme"
           :options="terminalThemeOptions"
-          aria-label="切换终端配色主题"
-          title="快速切换所有终端的配色主题"
+          :aria-label="t('workspace.themeSelectAria')"
+          :title="t('workspace.themeSelectTitle')"
           size="sm"
           width="156px"
           instance="workspace-theme"
@@ -819,8 +817,8 @@ function onTabListWheel(event: WheelEvent) {
       <button
         class="container_workspace_tabs_header_split-horizontal"
         type="button"
-        aria-label="左右分屏"
-        title="左右分屏"
+        :aria-label="t('workspace.splitH')"
+        :title="t('workspace.splitH')"
         :disabled="!currentTab"
         @click="splitActivePane('horizontal')"
       >
@@ -829,8 +827,8 @@ function onTabListWheel(event: WheelEvent) {
       <button
         class="container_workspace_tabs_header_split-vertical"
         type="button"
-        aria-label="上下分屏"
-        title="上下分屏"
+        :aria-label="t('workspace.splitV')"
+        :title="t('workspace.splitV')"
         :disabled="!currentTab"
         @click="splitActivePane('vertical')"
       >
@@ -840,8 +838,8 @@ function onTabListWheel(event: WheelEvent) {
         v-if="tabs.length"
         class="container_workspace_tabs_header_sftp"
         type="button"
-        aria-label="SFTP 文件传输"
-        title="展开或收起右侧 SFTP 文件管理面板"
+        :aria-label="t('workspace.sftpAria')"
+        :title="t('workspace.sftpTitle')"
         :aria-pressed="sftpDrawerOpen"
         @click="showWorkspaceSftp"
       >
@@ -922,7 +920,7 @@ function onTabListWheel(event: WheelEvent) {
               :aria-valuenow="Math.round(tab.ratio)"
               :aria-valuemin="getRatioBounds(tab)[0]"
               :aria-valuemax="getRatioBounds(tab)[1]"
-              aria-label="调整分屏比例"
+              :aria-label="t('workspace.resizePanesAria')"
               @pointerdown="resizePanes($event, tab)"
               @keydown.left.prevent="tab.direction === 'horizontal' && adjustRatio(tab, -5)"
               @keydown.right.prevent="tab.direction === 'horizontal' && adjustRatio(tab, 5)"
@@ -956,20 +954,20 @@ function onTabListWheel(event: WheelEvent) {
                 :data-active="splitDropZone === 'top'"
               >
                 <ArrowUp :size="14" />
-                上分屏
+                {{ t('workspace.compassTop') }}
               </div>
               <div
                 :class="c('container_workspace_split_compass_left', tab.token)"
                 :data-active="splitDropZone === 'left'"
               >
                 <ArrowLeft :size="14" />
-                左分屏
+                {{ t('workspace.compassLeft') }}
               </div>
               <div
                 :class="c('container_workspace_split_compass_right', tab.token)"
                 :data-active="splitDropZone === 'right'"
               >
-                右分屏
+                {{ t('workspace.compassRight') }}
                 <ArrowRight :size="14" />
               </div>
               <div
@@ -977,7 +975,7 @@ function onTabListWheel(event: WheelEvent) {
                 :data-active="splitDropZone === 'bottom'"
               >
                 <ArrowDown :size="14" />
-                下分屏
+                {{ t('workspace.compassBottom') }}
               </div>
             </div>
           </div>
@@ -999,7 +997,7 @@ function onTabListWheel(event: WheelEvent) {
             role="separator"
             tabindex="0"
             aria-orientation="vertical"
-            aria-label="调整 SFTP 面板宽度"
+            :aria-label="t('workspace.resizeSftpAria')"
             :aria-valuenow="sftpPanelWidth"
             :aria-valuemin="300"
             :aria-valuemax="660"

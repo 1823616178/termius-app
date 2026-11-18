@@ -1,27 +1,35 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import { ShieldCheck, Minimize2, RefreshCw, Download, ExternalLink, FolderOpen, Rocket } from '@lucide/vue'
+import {
+  ShieldCheck,
+  Minimize2,
+  RefreshCw,
+  Download,
+  ExternalLink,
+  FolderOpen,
+  Rocket,
+  Languages
+} from '@lucide/vue'
 import { instanceClass } from '../../../shared/classes'
-import type { CloseButtonAction, TrayVisibilityMode } from '../../../shared/contracts'
+import type { AppLocale, CloseButtonAction, TrayVisibilityMode } from '../../../shared/contracts'
 import orbitIcon from '../assets/orbit-icon.svg'
 import OrbitSelect from '../components/OrbitSelect.vue'
+import TypographySettingsSection from '../components/TypographySettingsSection.vue'
+import { locale, setLocale, t, translateMotionReason } from '../services/i18n'
 import { TERMINAL_THEMES, type CursorShape } from '../services/terminal-themes'
 import { DEFAULT_CUSTOM_COLORS, UI_THEME_PRESETS } from '../services/ui-themes'
 import {
   bootstrap,
   cancelUpdateDownload,
   checkForUpdates,
-  copyOnSelect,
   cursorBlink,
   cursorStyle,
   customUiColors,
   downloadAvailableUpdate,
   focusUpdateSectionToken,
-  fontSize,
   hideWindowToTray,
   highContrast,
   installDownloadedUpdate,
-  lineHeight,
   motionPreference,
   motionStatus,
   openUpdateReleasePage,
@@ -31,6 +39,7 @@ import {
   screenReaderDefault,
   setUiTheme,
   terminalTheme,
+  terminalGpuEnabled,
   trayState,
   uiTheme,
   updateCustomUiColors,
@@ -48,92 +57,124 @@ watch(focusUpdateSectionToken, async () => {
   updateSectionRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 })
 
+const isEn = computed(() => locale.value === 'en-US')
+
+const languageOptions = computed<{ id: AppLocale; code: string; title: string; desc: string }[]>(() => [
+  {
+    id: 'zh-CN',
+    code: '中文 · ZH-CN',
+    title: t('settings.langZhTitle'),
+    desc: t('settings.langZhDesc')
+  },
+  {
+    id: 'en-US',
+    code: 'ENGLISH · EN-US',
+    title: t('settings.langEnTitle'),
+    desc: t('settings.langEnDesc')
+  }
+])
+
 const updateStatusLabel = computed(() => {
   const phase = updateState.value.phase
-  if (phase === 'checking') return '正在检测…'
-  if (phase === 'up-to-date') return '已是最新'
-  if (phase === 'available') return `发现新版 v${updateState.value.latest?.version ?? ''}`
-  if (phase === 'downloading') return '下载更新中'
-  if (phase === 'downloaded') return '校验完成 · 待安装'
-  if (phase === 'error') return '检测异常'
-  return '待检测'
+  if (phase === 'checking') return t('settings.updateChecking')
+  if (phase === 'up-to-date') return t('settings.updateUpToDate')
+  if (phase === 'available') {
+    return t('settings.updateAvailable', { version: updateState.value.latest?.version ?? '' })
+  }
+  if (phase === 'downloading') return t('settings.updateDownloading')
+  if (phase === 'downloaded') return t('settings.updateDownloaded')
+  if (phase === 'error') return t('settings.updateError')
+  return t('settings.updateIdle')
 })
 
 function formatByteSize(bytes: number | null | undefined): string {
-  if (!bytes || bytes <= 0) return '未知大小'
+  if (!bytes || bytes <= 0) return t('settings.updateUnknownSize')
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 function formatIsoTime(iso: string | null | undefined): string {
-  if (!iso) return '尚未检测'
+  if (!iso) return t('settings.updateNeverChecked')
   const date = new Date(iso)
   if (Number.isNaN(date.getTime())) return iso
-  return date.toLocaleString('zh-CN', { hour12: false })
+  return date.toLocaleString(locale.value, { hour12: false })
 }
 
 const updateMetaItems = computed(() => [
-  { key: 'current', label: '当前版本', value: `v${updateState.value.currentVersion}` },
+  { key: 'current', label: t('settings.updateMetaCurrent'), value: `v${updateState.value.currentVersion}` },
   {
     key: 'repo',
-    label: 'GitHub 发布源',
+    label: t('settings.updateMetaRepo'),
     value: `${updateState.value.repository.owner}/${updateState.value.repository.repo}`
   },
   {
     key: 'checked',
-    label: '最近检查',
+    label: t('settings.updateMetaChecked'),
     value: formatIsoTime(updateState.value.checkedAt ?? updateState.value.preferences.lastCheckedAt)
   }
 ])
 
 const c = (base: string, token: string) => instanceClass(base, windowInstance(token))
 
-const cursorStyleOptions = [
-  { value: 'block', label: '实心方块 (Block)' },
-  { value: 'bar', label: '竖线 (Bar)' },
-  { value: 'underline', label: '下划线 (Underline)' }
-]
+const cursorStyleOptions = computed(() => {
+  void locale.value
+  return [
+    { value: 'block', label: t('settings.cursorBlock') },
+    { value: 'bar', label: t('settings.cursorBar') },
+    { value: 'underline', label: t('settings.cursorUnderline') }
+  ]
+})
 
-const motionTierOptions = [
-  { value: 'auto', label: '自动（推荐）' },
-  { value: 'full', label: '强制开启' },
-  { value: 'light', label: '轻量' },
-  { value: 'off', label: '关闭' }
-]
+const motionTierOptions = computed(() => {
+  void locale.value
+  return [
+    { value: 'auto', label: t('settings.motionAuto') },
+    { value: 'full', label: t('settings.motionFull') },
+    { value: 'light', label: t('settings.motionLight') },
+    { value: 'off', label: t('settings.motionOff') }
+  ]
+})
 
 const motionStatusText = computed(() => {
   const status = motionStatus.value
-  const tierLabel = status.tier === 'full' ? '完整动效' : status.tier === 'light' ? '轻量动效' : '已关闭'
+  const tierLabel = t(`motion.tier.${status.tier}`)
+  const reasonLabel = translateMotionReason(status.reason)
   const measuredFps =
     status.preference === 'auto' && status.fps !== null && !status.reason.includes('fps')
       ? ` · ${status.fps} fps`
       : ''
-  return `当前：${tierLabel} · ${status.reason}${measuredFps}`
+  return t('motion.statusPrefix', { tier: tierLabel, reason: reasonLabel, fps: measuredFps })
 })
 
-const trayVisibilityOptions = [
-  { value: 'when-minimized', label: '仅最小化或收到后台时显示（推荐）' },
-  { value: 'always', label: '程序运行期间始终显示图标' }
-]
+const trayVisibilityOptions = computed(() => {
+  void locale.value
+  return [
+    { value: 'when-minimized', label: t('settings.trayVisibilityWhenMin') },
+    { value: 'always', label: t('settings.trayVisibilityAlways') }
+  ]
+})
 
-const closeActionOptions: { value: CloseButtonAction; label: string; desc: string }[] = [
-  {
-    value: 'quit',
-    label: '彻底关闭程序',
-    desc: '点击窗口右上角 × 时退出应用并结束连接'
-  },
-  {
-    value: 'tray',
-    label: '最小化到后台托盘',
-    desc: '隐藏窗口至系统托盘，保持 SSH、SFTP 与转发运行'
-  },
-  {
-    value: 'minimize',
-    label: '最小化到任务栏',
-    desc: '仅收起窗口到系统任务栏，不隐藏也不退出程序'
-  }
-]
+const closeActionOptions = computed<{ value: CloseButtonAction; label: string; desc: string }[]>(() => {
+  void locale.value
+  return [
+    {
+      value: 'quit',
+      label: t('settings.trayCloseQuit'),
+      desc: t('settings.trayCloseQuitDesc')
+    },
+    {
+      value: 'tray',
+      label: t('settings.trayCloseTray'),
+      desc: t('settings.trayCloseTrayDesc')
+    },
+    {
+      value: 'minimize',
+      label: t('settings.trayCloseMin'),
+      desc: t('settings.trayCloseMinDesc')
+    }
+  ]
+})
 
 function patchCustomColor(key: keyof typeof DEFAULT_CUSTOM_COLORS, value: string): void {
   updateCustomUiColors({
@@ -150,13 +191,45 @@ function resetCustomUiTheme(): void {
 
 <template>
   <section v-if="page === 'settings'" class="container_settings_page_body_base">
-    <span class="container_settings_page_header_eyebrow">丹青剑意 · 五行八卦美学工坊</span>
-    <h2 class="container_settings_page_header_title">设置</h2>
+    <span class="container_settings_page_header_eyebrow">{{ t('settings.eyebrow') }}</span>
+    <h2 class="container_settings_page_header_title">{{ t('settings.title') }}</h2>
+
+    <section class="container_settings_lang_body_section" data-testid="language-settings-section">
+      <div class="container_settings_lang_header_row">
+        <Languages :size="16" />
+        <h3 class="container_settings_lang_header_title">{{ t('settings.langSectionTitle') }}</h3>
+      </div>
+      <p class="container_settings_lang_header_desc">{{ t('settings.langSectionDesc') }}</p>
+      <div
+        class="container_settings_lang_grid_row"
+        role="radiogroup"
+        :aria-label="t('settings.langSectionTitle')"
+      >
+        <button
+          v-for="opt in languageOptions"
+          :key="opt.id"
+          :class="c('container_settings_lang_card_base', opt.id.toLowerCase())"
+          type="button"
+          role="radio"
+          :aria-checked="locale === opt.id"
+          :data-testid="`lang-card-${opt.id}`"
+          @click="setLocale(opt.id)"
+        >
+          <span :class="c('container_settings_lang_card_code', opt.id.toLowerCase())">{{ opt.code }}</span>
+          <strong :class="c('container_settings_lang_card_title', opt.id.toLowerCase())">
+            {{ opt.title }}
+          </strong>
+          <span :class="c('container_settings_lang_card_desc', opt.id.toLowerCase())">{{ opt.desc }}</span>
+        </button>
+      </div>
+    </section>
+
+    <TypographySettingsSection />
 
     <section class="container_settings_uitheme_body_section">
-      <h3 class="container_settings_uitheme_header_title">界面整体风格与道教五行八卦主题</h3>
+      <h3 class="container_settings_uitheme_header_title">{{ t('settings.uiThemeTitle') }}</h3>
       <p class="container_settings_uitheme_header_desc">
-        实时切换全局工作区、导航栏、列表卡片与 3D 浑天八卦罗盘的主体视觉配色，并支持深度自定义色板。
+        {{ t('settings.uiThemeDesc') }}
       </p>
       <div class="container_settings_uitheme_grid_base">
         <button
@@ -172,14 +245,14 @@ function resetCustomUiTheme(): void {
               {{ preset.trigram }}
             </span>
             <strong :class="c('container_settings_uitheme_card_name', preset.id)">
-              {{ preset.name }}
+              {{ isEn ? preset.nameEn : preset.name }}
             </strong>
             <span :class="c('container_settings_uitheme_card_elem', preset.id)">
-              {{ preset.element }}
+              {{ isEn ? preset.elementEn : preset.element }}
             </span>
           </div>
           <p :class="c('container_settings_uitheme_card_desc', preset.id)">
-            {{ preset.tagline }}
+            {{ isEn ? preset.taglineEn : preset.tagline }}
           </p>
           <div :class="c('container_settings_uitheme_card_swatches', preset.id)">
             <span
@@ -204,21 +277,21 @@ function resetCustomUiTheme(): void {
 
       <div class="container_settings_customui_panel_base" :data-active="uiTheme === 'custom'">
         <div class="container_settings_customui_header_row">
-          <strong class="container_settings_customui_header_title">太虚自定 · 自定义全局配色</strong>
+          <strong class="container_settings_customui_header_title">{{ t('settings.customUiTitle') }}</strong>
           <button
             class="container_settings_customui_apply_btn"
             type="button"
             @click="updateCustomUiColors(customUiColors)"
           >
-            启用自定义配色
+            {{ t('settings.customUiEnable') }}
           </button>
           <button class="container_settings_customui_reset_btn" type="button" @click="resetCustomUiTheme">
-            恢复默认玄墨古剑
+            {{ t('settings.customUiReset') }}
           </button>
         </div>
         <div class="container_settings_customui_pickers_grid">
           <label class="container_settings_customui_picker_appbg">
-            主背景
+            {{ t('settings.customUiAppBg') }}
             <input
               type="color"
               class="container_settings_customui_input_appbg"
@@ -227,7 +300,7 @@ function resetCustomUiTheme(): void {
             />
           </label>
           <label class="container_settings_customui_picker_surface1">
-            一级面板
+            {{ t('settings.customUiSurface1') }}
             <input
               type="color"
               class="container_settings_customui_input_surface1"
@@ -236,7 +309,7 @@ function resetCustomUiTheme(): void {
             />
           </label>
           <label class="container_settings_customui_picker_surface2">
-            二级卡片
+            {{ t('settings.customUiSurface2') }}
             <input
               type="color"
               class="container_settings_customui_input_surface2"
@@ -245,7 +318,7 @@ function resetCustomUiTheme(): void {
             />
           </label>
           <label class="container_settings_customui_picker_accent">
-            主强调色
+            {{ t('settings.customUiAccent1') }}
             <input
               type="color"
               class="container_settings_customui_input_accent"
@@ -254,7 +327,7 @@ function resetCustomUiTheme(): void {
             />
           </label>
           <label class="container_settings_customui_picker_accent2">
-            辅星辉色
+            {{ t('settings.customUiAccent2') }}
             <input
               type="color"
               class="container_settings_customui_input_accent2"
@@ -263,7 +336,7 @@ function resetCustomUiTheme(): void {
             />
           </label>
           <label class="container_settings_customui_picker_text">
-            主文字色
+            {{ t('settings.customUiText') }}
             <input
               type="color"
               class="container_settings_customui_input_text"
@@ -274,43 +347,26 @@ function resetCustomUiTheme(): void {
         </div>
       </div>
     </section>
+
     <section class="container_settings_terminal_body_base">
-      <h3 class="container_settings_terminal_header_title">终端与视觉</h3>
-      <label class="container_settings_terminal_body_font-label">
-        字号
-        <span class="container_settings_terminal_body_font-description">
-          对所有终端立即生效，仅保存在本机。
-        </span>
+      <h3 class="container_settings_terminal_header_title">{{ t('settings.termVisualTitle') }}</h3>
+      <label class="container_settings_terminal_body_gpu-label">
         <input
-          v-model.number="fontSize"
-          class="container_settings_terminal_body_font-input"
-          type="range"
-          min="10"
-          max="24"
+          v-model="terminalGpuEnabled"
+          class="container_settings_terminal_body_gpu-check"
+          type="checkbox"
         />
-        <output class="container_settings_terminal_body_font-value">{{ fontSize }} px</output>
+        {{ t('settings.termGpuLabel') }}
       </label>
-      <label class="container_settings_terminal_body_lh-label">
-        行高
-        <span class="container_settings_terminal_body_lh-description">
-          适当增大行高可显著改善中英文混排与 TUI 框线视觉舒适度。
-        </span>
-        <input
-          v-model.number="lineHeight"
-          class="container_settings_terminal_body_lh-input"
-          type="range"
-          min="1.1"
-          max="1.6"
-          step="0.02"
-        />
-        <output class="container_settings_terminal_body_lh-value">{{ lineHeight.toFixed(2) }}</output>
-      </label>
+      <p class="container_settings_terminal_body_gpu-description">
+        {{ t('settings.termGpuDesc') }}
+      </p>
       <label class="container_settings_terminal_body_cursor-label">
-        光标形态
+        {{ t('settings.cursorStyle') }}
         <OrbitSelect
           :model-value="cursorStyle"
           :options="cursorStyleOptions"
-          aria-label="光标形态"
+          :aria-label="t('settings.cursorStyle')"
           width="190px"
           instance="settings-cursor"
           @update:model-value="cursorStyle = $event as CursorShape"
@@ -318,18 +374,14 @@ function resetCustomUiTheme(): void {
       </label>
       <label class="container_settings_terminal_body_blink-label">
         <input v-model="cursorBlink" class="container_settings_terminal_body_blink-check" type="checkbox" />
-        启用终端光标闪烁
-      </label>
-      <label class="container_settings_terminal_body_copy-label">
-        <input v-model="copyOnSelect" class="container_settings_terminal_body_copy-check" type="checkbox" />
-        鼠标划选终端文本时自动复制到剪贴板
+        {{ t('settings.cursorBlink') }}
       </label>
       <label class="container_settings_terminal_body_motion-label">
-        动效与性能档
+        {{ t('settings.motionTier') }}
         <OrbitSelect
           :model-value="motionPreference"
           :options="motionTierOptions"
-          aria-label="动效与性能档"
+          :aria-label="t('settings.motionTier')"
           width="190px"
           instance="settings-motion"
           @update:model-value="motionPreference = $event as MotionPreference"
@@ -339,20 +391,20 @@ function resetCustomUiTheme(): void {
         {{ motionStatusText }}
       </p>
       <p class="container_settings_motion_body_description">
-        自动模式先检查 WebGL2、处理器与设备资源，再根据首页实际帧率逐级调整。
+        {{ t('settings.motionDesc') }}
         <span v-if="motionPreference === 'full'" class="container_settings_motion_body_warning">
-          强制开启会覆盖系统“减少动态效果”，低性能设备可能卡顿或增加耗电。
+          {{ t('settings.motionWarning') }}
         </span>
       </p>
       <button
         v-if="motionPreference === 'auto'"
         class="container_settings_motion_body_recheck"
         type="button"
-        aria-label="重新检测动效性能"
+        :aria-label="t('settings.motionRecheckAria')"
         @click="refreshMotionPreference"
       >
         <RefreshCw :size="12" />
-        重新检测
+        {{ t('settings.motionRecheck') }}
       </button>
       <label class="container_settings_terminal_body_contrast-label">
         <input
@@ -360,7 +412,7 @@ function resetCustomUiTheme(): void {
           class="container_settings_terminal_body_contrast-check"
           type="checkbox"
         />
-        启用高对比度边框与文字
+        {{ t('settings.highContrast') }}
       </label>
       <label class="container_settings_terminal_body_reader-label">
         <input
@@ -368,10 +420,10 @@ function resetCustomUiTheme(): void {
           class="container_settings_terminal_body_reader-check"
           type="checkbox"
         />
-        默认开启终端屏幕阅读器无障碍模式
+        {{ t('settings.screenReader') }}
       </label>
       <div class="container_settings_theme_body_section">
-        <span class="container_settings_theme_body_heading">终端配色主题（256色 / TrueColor 实时生效）</span>
+        <span class="container_settings_theme_body_heading">{{ t('settings.termThemesHeading') }}</span>
         <div class="container_settings_theme_body_grid">
           <button
             v-for="preset in TERMINAL_THEMES"
@@ -403,8 +455,12 @@ function resetCustomUiTheme(): void {
               />
             </span>
             <span :class="c('container_settings_theme_card_meta', preset.id)">
-              <strong :class="c('container_settings_theme_card_name', preset.id)">{{ preset.name }}</strong>
-              <span :class="c('container_settings_theme_card_badge', preset.id)">{{ preset.badge }}</span>
+              <strong :class="c('container_settings_theme_card_name', preset.id)">
+                {{ isEn ? preset.nameEn : preset.name }}
+              </strong>
+              <span :class="c('container_settings_theme_card_badge', preset.id)">
+                {{ isEn ? preset.badgeEn : preset.badge }}
+              </span>
             </span>
             <span :class="c('container_settings_theme_card_swatches', preset.id)">
               <span
@@ -418,16 +474,17 @@ function resetCustomUiTheme(): void {
         </div>
       </div>
     </section>
+
     <section class="container_settings_tray_body_section">
       <div class="container_settings_tray_header_row">
-        <h3 class="container_settings_tray_header_title">后台运行与系统托盘</h3>
+        <h3 class="container_settings_tray_header_title">{{ t('settings.trayTitle') }}</h3>
         <span class="container_settings_tray_header_badge" :data-active="trayState.trayCreated">
           {{
             trayState.trayCreated
-              ? '托盘图标已显示'
+              ? t('settings.trayCreated')
               : bootstrap?.platform === 'linux'
-                ? '最小化或切入后台时尝试创建托盘图标'
-                : '最小化时将在右侧系统托盘显示图标'
+                ? t('settings.trayPendingLinux')
+                : t('settings.trayPendingWin')
           }}
         </span>
       </div>
@@ -438,10 +495,14 @@ function resetCustomUiTheme(): void {
           :checked="trayState.minimizeToTray"
           @change="updateTrayPreferences({ minimizeToTray: ($event.target as HTMLInputElement).checked })"
         />
-        最小化时隐藏窗口并出现在右侧系统托盘（保持 SSH 会话、端口转发与同步后台运行）
+        {{ t('settings.trayMinimizeCheck') }}
       </label>
-      <div class="container_settings_tray_close_group" role="radiogroup" aria-label="点击关闭按钮时的行为">
-        <span class="container_settings_tray_close_heading">点击窗口关闭按钮（×）时的行为</span>
+      <div
+        class="container_settings_tray_close_group"
+        role="radiogroup"
+        :aria-label="t('settings.trayCloseAria')"
+      >
+        <span class="container_settings_tray_close_heading">{{ t('settings.trayCloseHeading') }}</span>
         <div class="container_settings_tray_close_grid">
           <button
             v-for="opt in closeActionOptions"
@@ -458,11 +519,11 @@ function resetCustomUiTheme(): void {
         </div>
       </div>
       <label class="container_settings_tray_visibility_label">
-        系统托盘图标显示时机
+        {{ t('settings.trayVisibilityLabel') }}
         <OrbitSelect
           :model-value="trayState.trayVisibility"
           :options="trayVisibilityOptions"
-          aria-label="系统托盘图标显示时机"
+          :aria-label="t('settings.trayVisibilityLabel')"
           width="276px"
           instance="settings-tray-visibility"
           @update:model-value="updateTrayPreferences({ trayVisibility: $event as TrayVisibilityMode })"
@@ -471,44 +532,42 @@ function resetCustomUiTheme(): void {
       <div class="container_settings_tray_actions_row">
         <button class="container_settings_tray_actions_hide" type="button" @click="hideWindowToTray">
           <Minimize2 :size="13" />
-          立即隐藏到后台托盘
+          {{ t('settings.trayHideNow') }}
         </button>
         <span class="container_settings_tray_actions_hint">
-          {{
-            bootstrap?.platform === 'linux'
-              ? '在支持 StatusNotifier / AppIndicator 的 Linux 桌面（如 Ubuntu 启用 AppIndicator 扩展）中，可点击系统托盘图标恢复窗口；若桌面未提供托盘，最小化按钮会保留在系统任务栏。'
-              : '隐藏后点击 Windows 右下角系统托盘图标即可随时恢复主窗口，右键可快捷新建终端或退出。'
-          }}
+          {{ bootstrap?.platform === 'linux' ? t('settings.trayHintLinux') : t('settings.trayHintWin') }}
         </span>
       </div>
     </section>
+
     <section class="container_settings_security_body_base">
-      <h3 class="container_settings_security_header_title">数据与安全</h3>
+      <h3 class="container_settings_security_header_title">{{ t('settings.securityTitle') }}</h3>
       <p class="container_settings_security_body_status">
         <ShieldCheck :size="15" />
         {{
           bootstrap?.encryptionAvailable
             ? bootstrap.platform === 'linux'
-              ? `系统凭据加密可用（${bootstrap.encryptionBackend}）`
-              : 'Windows 系统凭据保护可用（DPAPI）'
+              ? t('settings.secAvailLinux', { backend: bootstrap.encryptionBackend })
+              : t('settings.secAvailWin')
             : bootstrap?.platform === 'linux'
-              ? '未检测到系统 Keyring（gnome-keyring / kwallet），密码保存已禁用'
-              : '系统凭据保护不可用，密码保存已禁用'
+              ? t('settings.secUnavailLinux')
+              : t('settings.secUnavailWin')
         }}
       </p>
       <p class="container_settings_security_body_description">
         {{
           bootstrap?.platform === 'linux'
             ? bootstrap?.encryptionAvailable
-              ? '主机配置保存在本地 SQLite 数据库（~/.config/Graphite Orbit/）；选择保存的密码由系统 Keyring / libsecret 保护。SSH 验证同时兼容应用指纹库与 ~/.ssh/known_hosts。'
-              : '主机配置保存在本地 SQLite 数据库；当前环境缺少运行中的 Secret Service / Keyring，连接时请输入临时密码或使用 SSH_AUTH_SOCK，不会以明文落盘。SSH 验证同时兼容 ~/.ssh/known_hosts。'
-            : '主机配置保存在本地 SQLite 数据库；选择保存的密码由 Windows 系统保护。终端输出和输入历史默认不落盘。'
+              ? t('settings.secDescLinuxAvail')
+              : t('settings.secDescLinuxUnavail')
+            : t('settings.secDescWin')
         }}
       </p>
     </section>
+
     <section ref="updateSectionRef" class="container_settings_update_body_section">
       <div class="container_settings_update_header_row">
-        <h3 class="container_settings_update_header_title">版本演进与 GitHub 自动更新</h3>
+        <h3 class="container_settings_update_header_title">{{ t('settings.updateTitle') }}</h3>
         <span class="container_settings_update_header_badge" :data-phase="updateState.phase">
           {{ updateStatusLabel }}
         </span>
@@ -551,7 +610,7 @@ function resetCustomUiTheme(): void {
             {{ updateState.latest.title || updateState.latest.tagName }}
           </strong>
           <span v-if="updateState.latest.prerelease" class="container_settings_update_release_pretag">
-            预发布版
+            {{ t('settings.updatePrerelease') }}
           </span>
           <span class="container_settings_update_release_date">
             {{ formatIsoTime(updateState.latest.publishedAt) }}
@@ -559,14 +618,19 @@ function resetCustomUiTheme(): void {
         </div>
         <div class="container_settings_update_release_assetrow">
           <span class="container_settings_update_release_assetname">
-            安装包：{{ updateState.latest.assetName }}（{{ formatByteSize(updateState.latest.sizeBytes) }}）
+            {{
+              t('settings.updateInstallerLine', {
+                name: updateState.latest.assetName,
+                size: formatByteSize(updateState.latest.sizeBytes)
+              })
+            }}
           </span>
           <span v-if="updateState.verifiedHash" class="container_settings_update_release_verified">
-            已校验 {{ updateState.verifiedHash.slice(0, 22) }}…
+            {{ t('settings.updateVerified', { hash: updateState.verifiedHash.slice(0, 22) }) }}
           </span>
         </div>
         <pre class="container_settings_update_release_notes">{{
-          updateState.latest.notes || '此版本未附带额外说明，可在 GitHub Release 页面查看完整提交记录。'
+          updateState.latest.notes || t('settings.updateEmptyNotes')
         }}</pre>
       </div>
 
@@ -578,7 +642,9 @@ function resetCustomUiTheme(): void {
           @click="checkForUpdates"
         >
           <RefreshCw :size="13" />
-          {{ updateState.phase === 'checking' ? '正在检查…' : '检查更新' }}
+          {{
+            updateState.phase === 'checking' ? t('settings.updateCheckingBtn') : t('settings.updateCheckBtn')
+          }}
         </button>
 
         <button
@@ -589,7 +655,7 @@ function resetCustomUiTheme(): void {
           @click="downloadAvailableUpdate"
         >
           <Download :size="13" />
-          下载更新（{{ formatByteSize(updateState.latest.sizeBytes) }}）
+          {{ t('settings.updateDownloadBtn', { size: formatByteSize(updateState.latest.sizeBytes) }) }}
         </button>
 
         <button
@@ -598,7 +664,7 @@ function resetCustomUiTheme(): void {
           type="button"
           @click="cancelUpdateDownload"
         >
-          取消下载
+          {{ t('settings.updateCancelDownload') }}
         </button>
 
         <button
@@ -609,7 +675,11 @@ function resetCustomUiTheme(): void {
           @click="installDownloadedUpdate"
         >
           <Rocket :size="13" />
-          {{ updateState.latest?.packageKind === 'appimage' ? '启动新版 AppImage 升级' : '立即安装更新' }}
+          {{
+            updateState.latest?.packageKind === 'appimage'
+              ? t('settings.updateInstallAppImage')
+              : t('settings.updateInstallNow')
+          }}
         </button>
 
         <button
@@ -620,7 +690,7 @@ function resetCustomUiTheme(): void {
           @click="installDownloadedUpdate"
         >
           <Rocket :size="13" />
-          打开软件包 / 安装指引 (.deb)
+          {{ t('settings.updateInstallDeb') }}
         </button>
 
         <button
@@ -630,12 +700,12 @@ function resetCustomUiTheme(): void {
           @click="revealDownloadedUpdate"
         >
           <FolderOpen :size="13" />
-          在文件夹中显示
+          {{ t('settings.updateRevealFile') }}
         </button>
 
         <button class="container_settings_update_actions_github" type="button" @click="openUpdateReleasePage">
           <ExternalLink :size="13" />
-          查看 GitHub 发布页
+          {{ t('settings.updateOpenGithub') }}
         </button>
 
         <button
@@ -648,7 +718,7 @@ function resetCustomUiTheme(): void {
           type="button"
           @click="updateUpdaterPreferences({ ignoredVersion: updateState.latest.version })"
         >
-          忽略此版本
+          {{ t('settings.updateIgnoreVersion') }}
         </button>
       </div>
 
@@ -660,7 +730,7 @@ function resetCustomUiTheme(): void {
         "
         class="container_settings_update_debhint_box"
       >
-        <span class="container_settings_update_debhint_label">.deb 包手动升级命令（Ubuntu / Debian）：</span>
+        <span class="container_settings_update_debhint_label">{{ t('settings.updateDebHint') }}</span>
         <code class="container_settings_update_debhint_cmd">
           sudo apt install "{{ updateState.downloadedFilePath }}"
         </code>
@@ -675,7 +745,7 @@ function resetCustomUiTheme(): void {
             updateUpdaterPreferences({ autoCheckOnStartup: ($event.target as HTMLInputElement).checked })
           "
         />
-        启动应用时在后台自动检查 GitHub 最新稳定版本
+        {{ t('settings.updateAutoCheck') }}
       </label>
 
       <label class="container_settings_update_prerelease_label">
@@ -685,23 +755,21 @@ function resetCustomUiTheme(): void {
           :checked="updateState.preferences.allowPrerelease"
           @change="updateUpdaterPreferences({ allowPrerelease: ($event.target as HTMLInputElement).checked })"
         />
-        接收预发布测试版（Alpha / Beta / RC）更新提示
+        {{ t('settings.updateAllowPre') }}
       </label>
     </section>
 
     <section class="container_settings_about_body_base">
-      <h3 class="container_settings_about_header_title">关于此开发版</h3>
+      <h3 class="container_settings_about_header_title">{{ t('settings.aboutTitle') }}</h3>
       <div class="container_settings_about_body_brand">
         <img class="container_settings_about_body_icon" :src="orbitIcon" alt="" />
         <div class="container_settings_about_body_meta">
           <p class="container_settings_about_body_version">
-            玄剑天枢 · Graphite Orbit {{ bootstrap?.versions.app }} · Electron
+            {{ t('titlebar.brand') }} {{ bootstrap?.versions.app }} · Electron
             {{ bootstrap?.versions.electron }} · Node {{ bootstrap?.versions.node }}
           </p>
           <p class="container_settings_about_body_scope">
-            已开放：本地主机管理、本地终端、基础 SSH 密码与 Agent 连接、主机指纹确认、标签分屏、实时 3D
-            轨道视效与 M4 端到端加密远程同步（Argon2id + AES-256-GCM + 三方合并 + Vault
-            轮换）。SFTP、监控与隧道运行时转发将在后续阶段完善。
+            {{ t('settings.aboutScope') }}
           </p>
         </div>
       </div>
@@ -717,14 +785,86 @@ function resetCustomUiTheme(): void {
   overflow: auto;
 }
 .container_settings_page_header_eyebrow {
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
   letter-spacing: 1.5px;
   color: var(--color-accent-primary);
 }
 .container_settings_page_header_title {
-  font-size: 22px;
-  font-weight: 500;
-  margin: 10px 0;
+  font-family: var(--font-display);
+  font-size: var(--font-size-ui-title);
+  font-weight: var(--font-ui-heading-weight);
+  color: var(--color-text-heading);
+  margin: 10px 0 18px;
+}
+.container_settings_lang_body_section {
+  padding: 16px 0 22px;
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: 18px;
+  max-width: 900px;
+}
+.container_settings_lang_header_row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-accent-primary-hover);
+}
+.container_settings_lang_header_title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--font-size-ui-lg);
+  font-weight: var(--font-ui-heading-weight);
+  color: var(--color-text-heading);
+}
+.container_settings_lang_header_desc {
+  margin: 6px 0 14px;
+  font-size: var(--font-size-ui-xs);
+  color: var(--color-text-muted);
+}
+.container_settings_lang_grid_row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+[class*='container_settings_lang_card_base'] {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: var(--radius-card);
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-1);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    box-shadow 140ms ease;
+  &:hover {
+    border-color: var(--color-accent-primary-ring);
+    background: var(--color-surface-2);
+  }
+  &[aria-checked='true'] {
+    border-color: var(--color-accent-primary);
+    box-shadow: 0 0 0 1px var(--color-accent-primary-ring);
+    background: var(--color-accent-primary-soft);
+  }
+}
+[class*='container_settings_lang_card_code'] {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--color-accent-primary-hover);
+}
+[class*='container_settings_lang_card_title'] {
+  font-family: var(--font-display);
+  font-size: var(--font-size-ui-md);
+  color: var(--color-text-heading);
+}
+[class*='container_settings_lang_card_desc'] {
+  font-size: var(--font-size-ui-xs);
+  color: var(--color-text-muted);
+  line-height: 1.45;
 }
 .container_settings_terminal_body_base,
 .container_settings_tray_body_section,
@@ -733,15 +873,18 @@ function resetCustomUiTheme(): void {
 .container_settings_about_body_base {
   padding: 22px 0;
   border-bottom: 1px solid var(--color-border);
-  max-width: 750px;
+  max-width: 820px;
   h3 {
-    font-size: 14px;
-    font-weight: 500;
+    font-family: var(--font-display);
+    font-size: var(--font-size-ui-lg);
+    font-weight: var(--font-ui-heading-weight);
+    color: var(--color-text-heading);
     margin: 0 0 18px;
   }
   p {
-    font-size: 13px;
-    line-height: 1.8;
+    font-size: var(--font-size-ui-sm);
+    line-height: var(--font-ui-line-height);
+    letter-spacing: var(--font-ui-letter-spacing);
     color: var(--color-text-secondary);
   }
 }
@@ -850,70 +993,28 @@ function resetCustomUiTheme(): void {
   font-size: 12px;
   color: var(--color-text-muted);
 }
-.container_settings_terminal_body_font-label {
-  display: grid;
-  grid-template-columns: 1fr 220px 56px;
-  align-items: center;
-  gap: 14px;
-  font-size: 13px;
-}
-.container_settings_terminal_body_font-description {
-  grid-column: 1;
-  grid-row: 2;
-  font-size: 12px;
-  color: var(--color-text-muted);
-}
-.container_settings_terminal_body_font-input {
-  grid-column: 2;
-  grid-row: 1 / 3;
-  width: 100%;
-}
-.container_settings_terminal_body_font-value,
-.container_settings_terminal_body_lh-value {
-  grid-column: 3;
-  grid-row: 1 / 3;
-  color: var(--color-accent-primary);
-}
-.container_settings_terminal_body_lh-label {
-  display: grid;
-  grid-template-columns: 1fr 220px 56px;
-  align-items: center;
-  gap: 14px;
-  font-size: 13px;
-  margin-top: 16px;
-}
-.container_settings_terminal_body_lh-description {
-  grid-column: 1;
-  grid-row: 2;
-  font-size: 12px;
-  color: var(--color-text-muted);
-}
-.container_settings_terminal_body_lh-input {
-  grid-column: 2;
-  grid-row: 1 / 3;
-  width: 100%;
-}
 .container_settings_terminal_body_cursor-label,
 .container_settings_terminal_body_motion-label {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-top: 18px;
-  font-size: 13px;
+  font-size: var(--font-size-ui-sm);
 }
 .container_settings_motion_body_status {
   margin: 10px 0 0;
   color: var(--color-accent-primary-hover);
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
   line-height: 1.6;
   &[data-tier='off'] {
     color: var(--color-text-muted);
   }
 }
+.container_settings_terminal_body_gpu-description,
 .container_settings_motion_body_description {
   margin: 5px 0 0;
   color: var(--color-text-muted);
-  font-size: 11px;
+  font-size: var(--font-size-ui-xs);
   line-height: 1.65;
 }
 .container_settings_motion_body_warning {
@@ -930,20 +1031,20 @@ function resetCustomUiTheme(): void {
   background: transparent;
   border: 1px solid var(--color-accent-primary-ring);
   border-radius: var(--radius-control);
-  font-size: 11px;
+  font-size: var(--font-size-ui-xs);
   &:hover {
     background: var(--color-accent-primary-soft);
   }
 }
+.container_settings_terminal_body_gpu-label,
 .container_settings_terminal_body_blink-label,
-.container_settings_terminal_body_copy-label,
 .container_settings_terminal_body_contrast-label,
 .container_settings_terminal_body_reader-label {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-top: 14px;
-  font-size: 13px;
+  font-size: var(--font-size-ui-sm);
   color: var(--color-text-secondary);
 }
 .container_settings_theme_body_section {
@@ -1032,13 +1133,15 @@ function resetCustomUiTheme(): void {
   max-width: 820px;
 }
 .container_settings_uitheme_header_title {
-  font-size: 14px;
-  font-weight: 500;
+  font-family: var(--font-display);
+  font-size: var(--font-size-ui-lg);
+  font-weight: var(--font-ui-heading-weight);
+  color: var(--color-text-heading);
   margin: 0 0 8px;
 }
 .container_settings_uitheme_header_desc {
   margin: 0 0 14px;
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
   color: var(--color-text-muted);
 }
 .container_settings_uitheme_grid_base {

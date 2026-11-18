@@ -17,5 +17,20 @@ export default defineConfig({
     }
   },
   preload: { build: { rollupOptions: { output: { format: 'cjs' } } } },
-  renderer: { plugins: [vue()] }
+  renderer: {
+    optimizeDeps: { exclude: ['@xterm/addon-webgl'] },
+    plugins: [
+      vue(),
+      {
+        name: 'xterm-webgl-canvas-font',
+        enforce: 'pre',
+        transform(code, id) {
+          if (!id.split('?')[0]?.endsWith('/@xterm/addon-webgl/lib/addon-webgl.mjs')) return
+          // In 0.19.0 both canvas font builders emit a leading space for upright
+          // text. Chromium rejects the assignment and keeps the previous font.
+          return code.replaceAll('?"italic":""', '?"italic":"normal"')
+        }
+      }
+    ]
+  }
 })

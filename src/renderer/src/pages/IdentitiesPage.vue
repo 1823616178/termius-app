@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { KeyRound, FolderKanban, ShieldAlert, Trash2, Plus, RefreshCw, Pencil } from '@lucide/vue'
 import { instanceClass } from '../../../shared/classes'
 import type { SyncGroup } from '../../../shared/sync'
+import { locale, t } from '../services/i18n'
 import {
   bootstrap,
   group as hostFilterGroup,
@@ -84,23 +85,25 @@ function jumpToHostsGroup(groupNameText: string): void {
   <section v-if="page === 'identities'" class="container_identities_page_body_base">
     <header class="container_identities_page_header_base">
       <div class="container_identities_page_header_copy">
-        <span class="container_identities_page_header_eyebrow">令符玉牒 · 宗门印鉴</span>
-        <h2 class="container_identities_page_header_title">凭据、同步分组与主机指纹库</h2>
+        <span class="container_identities_page_header_eyebrow">{{ t('identities.eyebrow') }}</span>
+        <h2 class="container_identities_page_header_title">{{ t('identities.title') }}</h2>
         <p class="container_identities_page_header_description">
-          集中管理服务器同步分组、每台主机的本地系统凭据（{{
-            bootstrap?.platform === 'linux' ? 'Keyring / Secret Service' : 'DPAPI'
-          }}）与 SSH Agent 认证状态及可信指纹。
+          {{
+            t('identities.description', {
+              backend: bootstrap?.platform === 'linux' ? 'Keyring / Secret Service' : 'DPAPI'
+            })
+          }}
         </p>
       </div>
       <div class="container_identities_page_header_actions">
-        <div class="container_identities_sync_mode_switch" role="group" aria-label="修改同步策略">
+        <div class="container_identities_sync_mode_switch" role="group" :aria-label="t('hosts.syncModeAria')">
           <button
             class="container_identities_sync_mode_realtime"
             type="button"
             :data-active="syncWriteMode === 'realtime'"
             @click="setSyncWriteMode('realtime')"
           >
-            实时同步服务端
+            {{ t('hosts.syncRealtime') }}
           </button>
           <button
             class="container_identities_sync_mode_local"
@@ -108,12 +111,12 @@ function jumpToHostsGroup(groupNameText: string): void {
             :data-active="syncWriteMode === 'local-only'"
             @click="setSyncWriteMode('local-only')"
           >
-            仅本地修改
+            {{ t('hosts.syncLocalOnly') }}
           </button>
         </div>
         <button class="container_identities_refresh_known_btn" type="button" @click="refreshKnownHosts">
           <RefreshCw :size="14" />
-          刷新指纹库
+          {{ t('identities.refreshKnownHosts') }}
         </button>
       </div>
     </header>
@@ -121,20 +124,22 @@ function jumpToHostsGroup(groupNameText: string): void {
     <article class="container_identities_groups_card_base">
       <div class="container_identities_groups_card_head">
         <FolderKanban :size="16" />
-        <h3 class="container_identities_groups_card_title">服务器同步分组 ({{ syncGroups.length }})</h3>
+        <h3 class="container_identities_groups_card_title">
+          {{ t('identities.groupsTitle', { count: syncGroups.length }) }}
+        </h3>
       </div>
       <div class="container_identities_groups_form_row">
         <input
           v-model="groupName"
           class="container_identities_groups_input_name"
           type="text"
-          placeholder="输入分组名称（例如：生产环境 / GPU 集群）"
+          :placeholder="t('identities.groupInputPlaceholder')"
         />
         <input
           v-model="groupColor"
           class="container_identities_groups_input_color"
           type="color"
-          aria-label="分组标识颜色"
+          :aria-label="t('identities.groupColorAria')"
         />
         <button
           v-if="editingGroupId"
@@ -142,7 +147,7 @@ function jumpToHostsGroup(groupNameText: string): void {
           type="button"
           @click="resetGroupForm"
         >
-          取消
+          {{ t('actionDialog.cancel') }}
         </button>
         <button
           class="container_identities_groups_save_btn"
@@ -152,12 +157,12 @@ function jumpToHostsGroup(groupNameText: string): void {
           @click="handleSaveGroup"
         >
           <Plus :size="14" />
-          {{ editingGroupId ? '更新分组' : '添加分组' }}
+          {{ editingGroupId ? t('identities.updateGroup') : t('hosts.addGroup') }}
         </button>
       </div>
 
       <div v-if="syncGroups.length === 0" class="container_identities_groups_empty_text">
-        暂无服务器同步分组，上方输入名称即可添加。
+        {{ t('identities.groupsEmpty') }}
       </div>
       <div v-else class="container_identities_groups_list_grid">
         <div
@@ -171,7 +176,7 @@ function jumpToHostsGroup(groupNameText: string): void {
           />
           <strong :class="c('container_identities_group_row_name', item.id)">{{ item.name }}</strong>
           <span :class="c('container_identities_group_row_count', item.id)">
-            {{ hostCountByGroup.get(item.name) ?? 0 }} 台主机
+            {{ t('identities.groupHostCount', { count: hostCountByGroup.get(item.name) ?? 0 }) }}
           </span>
           <div :class="c('container_identities_group_row_actions', item.id)">
             <button
@@ -179,12 +184,12 @@ function jumpToHostsGroup(groupNameText: string): void {
               type="button"
               @click="jumpToHostsGroup(item.name)"
             >
-              查看主机
+              {{ t('identities.viewHosts') }}
             </button>
             <button
               :class="c('container_identities_group_row_edit', item.id)"
               type="button"
-              :aria-label="`编辑分组 ${item.name}`"
+              :aria-label="t('identities.editGroupAria', { name: item.name })"
               @click="startEditGroup(item)"
             >
               <Pencil :size="13" />
@@ -193,7 +198,7 @@ function jumpToHostsGroup(groupNameText: string): void {
               :class="c('container_identities_group_row_delete', item.id)"
               type="button"
               data-danger="true"
-              :aria-label="`删除分组 ${item.name}`"
+              :aria-label="t('hosts.deleteGroupAria', { name: item.name })"
               @click="removeSyncGroup(item.id)"
             >
               <Trash2 :size="13" />
@@ -206,21 +211,21 @@ function jumpToHostsGroup(groupNameText: string): void {
     <article class="container_identities_creds_card_base">
       <div class="container_identities_creds_card_head">
         <KeyRound :size="16" />
-        <h3 class="container_identities_creds_card_title">主机认证凭据安全审计</h3>
+        <h3 class="container_identities_creds_card_title">{{ t('identities.credsTitle') }}</h3>
         <span class="container_identities_creds_dpapi_badge">
           {{
             bootstrap?.encryptionAvailable
               ? bootstrap.platform === 'linux'
-                ? '系统 Keyring 凭据加密可用（Secret Service）'
-                : '系统 DPAPI 凭据加密可用'
+                ? t('identities.credsAvailLinux')
+                : t('identities.credsAvailWin')
               : bootstrap?.platform === 'linux'
-                ? '未检测到系统 Keyring（gnome-keyring / kwallet），凭据仅临时使用'
-                : '系统凭据加密不可用（会话临时密码）'
+                ? t('identities.credsUnavailLinux')
+                : t('identities.credsUnavailWin')
           }}
         </span>
       </div>
       <div v-if="hosts.length === 0" class="container_identities_creds_empty_text">
-        尚未配置任何 SSH 主机。
+        {{ t('identities.credsEmpty') }}
       </div>
       <div v-else class="container_identities_creds_list_base">
         <div v-for="host in hosts" :key="host.id" :class="c('container_identities_cred_row_base', host.id)">
@@ -232,7 +237,7 @@ function jumpToHostsGroup(groupNameText: string): void {
           </div>
           <div :class="c('container_identities_cred_row_badges', host.id)">
             <span :class="c('container_identities_cred_row_auth', host.id)">
-              {{ host.auth === 'agent' ? 'OpenSSH Agent' : '密码认证' }}
+              {{ host.auth === 'agent' ? 'OpenSSH Agent' : t('identities.passwordAuth') }}
             </span>
             <span
               :class="c('container_identities_cred_row_storage', host.id)"
@@ -240,16 +245,16 @@ function jumpToHostsGroup(groupNameText: string): void {
             >
               {{
                 host.auth === 'agent'
-                  ? 'Agent 签名托管'
+                  ? t('identities.agentHosted')
                   : host.hasPassword
                     ? syncStatus?.syncPasswords
                       ? bootstrap?.platform === 'linux'
-                        ? '本地 Keyring + 云端 E2EE 已保护'
-                        : '本地 DPAPI + 云端 E2EE 已保护'
+                        ? t('identities.protectedLinuxSync')
+                        : t('identities.protectedWinSync')
                       : bootstrap?.platform === 'linux'
-                        ? '本机 Keyring 已安全保存'
-                        : '本机 DPAPI 已安全保存'
-                    : '未保存（连接时输入）'
+                        ? t('identities.protectedLinuxLocal')
+                        : t('identities.protectedWinLocal')
+                    : t('identities.unsavedPrompt')
               }}
             </span>
             <button
@@ -257,7 +262,7 @@ function jumpToHostsGroup(groupNameText: string): void {
               type="button"
               @click="openEditor(host)"
             >
-              修改凭据
+              {{ t('identities.editCreds') }}
             </button>
           </div>
         </div>
@@ -268,18 +273,18 @@ function jumpToHostsGroup(groupNameText: string): void {
       <div class="container_identities_knownhosts_card_head">
         <ShieldAlert :size="16" />
         <h3 class="container_identities_knownhosts_card_title">
-          SSH 已知主机指纹库 ({{ knownHosts.length }})
+          {{ t('identities.knownHostsTitle', { count: knownHosts.length }) }}
         </h3>
         <input
           v-model="knownHostFilter"
           class="container_identities_knownhosts_search_input"
           type="search"
-          placeholder="筛选主机或指纹…"
-          aria-label="筛选已知主机指纹"
+          :placeholder="t('identities.knownHostsSearch')"
+          :aria-label="t('identities.knownHostsSearchAria')"
         />
       </div>
       <div v-if="filteredKnownHosts.length === 0" class="container_identities_knownhosts_empty_text">
-        暂无匹配的 SSH 已知主机指纹记录（首次连接远程服务器并信任后将自动记录）。
+        {{ t('identities.knownHostsEmpty') }}
       </div>
       <div v-else class="container_identities_knownhosts_list_base">
         <div
@@ -297,7 +302,7 @@ function jumpToHostsGroup(groupNameText: string): void {
           </div>
           <div :class="c('container_identities_knownhost_row_actions', `kh${groupToken(entry.hostKey)}`)">
             <span :class="c('container_identities_knownhost_row_time', `kh${groupToken(entry.hostKey)}`)">
-              {{ new Date(entry.updatedAt).toLocaleString() }}
+              {{ new Date(entry.updatedAt).toLocaleString(locale) }}
             </span>
             <button
               :class="c('container_identities_knownhost_row_remove', `kh${groupToken(entry.hostKey)}`)"
@@ -306,7 +311,7 @@ function jumpToHostsGroup(groupNameText: string): void {
               @click="removeKnownHostEntry(entry.hostKey)"
             >
               <Trash2 :size="13" />
-              移除信任
+              {{ t('identities.removeTrust') }}
             </button>
           </div>
         </div>
@@ -333,16 +338,20 @@ function jumpToHostsGroup(groupNameText: string): void {
   flex-wrap: wrap;
 }
 .container_identities_page_header_eyebrow {
-  font-size: 11px;
+  font-size: var(--font-size-ui-2xs);
   letter-spacing: 1.4px;
   color: var(--color-accent-primary);
 }
 .container_identities_page_header_title {
   margin: 6px 0 6px;
-  font-size: 22px;
+  font-family: var(--font-display);
+  font-size: var(--font-size-ui-title);
+  font-weight: var(--font-ui-heading-weight);
+  color: var(--color-text-heading);
 }
 .container_identities_page_header_description {
   margin: 0;
+  font-size: var(--font-size-ui-sm);
   color: var(--color-text-muted);
 }
 .container_identities_page_header_actions {

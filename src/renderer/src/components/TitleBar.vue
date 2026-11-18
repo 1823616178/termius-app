@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { Minus, Square, Copy, X, Sparkles, Minimize2, ArrowUpCircle, House } from '@lucide/vue'
+import { Minus, Square, Copy, X, Sparkles, Minimize2, ArrowUpCircle, House, Languages } from '@lucide/vue'
 import orbitIcon from '../assets/orbit-icon.svg'
+import { locale, t, toggleLocale } from '../services/i18n'
 import {
   bootstrap,
   cycleUiTheme,
@@ -21,35 +22,32 @@ import { UI_THEME_PRESETS } from '../services/ui-themes'
 const windowControls = window.orbit.window
 
 const currentThemeLabel = computed(() => {
-  if (uiTheme.value === 'custom') return '太虚·自定'
+  if (uiTheme.value === 'custom') return t('titlebar.customTheme')
   const preset = UI_THEME_PRESETS.find((item) => item.id === uiTheme.value)
-  return preset ? `${preset.trigram} ${preset.element}` : '☰ 主题'
+  if (!preset) return t('titlebar.defaultTheme')
+  return `${preset.trigram} ${locale.value === 'en-US' ? preset.elementEn : preset.element}`
 })
 
 const updateBadgeText = computed(() => {
   const s = updateState.value
   if (s.phase === 'downloading') {
     return s.progress?.percent !== null && s.progress?.percent !== undefined
-      ? `下载更新 ${s.progress.percent}%`
-      : '下载更新中'
+      ? t('titlebar.updateDownloading', { percent: s.progress.percent })
+      : t('titlebar.updateDownloadingNoPct')
   }
   if (s.phase === 'downloaded' && s.latest) {
-    return `就绪待装 v${s.latest.version}`
+    return t('titlebar.updateDownloaded', { version: s.latest.version })
   }
   if (s.phase === 'available' && s.latest) {
-    return `新版本 v${s.latest.version}`
+    return t('titlebar.updateAvailable', { version: s.latest.version })
   }
   return ''
 })
 
 const closeButtonTitle = computed(() => {
-  if (trayState.value.closeAction === 'tray') {
-    return '点击关闭按钮将最小化到后台系统托盘（可在设置中修改）'
-  }
-  if (trayState.value.closeAction === 'minimize') {
-    return '点击关闭按钮将最小化到系统任务栏（可在设置中修改）'
-  }
-  return '彻底关闭并退出程序（可在设置中修改）'
+  if (trayState.value.closeAction === 'tray') return t('titlebar.closeToTray')
+  if (trayState.value.closeAction === 'minimize') return t('titlebar.closeToTaskbar')
+  return t('titlebar.closeQuit')
 })
 </script>
 
@@ -58,16 +56,18 @@ const closeButtonTitle = computed(() => {
     <span class="container_app_brand_header_mark">
       <img class="container_app_brand_header_icon" :src="orbitIcon" alt="" />
     </span>
-    <strong class="container_app_brand_header_name">玄剑天枢 · Graphite Orbit</strong>
+    <strong class="container_app_brand_header_name">{{ t('titlebar.brand') }}</strong>
     <span class="container_app_brand_header_separator">/</span>
-    <span class="container_app_brand_header_workspace">青冥道场</span>
-    <span class="container_app_brand_header_badge">剑印 · {{ bootstrap?.versions.app ?? '0.1.0' }}</span>
+    <span class="container_app_brand_header_workspace">{{ t('titlebar.workspace') }}</span>
+    <span class="container_app_brand_header_badge">
+      {{ t('titlebar.badgePrefix') }} · {{ bootstrap?.versions.app ?? '1.0.0' }}
+    </span>
     <div class="container_app_window_header_controls">
       <button
         class="container_app_window_header_home"
         type="button"
-        title="返回首页"
-        aria-label="返回首页"
+        :title="t('titlebar.home')"
+        :aria-label="t('titlebar.home')"
         :aria-current="page === 'workspace' && (homeVisible || !tabs.length) ? 'page' : undefined"
         @click="goHome"
       >
@@ -78,18 +78,29 @@ const closeButtonTitle = computed(() => {
         class="container_app_window_header_update"
         type="button"
         :data-phase="updateState.phase"
-        title="查看并安装新版本更新"
-        aria-label="查看版本更新"
+        :title="t('titlebar.updateTitle')"
+        :aria-label="t('titlebar.updateAria')"
         @click="openUpdateSettings"
       >
         <ArrowUpCircle :size="12" />
         <span class="container_app_window_header_update-label">{{ updateBadgeText }}</span>
       </button>
       <button
+        class="container_app_window_header_lang"
+        type="button"
+        data-testid="titlebar-lang-toggle"
+        :title="t('titlebar.langTitle')"
+        :aria-label="t('titlebar.langAria')"
+        @click="toggleLocale"
+      >
+        <Languages :size="13" />
+        <span class="container_app_window_header_lang-label">{{ t('titlebar.langLabel') }}</span>
+      </button>
+      <button
         class="container_app_brand_header_theme"
         type="button"
-        title="点击循环切换道教五行八卦主题配色"
-        aria-label="切换界面主题配色"
+        :title="t('titlebar.themeTitle')"
+        :aria-label="t('titlebar.themeAria')"
         @click="cycleUiTheme"
       >
         <Sparkles :size="13" />
@@ -99,22 +110,18 @@ const closeButtonTitle = computed(() => {
         class="container_app_window_header_tray"
         type="button"
         :data-active="trayState.trayCreated"
-        :title="
-          bootstrap?.platform === 'linux'
-            ? '收起到系统托盘后台运行（需桌面支持 StatusNotifier / AppIndicator）'
-            : '收起到 Windows 右侧系统托盘后台运行'
-        "
-        aria-label="后台托盘"
+        :title="bootstrap?.platform === 'linux' ? t('titlebar.trayTitleLinux') : t('titlebar.trayTitleWin')"
+        :aria-label="t('titlebar.trayAria')"
         @click="windowControls.hideToTray()"
       >
         <Minimize2 :size="12" />
-        <span class="container_app_window_header_tray-label">后台运行</span>
+        <span class="container_app_window_header_tray-label">{{ t('titlebar.trayLabel') }}</span>
       </button>
       <button
         class="container_app_window_header_minimize"
         type="button"
-        :title="trayState.minimizeToTray ? '最小化到右侧系统托盘（后台运行）' : '最小化窗口'"
-        aria-label="最小化"
+        :title="trayState.minimizeToTray ? t('titlebar.minimizeToTray') : t('titlebar.minimizeWindow')"
+        :aria-label="t('titlebar.minimizeAria')"
         @click="windowControls.minimize()"
       >
         <Minus :size="15" />
@@ -122,7 +129,7 @@ const closeButtonTitle = computed(() => {
       <button
         class="container_app_window_header_maximize"
         type="button"
-        :aria-label="maximized ? '还原窗口' : '最大化窗口'"
+        :aria-label="maximized ? t('titlebar.restoreWindow') : t('titlebar.maximizeWindow')"
         @click="windowControls.maximize()"
       >
         <Copy v-if="maximized" :size="12" />
@@ -132,7 +139,7 @@ const closeButtonTitle = computed(() => {
         class="container_app_window_header_close"
         type="button"
         :title="closeButtonTitle"
-        aria-label="关闭窗口"
+        :aria-label="t('titlebar.closeAria')"
         @click="windowControls.close()"
       >
         <X :size="17" />
@@ -204,6 +211,7 @@ const closeButtonTitle = computed(() => {
   -webkit-app-region: no-drag;
   button:not(
     .container_app_brand_header_theme,
+    .container_app_window_header_lang,
     .container_app_window_header_tray,
     .container_app_window_header_update
   ) {
@@ -214,6 +222,7 @@ const closeButtonTitle = computed(() => {
   }
 }
 .container_app_brand_header_theme,
+.container_app_window_header_lang,
 .container_app_window_header_tray,
 .container_app_window_header_update {
   display: inline-flex;
@@ -228,6 +237,10 @@ const closeButtonTitle = computed(() => {
   color: var(--color-text-secondary);
   font-size: 11px;
   white-space: nowrap;
+}
+.container_app_window_header_lang {
+  border-color: var(--color-border-strong);
+  color: var(--color-text-primary);
 }
 .container_app_window_header_update {
   border-color: var(--color-seal-ring);
@@ -253,6 +266,7 @@ const closeButtonTitle = computed(() => {
   color: var(--color-accent-secondary);
 }
 .container_app_brand_header_theme-label,
+.container_app_window_header_lang-label,
 .container_app_window_header_tray-label {
   font-weight: 500;
 }

@@ -10,6 +10,7 @@ import {
   X
 } from '@lucide/vue'
 import { formatBytes, formatSpeed, type SftpTransferItem } from '../../../shared/sftp'
+import { t } from '../services/i18n'
 import {
   activeTransferCount,
   cancelSftpTransfer,
@@ -36,7 +37,11 @@ function transferPercent(item: SftpTransferItem): number {
 </script>
 
 <template>
-  <section v-if="sftpTransfers.length" class="container_workspace_sftp_queue_base" aria-label="SFTP 传输队列">
+  <section
+    v-if="sftpTransfers.length"
+    class="container_workspace_sftp_queue_base"
+    :aria-label="t('sftp.queueAria')"
+  >
     <header class="container_workspace_sftp_queue_header">
       <button
         class="container_workspace_sftp_queue_toggle"
@@ -45,10 +50,10 @@ function transferPercent(item: SftpTransferItem): number {
       >
         <ChevronDown v-if="queueExpanded" :size="13" />
         <ChevronRight v-else :size="13" />
-        传输队列 ({{ activeTransferCount }} 进行中 / {{ sftpTransfers.length }} 项)
+        {{ t('sftp.queueSummary', { active: activeTransferCount, total: sftpTransfers.length }) }}
       </button>
       <button class="container_workspace_sftp_queue_clear" type="button" @click="clearFinishedSftpTransfers">
-        清理已完成
+        {{ t('sftp.queueClearFinished') }}
       </button>
     </header>
     <div v-if="queueExpanded" class="container_workspace_sftp_queue_list">
@@ -75,17 +80,17 @@ function transferPercent(item: SftpTransferItem): number {
               {{ formatSpeed(item.speedBps) }}
             </template>
             <template v-else-if="item.status === 'completed'">
-              已完成 · {{ formatBytes(item.totalBytes) }}
+              {{ t('sftp.queueCompleted', { size: formatBytes(item.totalBytes) }) }}
             </template>
-            <template v-else-if="item.status === 'queued'">等待中…</template>
-            <template v-else-if="item.status === 'cancelled'">已取消</template>
-            <template v-else>{{ item.error || '失败' }}</template>
+            <template v-else-if="item.status === 'queued'">{{ t('sftp.queueWaiting') }}</template>
+            <template v-else-if="item.status === 'cancelled'">{{ t('sftp.queueCancelled') }}</template>
+            <template v-else>{{ item.error || t('sftp.queueFailed') }}</template>
           </span>
           <button
             v-if="item.status === 'running' || item.status === 'queued'"
             :class="instanceClassFor('container_workspace_sftp_queue_cancel', item.id)"
             type="button"
-            aria-label="取消传输"
+            :aria-label="t('sftp.queueCancelAria')"
             @click="cancelSftpTransfer(item)"
           >
             <X :size="12" />
@@ -94,7 +99,7 @@ function transferPercent(item: SftpTransferItem): number {
             v-else-if="item.status === 'failed' || item.status === 'cancelled'"
             :class="instanceClassFor('container_workspace_sftp_queue_retry', item.id)"
             type="button"
-            aria-label="重试传输"
+            :aria-label="t('sftp.queueRetryAria')"
             @click="retrySftpTransfer(item)"
           >
             <RotateCw :size="12" />
@@ -103,8 +108,8 @@ function transferPercent(item: SftpTransferItem): number {
             v-else-if="item.status === 'completed' && item.direction === 'download'"
             :class="instanceClassFor('container_workspace_sftp_queue_reveal', item.id)"
             type="button"
-            aria-label="打开本地文件夹"
-            title="在资源管理器中显示"
+            :aria-label="t('sftp.queueRevealAria')"
+            :title="t('sftp.queueRevealTitle')"
             @click="emit('revealLocal', item.localPath)"
           >
             <FolderOpen :size="12" />

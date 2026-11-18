@@ -1,19 +1,40 @@
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { join } from 'node:path'
 
 export interface MockUpdateServerHandle {
   url: string
+  stableVersion: string
+  prereleaseVersion: string
   setPrereleaseAvailable(enabled: boolean): void
   close(): Promise<void>
 }
 
+function readNextTestVersions(): { stableVersion: string; prereleaseVersion: string } {
+  const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
+    version?: string
+  }
+  const match = (pkg.version ?? '1.0.0').match(/^(\d+)\.(\d+)/)
+  const major = match ? Number(match[1]) : 1
+  const minor = match ? Number(match[2]) : 0
+  return {
+    stableVersion: `${major}.${minor + 1}.0`,
+    prereleaseVersion: `${major}.${minor + 2}.0-beta.1`
+  }
+}
+
 export async function startMockUpdateServer(): Promise<MockUpdateServerHandle> {
-  const stableBinary = Buffer.from('MZ-MOCK-ORBIT-INSTALLER-0.2.0-PAYLOAD-' + 'A'.repeat(65536), 'utf8')
+  const { stableVersion, prereleaseVersion } = readNextTestVersions()
+  const stableBinary = Buffer.from(
+    `MZ-MOCK-ORBIT-INSTALLER-${stableVersion}-PAYLOAD-` + 'A'.repeat(65536),
+    'utf8'
+  )
   const stableSha256 = createHash('sha256').update(stableBinary).digest('hex').toLowerCase()
   const stableSha512 = createHash('sha512').update(stableBinary).digest('base64')
 
-  const betaBinary = Buffer.from('MZ-MOCK-ORBIT-INSTALLER-0.3.0-BETA-1-' + 'B'.repeat(40960), 'utf8')
+  const betaBinary = Buffer.from(`MZ-MOCK-ORBIT-INSTALLER-${prereleaseVersion}-` + 'B'.repeat(40960), 'utf8')
   const betaSha256 = createHash('sha256').update(betaBinary).digest('hex').toLowerCase()
   const betaSha512 = createHash('sha512').update(betaBinary).digest('base64')
 
@@ -69,29 +90,29 @@ export async function startMockUpdateServer(): Promise<MockUpdateServerHandle> {
     const pathname = reqUrl.pathname
 
     if (pathname === '/repos/1823616178/termius-app/releases/latest') {
-      sendJson(res, 200, buildRelease('0.2.0', false, stableBinary, stableSha256))
+      sendJson(res, 200, buildRelease(stableVersion, false, stableBinary, stableSha256))
       return
     }
 
     if (pathname === '/repos/1823616178/termius-app/releases') {
       const items = includePrerelease
         ? [
-            buildRelease('0.3.0-beta.1', true, betaBinary, betaSha256),
-            buildRelease('0.2.0', false, stableBinary, stableSha256)
+            buildRelease(prereleaseVersion, true, betaBinary, betaSha256),
+            buildRelease(stableVersion, false, stableBinary, stableSha256)
           ]
-        : [buildRelease('0.2.0', false, stableBinary, stableSha256)]
+        : [buildRelease(stableVersion, false, stableBinary, stableSha256)]
       sendJson(res, 200, items)
       return
     }
 
-    if (pathname === '/downloads/latest-0.2.0.yml') {
+    if (pathname === `/downloads/latest-${stableVersion}.yml`) {
       const text = [
-        'version: 0.2.0',
+        `version: ${stableVersion}`,
         'files:',
-        '  - url: Graphite-Orbit-Setup-0.2.0.exe',
+        `  - url: Graphite-Orbit-Setup-${stableVersion}.exe`,
         `    sha512: ${stableSha512}`,
         `    size: ${stableBinary.byteLength}`,
-        'path: Graphite-Orbit-Setup-0.2.0.exe',
+        `path: Graphite-Orbit-Setup-${stableVersion}.exe`,
         `sha512: ${stableSha512}`,
         "releaseDate: '2026-11-15T08:30:00.000Z'"
       ].join('\n')
@@ -100,14 +121,14 @@ export async function startMockUpdateServer(): Promise<MockUpdateServerHandle> {
       return
     }
 
-    if (pathname === '/downloads/latest-0.3.0-beta.1.yml') {
+    if (pathname === `/downloads/latest-${prereleaseVersion}.yml`) {
       const text = [
-        'version: 0.3.0-beta.1',
+        `version: ${prereleaseVersion}`,
         'files:',
-        '  - url: Graphite-Orbit-Setup-0.3.0-beta.1.exe',
+        `  - url: Graphite-Orbit-Setup-${prereleaseVersion}.exe`,
         `    sha512: ${betaSha512}`,
         `    size: ${betaBinary.byteLength}`,
-        'path: Graphite-Orbit-Setup-0.3.0-beta.1.exe',
+        `path: Graphite-Orbit-Setup-${prereleaseVersion}.exe`,
         `sha512: ${betaSha512}`,
         "releaseDate: '2026-11-15T08:35:00.000Z'"
       ].join('\n')
@@ -116,19 +137,19 @@ export async function startMockUpdateServer(): Promise<MockUpdateServerHandle> {
       return
     }
 
-    if (pathname === '/downloads/SHA256SUMS-0.2.0.txt') {
+    if (pathname === `/downloads/SHA256SUMS-${stableVersion}.txt`) {
       res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' })
-      res.end(`${stableSha256}  Graphite-Orbit-Setup-0.2.0.exe\n`)
+      res.end(`${stableSha256}  Graphite-Orbit-Setup-${stableVersion}.exe\n`)
       return
     }
 
-    if (pathname === '/downloads/SHA256SUMS-0.3.0-beta.1.txt') {
+    if (pathname === `/downloads/SHA256SUMS-${prereleaseVersion}.txt`) {
       res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' })
-      res.end(`${betaSha256}  Graphite-Orbit-Setup-0.3.0-beta.1.exe\n`)
+      res.end(`${betaSha256}  Graphite-Orbit-Setup-${prereleaseVersion}.exe\n`)
       return
     }
 
-    if (pathname === '/downloads/Graphite-Orbit-Setup-0.2.0.exe') {
+    if (pathname === `/downloads/Graphite-Orbit-Setup-${stableVersion}.exe`) {
       res.writeHead(200, {
         'Content-Type': 'application/octet-stream',
         'Content-Length': String(stableBinary.byteLength)
@@ -137,7 +158,7 @@ export async function startMockUpdateServer(): Promise<MockUpdateServerHandle> {
       return
     }
 
-    if (pathname === '/downloads/Graphite-Orbit-Setup-0.3.0-beta.1.exe') {
+    if (pathname === `/downloads/Graphite-Orbit-Setup-${prereleaseVersion}.exe`) {
       res.writeHead(200, {
         'Content-Type': 'application/octet-stream',
         'Content-Length': String(betaBinary.byteLength)
@@ -156,6 +177,8 @@ export async function startMockUpdateServer(): Promise<MockUpdateServerHandle> {
 
   return {
     url: baseUrl,
+    stableVersion,
+    prereleaseVersion,
     setPrereleaseAvailable(enabled: boolean) {
       includePrerelease = enabled
     },

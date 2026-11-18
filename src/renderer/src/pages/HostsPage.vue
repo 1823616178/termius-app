@@ -20,6 +20,7 @@ import { instanceClass } from '../../../shared/classes'
 import type { Host } from '../../../shared/contracts'
 import type { SyncTunnel } from '../../../shared/sync'
 import OrbitSelect from '../components/OrbitSelect.vue'
+import { locale, t } from '../services/i18n'
 import {
   checkPortOccupancy,
   connectHost,
@@ -69,11 +70,14 @@ const quickSaving = ref(false)
 
 const showGroupManager = ref(false)
 const newGroupName = ref('')
-const tunnelTypeOptions = [
-  { value: 'L', label: '-L 本地转发' },
-  { value: 'R', label: '-R 远端转发' },
-  { value: 'D', label: '-D SOCKS5' }
-]
+const tunnelTypeOptions = computed(() => {
+  void locale.value
+  return [
+    { value: 'L', label: t('tunnels.modeL') },
+    { value: 'R', label: t('tunnels.modeR') },
+    { value: 'D', label: t('tunnels.modeD') }
+  ]
+})
 const newGroupColor = ref('#d4af63')
 
 const distinctGroups = computed(() => {
@@ -114,7 +118,7 @@ function toggleTunnelDrawer(host: Host): void {
     return
   }
   expandedTunnelHostId.value = host.id
-  quickTunnelName.value = `${host.name}-转发`
+  quickTunnelName.value = `${host.name}-${locale.value === 'en-US' ? 'fwd' : '转发'}`
   quickTunnelType.value = 'L'
   quickListenHost.value = '127.0.0.1'
   quickListenPort.value = 1080
@@ -123,15 +127,20 @@ function toggleTunnelDrawer(host: Host): void {
 }
 
 async function handleProbeHost(host: Host): Promise<void> {
+  const en = locale.value === 'en-US'
   try {
     const res = await probeConnectivity(host.address, host.port, `host:${host.id}`)
     notify(
       res.reachable
-        ? `${host.name} (${host.address}:${host.port}) 连通正常 · ${res.latencyMs} ms`
-        : `${host.name} 探测不可达：${res.message}`
+        ? en
+          ? `${host.name} (${host.address}:${host.port}) reachable · ${res.latencyMs} ms`
+          : `${host.name} (${host.address}:${host.port}) 连通正常 · ${res.latencyMs} ms`
+        : en
+          ? `${host.name} unreachable: ${res.message}`
+          : `${host.name} 探测不可达：${res.message}`
     )
   } catch (err) {
-    notify(err instanceof Error ? err.message : '测速失败')
+    notify(err instanceof Error ? err.message : en ? 'Probe failed' : '测速失败')
   }
 }
 
@@ -139,7 +148,7 @@ async function handleCreateQuickTunnel(host: Host): Promise<void> {
   quickSaving.value = true
   try {
     await saveSyncTunnel({
-      name: quickTunnelName.value.trim() || `${host.name}-转发`,
+      name: quickTunnelName.value.trim() || `${host.name}-${locale.value === 'en-US' ? 'fwd' : '转发'}`,
       serverId: host.id,
       groupId: null,
       type: quickTunnelType.value,
@@ -151,7 +160,13 @@ async function handleCreateQuickTunnel(host: Host): Promise<void> {
       enabled: false
     })
   } catch (err) {
-    notify(err instanceof Error ? err.message : '添加端口转发失败')
+    notify(
+      err instanceof Error
+        ? err.message
+        : locale.value === 'en-US'
+          ? 'Failed to add tunnel'
+          : '添加端口转发失败'
+    )
   } finally {
     quickSaving.value = false
   }
@@ -173,24 +188,24 @@ async function handleCreateGroup(): Promise<void> {
   <section v-if="page === 'hosts'" class="container_hosts_page_body_base" @scroll.passive="onScroll">
     <header class="container_hosts_page_header_base">
       <div class="container_hosts_page_header_copy">
-        <span class="container_hosts_page_header_eyebrow">玄枢群岳 · 飞剑名录</span>
+        <span class="container_hosts_page_header_eyebrow">{{ t('hosts.eyebrow') }}</span>
         <h2 class="container_hosts_page_header_title">
-          主机库
+          {{ t('hosts.title') }}
           <span class="container_hosts_page_header_count">{{ hosts.length }}</span>
         </h2>
         <p class="container_hosts_page_header_description">
-          横向高密度服务器清单：直接测速、管理分组、配置并启停每台主机的端口转发与端口占用检测。
+          {{ t('hosts.description') }}
         </p>
       </div>
       <div class="container_hosts_page_header_actions">
-        <div class="container_hosts_sync_mode_switch" role="group" aria-label="增删改同步选项">
+        <div class="container_hosts_sync_mode_switch" role="group" :aria-label="t('hosts.syncModeAria')">
           <button
             class="container_hosts_sync_mode_realtime"
             type="button"
             :data-active="syncWriteMode === 'realtime'"
             @click="setSyncWriteMode('realtime')"
           >
-            实时同步到服务端
+            {{ t('hosts.syncRealtime') }}
           </button>
           <button
             class="container_hosts_sync_mode_local"
@@ -198,12 +213,12 @@ async function handleCreateGroup(): Promise<void> {
             :data-active="syncWriteMode === 'local-only'"
             @click="setSyncWriteMode('local-only')"
           >
-            仅保留本地修改
+            {{ t('hosts.syncLocalOnly') }}
           </button>
         </div>
         <button class="container_hosts_page_header_create" type="button" data-primary @click="openEditor()">
           <Plus :size="15" />
-          新建主机
+          {{ t('sidebar.newHost') }}
         </button>
       </div>
     </header>
@@ -213,8 +228,8 @@ async function handleCreateGroup(): Promise<void> {
         v-model="filterQuery"
         class="container_hosts_toolbar_search_input"
         type="search"
-        placeholder="搜索主机名称、地址、用户名或标签…"
-        aria-label="筛选主机列表"
+        :placeholder="t('hosts.toolbarSearchPlaceholder')"
+        :aria-label="t('hosts.toolbarSearchAria')"
       />
       <div class="container_hosts_toolbar_groups_wrap">
         <button
@@ -223,7 +238,7 @@ async function handleCreateGroup(): Promise<void> {
           :data-active="filterGroup === 'all'"
           @click="filterGroup = 'all'"
         >
-          全部分组
+          {{ t('hosts.allGroups') }}
         </button>
         <button
           v-for="gName in distinctGroups"
@@ -242,7 +257,7 @@ async function handleCreateGroup(): Promise<void> {
           @click="showGroupManager = !showGroupManager"
         >
           <FolderPlus :size="14" />
-          管理分组 ({{ syncGroups.length }})
+          {{ t('hosts.manageGroups', { count: syncGroups.length }) }}
         </button>
       </div>
     </div>
@@ -253,13 +268,13 @@ async function handleCreateGroup(): Promise<void> {
           v-model="newGroupName"
           class="container_hosts_groupmgr_input_name"
           type="text"
-          placeholder="新建同步分组名称…"
+          :placeholder="t('hosts.newGroupPlaceholder')"
         />
         <input
           v-model="newGroupColor"
           class="container_hosts_groupmgr_input_color"
           type="color"
-          aria-label="同步分组颜色"
+          :aria-label="t('hosts.groupColorAria')"
         />
         <button
           class="container_hosts_groupmgr_save_btn"
@@ -269,7 +284,7 @@ async function handleCreateGroup(): Promise<void> {
           @click="handleCreateGroup"
         >
           <Plus :size="14" />
-          添加分组
+          {{ t('hosts.addGroup') }}
         </button>
       </div>
       <div v-if="syncGroups.length" class="container_hosts_groupmgr_list_wrap">
@@ -279,7 +294,7 @@ async function handleCreateGroup(): Promise<void> {
           <button
             :class="c('container_hosts_groupmgr_chip_del', sg.id)"
             type="button"
-            :aria-label="`删除分组 ${sg.name}`"
+            :aria-label="t('hosts.deleteGroupAria', { name: sg.name })"
             @click="removeSyncGroup(sg.id)"
           >
             ×
@@ -290,10 +305,10 @@ async function handleCreateGroup(): Promise<void> {
 
     <div v-if="!hosts.length" class="container_hosts_page_body_empty">
       <Server :size="36" :stroke-width="1" />
-      <h3 class="container_hosts_page_body_empty-title">你的第一台主机</h3>
-      <p class="container_hosts_page_body_empty-description">保存服务器地址与认证信息，随时建立连接。</p>
+      <h3 class="container_hosts_page_body_empty-title">{{ t('hosts.emptyTitle') }}</h3>
+      <p class="container_hosts_page_body_empty-description">{{ t('hosts.emptyDescription') }}</p>
       <button class="container_hosts_page_body_empty-create" type="button" @click="openEditor()">
-        添加 SSH 主机
+        {{ t('hosts.emptyCreate') }}
         <ArrowUpRight :size="15" />
       </button>
     </div>
@@ -313,7 +328,11 @@ async function handleCreateGroup(): Promise<void> {
               <button
                 :class="c('container_hosts_card_header_favorite', host.id)"
                 type="button"
-                :aria-label="`${host.favorite ? '取消收藏' : '收藏'} ${host.name}`"
+                :aria-label="
+                  host.favorite
+                    ? t('hosts.favoriteRemoveAria', { name: host.name })
+                    : t('hosts.favoriteAddAria', { name: host.name })
+                "
                 :aria-pressed="host.favorite"
                 @click.stop="toggleFavorite(host)"
               >
@@ -324,7 +343,7 @@ async function handleCreateGroup(): Promise<void> {
                   <h3 :class="c('container_hosts_card_body_name', host.id)">{{ host.name }}</h3>
                   <span :class="c('container_hosts_card_body_group', host.id)">
                     <Folder :size="11" />
-                    {{ host.group || '未分组' }}
+                    {{ host.group || t('hosts.ungrouped') }}
                   </span>
                 </div>
                 <p :class="c('container_hosts_card_body_address', host.id)">
@@ -335,15 +354,21 @@ async function handleCreateGroup(): Promise<void> {
 
             <div :class="c('container_hosts_row_status_pills', host.id)">
               <span :class="c('container_hosts_row_auth_pill', host.id)">
-                {{ host.auth === 'agent' ? 'Agent' : host.hasPassword ? '已存密码' : '临时密码' }}
+                {{
+                  host.auth === 'agent'
+                    ? 'Agent'
+                    : host.hasPassword
+                      ? t('hosts.authSaved')
+                      : t('hosts.authPrompt')
+                }}
               </span>
               <span
                 :class="c('container_hosts_row_tunnel_pill', host.id)"
                 :data-active="activeTunnelCountForHost(host.id) > 0"
               >
-                端口转发 {{ hostTunnels(host.id).length }}
+                {{ t('hosts.tunnelPill', { count: hostTunnels(host.id).length }) }}
                 <template v-if="activeTunnelCountForHost(host.id) > 0">
-                  ({{ activeTunnelCountForHost(host.id) }} 运行)
+                  {{ t('hosts.tunnelRunningSuffix', { count: activeTunnelCountForHost(host.id) }) }}
                 </template>
               </span>
               <span
@@ -354,7 +379,7 @@ async function handleCreateGroup(): Promise<void> {
                 {{
                   probeResults[`host:${host.id}`]?.reachable
                     ? `${probeResults[`host:${host.id}`]?.latencyMs} ms`
-                    : '不可达'
+                    : t('hosts.unreachable')
                 }}
               </span>
             </div>
@@ -366,27 +391,27 @@ async function handleCreateGroup(): Promise<void> {
                 data-primary="true"
                 @click.stop="connectHost(host)"
               >
-                连接
+                {{ t('actionDialog.connect') }}
                 <ArrowUpRight :size="14" />
               </button>
               <button
                 :class="c('container_hosts_row_footer_split', host.id)"
                 type="button"
-                title="在当前标签页分屏连接"
+                :title="t('hosts.splitBtnTitle')"
                 @click.stop="connectHost(host, true)"
               >
                 <Columns2 :size="13" />
-                分屏
+                {{ t('hosts.splitBtn') }}
               </button>
               <button
                 :class="c('container_hosts_row_footer_probe', host.id)"
                 type="button"
                 :disabled="Boolean(probeBusy[`net:host:${host.id}`])"
-                title="测试主机 SSH 端口连通性与延迟"
+                :title="t('hosts.probeTitle')"
                 @click.stop="handleProbeHost(host)"
               >
                 <Activity :size="13" />
-                {{ probeBusy[`net:host:${host.id}`] ? '探测中' : '测速' }}
+                {{ probeBusy[`net:host:${host.id}`] ? t('hosts.probing') : t('hosts.probe') }}
               </button>
               <button
                 :class="c('container_hosts_row_footer_tunnels', host.id)"
@@ -395,12 +420,12 @@ async function handleCreateGroup(): Promise<void> {
                 @click.stop="toggleTunnelDrawer(host)"
               >
                 <Network :size="13" />
-                端口转发
+                {{ t('hosts.tunnelsBtn') }}
               </button>
               <button
                 :class="c('container_hosts_card_footer_edit', host.id)"
                 type="button"
-                :aria-label="`编辑 ${host.name}`"
+                :aria-label="t('hosts.editAria', { name: host.name })"
                 @click.stop="openEditor(host)"
               >
                 <Pencil :size="14" />
@@ -408,7 +433,7 @@ async function handleCreateGroup(): Promise<void> {
               <button
                 :class="c('container_hosts_card_footer_delete', host.id)"
                 type="button"
-                :aria-label="`删除 ${host.name}`"
+                :aria-label="t('hosts.deleteAria', { name: host.name })"
                 @click.stop="prompt = { kind: 'delete', host }"
               >
                 <Trash2 :size="14" />
@@ -423,56 +448,56 @@ async function handleCreateGroup(): Promise<void> {
           >
             <div :class="c('container_hosts_drawer_head_row', host.id)">
               <strong :class="c('container_hosts_drawer_head_title', host.id)">
-                {{ host.name }} · 端口转发与端口占用检测
+                {{ t('hosts.drawerTitle', { name: host.name }) }}
               </strong>
               <span :class="c('container_hosts_drawer_head_hint', host.id)">
-                SSH 主端口 {{ host.address }}:{{ host.port }}
+                {{ t('hosts.drawerHint', { host: host.address, port: host.port }) }}
               </span>
             </div>
 
             <div v-if="hostTunnels(host.id).length" :class="c('container_hosts_drawer_rules_list', host.id)">
               <div
-                v-for="t in hostTunnels(host.id)"
-                :key="t.id"
-                :class="c('container_hosts_drawer_rule_item', t.id)"
+                v-for="tItem in hostTunnels(host.id)"
+                :key="tItem.id"
+                :class="c('container_hosts_drawer_rule_item', tItem.id)"
               >
-                <span :class="c('container_hosts_drawer_rule_type', t.id)">-{{ t.type }}</span>
-                <span :class="c('container_hosts_drawer_rule_name', t.id)">{{ t.name }}</span>
-                <code :class="c('container_hosts_drawer_rule_route', t.id)">
-                  {{ t.listenHost }}:{{ t.listenPort }} →
-                  {{ t.type === 'D' ? 'SOCKS5 动态代理' : `${t.destHost}:${t.destPort}` }}
+                <span :class="c('container_hosts_drawer_rule_type', tItem.id)">-{{ tItem.type }}</span>
+                <span :class="c('container_hosts_drawer_rule_name', tItem.id)">{{ tItem.name }}</span>
+                <code :class="c('container_hosts_drawer_rule_route', tItem.id)">
+                  {{ tItem.listenHost }}:{{ tItem.listenPort }} →
+                  {{ tItem.type === 'D' ? t('hosts.socks5Proxy') : `${tItem.destHost}:${tItem.destPort}` }}
                 </code>
                 <span
-                  v-if="portCheckResults[`tunnel:${t.id}`]"
-                  :class="c('container_hosts_drawer_port_status', t.id)"
+                  v-if="portCheckResults[`tunnel:${tItem.id}`]"
+                  :class="c('container_hosts_drawer_port_status', tItem.id)"
                 >
-                  {{ portCheckResults[`tunnel:${t.id}`]?.message }}
+                  {{ portCheckResults[`tunnel:${tItem.id}`]?.message }}
                 </span>
-                <div :class="c('container_hosts_drawer_rule_btns', t.id)">
+                <div :class="c('container_hosts_drawer_rule_btns', tItem.id)">
                   <button
-                    :class="c('container_hosts_drawer_rule_toggle', t.id)"
+                    :class="c('container_hosts_drawer_rule_toggle', tItem.id)"
                     type="button"
-                    :data-primary="!tunnelStatuses[t.id]?.active"
-                    :data-danger="Boolean(tunnelStatuses[t.id]?.active)"
-                    :disabled="Boolean(tunnelBusy[t.id])"
-                    @click="toggleTunnelRuntime(t.id, !tunnelStatuses[t.id]?.active)"
+                    :data-primary="!tunnelStatuses[tItem.id]?.active"
+                    :data-danger="Boolean(tunnelStatuses[tItem.id]?.active)"
+                    :disabled="Boolean(tunnelBusy[tItem.id])"
+                    @click="toggleTunnelRuntime(tItem.id, !tunnelStatuses[tItem.id]?.active)"
                   >
-                    <Square v-if="tunnelStatuses[t.id]?.active" :size="12" />
+                    <Square v-if="tunnelStatuses[tItem.id]?.active" :size="12" />
                     <Play v-else :size="12" />
-                    {{ tunnelStatuses[t.id]?.active ? '停止' : '启动' }}
+                    {{ tunnelStatuses[tItem.id]?.active ? t('tunnelDrawer.stop') : t('tunnelDrawer.start') }}
                   </button>
                   <button
-                    :class="c('container_hosts_drawer_rule_check', t.id)"
+                    :class="c('container_hosts_drawer_rule_check', tItem.id)"
                     type="button"
-                    @click="handleCheckHostTunnelPort(t)"
+                    @click="handleCheckHostTunnelPort(tItem)"
                   >
-                    检测端口占用
+                    {{ t('hosts.checkPortOccupancy') }}
                   </button>
                   <button
-                    :class="c('container_hosts_drawer_rule_del', t.id)"
+                    :class="c('container_hosts_drawer_rule_del', tItem.id)"
                     type="button"
                     data-danger="true"
-                    @click="removeSyncTunnel(t.id)"
+                    @click="removeSyncTunnel(tItem.id)"
                   >
                     <Trash2 :size="12" />
                   </button>
@@ -480,7 +505,7 @@ async function handleCreateGroup(): Promise<void> {
               </div>
             </div>
             <p v-else :class="c('container_hosts_drawer_empty_hint', host.id)">
-              该服务器暂无绑定端口转发规则，可在下方快速添加一条：
+              {{ t('hosts.drawerEmpty') }}
             </p>
 
             <div :class="c('container_hosts_drawer_quick_form', host.id)">
@@ -488,12 +513,12 @@ async function handleCreateGroup(): Promise<void> {
                 v-model="quickTunnelName"
                 :class="c('container_hosts_drawer_input_name', host.id)"
                 type="text"
-                placeholder="规则名称"
+                :placeholder="t('hosts.ruleNamePlaceholder')"
               />
               <OrbitSelect
                 :model-value="quickTunnelType"
                 :options="tunnelTypeOptions"
-                aria-label="转发模式"
+                :aria-label="t('tunnelDrawer.modeAria')"
                 size="sm"
                 width="132px"
                 :instance="`hosts-tunnel-${host.id}`"
@@ -503,7 +528,7 @@ async function handleCreateGroup(): Promise<void> {
                 v-model="quickListenHost"
                 :class="c('container_hosts_drawer_input_lhost', host.id)"
                 type="text"
-                placeholder="本地监听地址"
+                :placeholder="t('hosts.listenHostPlaceholder')"
               />
               <input
                 v-model.number="quickListenPort"
@@ -511,14 +536,14 @@ async function handleCreateGroup(): Promise<void> {
                 type="number"
                 min="1"
                 max="65535"
-                placeholder="本地端口"
+                :placeholder="t('hosts.listenPortPlaceholder')"
               />
               <input
                 v-if="quickTunnelType !== 'D'"
                 v-model="quickDestHost"
                 :class="c('container_hosts_drawer_input_dhost', host.id)"
                 type="text"
-                placeholder="目标地址"
+                :placeholder="t('hosts.destHostPlaceholder')"
               />
               <input
                 v-if="quickTunnelType !== 'D'"
@@ -527,7 +552,7 @@ async function handleCreateGroup(): Promise<void> {
                 type="number"
                 min="1"
                 max="65535"
-                placeholder="目标端口"
+                :placeholder="t('hosts.destPortPlaceholder')"
               />
               <button
                 :class="c('container_hosts_drawer_btn_checkport', host.id)"
@@ -538,7 +563,7 @@ async function handleCreateGroup(): Promise<void> {
                   )
                 "
               >
-                测端口
+                {{ t('tunnelDrawer.testPortShort') }}
               </button>
               <button
                 :class="c('container_hosts_drawer_btn_save', host.id)"
@@ -548,56 +573,60 @@ async function handleCreateGroup(): Promise<void> {
                 @click="handleCreateQuickTunnel(host)"
               >
                 <Plus :size="12" />
-                新增转发
+                {{ t('hosts.addTunnel') }}
               </button>
             </div>
             <p
               v-if="portCheckResults[`quick:${host.id}`]"
               :class="c('container_hosts_drawer_quick_portmsg', host.id)"
             >
-              端口检测结果：{{ portCheckResults[`quick:${host.id}`]?.message }}
+              {{
+                t('hosts.portCheckResult', { message: portCheckResults[`quick:${host.id}`]?.message ?? '' })
+              }}
             </p>
           </div>
         </article>
 
         <p v-if="!filteredHosts.length" class="container_hosts_library_body_no-results">
-          没有符合筛选条件的主机。
+          {{ t('hosts.noResults') }}
         </p>
       </div>
 
       <aside v-if="selectedHostDetails" class="container_hosts_detail_body_base">
-        <span class="container_hosts_detail_header_label">主机详情</span>
+        <span class="container_hosts_detail_header_label">{{ t('hosts.detailsLabel') }}</span>
         <h3 class="container_hosts_detail_header_name">{{ selectedHostDetails.name }}</h3>
         <dl class="container_hosts_detail_body_fields">
-          <dt class="container_hosts_detail_body_address-label">地址</dt>
+          <dt class="container_hosts_detail_body_address-label">{{ t('hosts.detailsAddress') }}</dt>
           <dd class="container_hosts_detail_body_address">
             {{ selectedHostDetails.address }}:{{ selectedHostDetails.port }}
           </dd>
-          <dt class="container_hosts_detail_body_user-label">用户名</dt>
+          <dt class="container_hosts_detail_body_user-label">{{ t('hosts.detailsUser') }}</dt>
           <dd class="container_hosts_detail_body_user">{{ selectedHostDetails.username }}</dd>
-          <dt class="container_hosts_detail_body_auth-label">认证</dt>
+          <dt class="container_hosts_detail_body_auth-label">{{ t('hosts.detailsAuth') }}</dt>
           <dd class="container_hosts_detail_body_auth">
             {{
               selectedHostDetails.auth === 'agent'
                 ? 'OpenSSH Agent'
                 : selectedHostDetails.hasPassword
-                  ? '密码 · 已系统加密保存'
-                  : '密码 · 连接时输入'
+                  ? t('hosts.detailsAuthSaved')
+                  : t('hosts.detailsAuthPrompt')
             }}
           </dd>
-          <dt class="container_hosts_detail_body_notes-label">备注</dt>
-          <dd class="container_hosts_detail_body_notes">{{ selectedHostDetails.notes || '无' }}</dd>
+          <dt class="container_hosts_detail_body_notes-label">{{ t('hosts.detailsNotes') }}</dt>
+          <dd class="container_hosts_detail_body_notes">
+            {{ selectedHostDetails.notes || t('hosts.detailsNotesEmpty') }}
+          </dd>
         </dl>
         <p class="container_hosts_detail_footer_scope">
           <ShieldCheck :size="13" />
           {{
             syncStatus?.phase === 'synced'
               ? syncWriteMode === 'realtime'
-                ? '已启用 E2EE 实时同步（增删改实时上传）'
-                : 'E2EE 已解锁 · 当前设为仅本地修改模式'
+                ? t('hosts.syncScopeRealtime')
+                : t('hosts.syncScopeLocal')
               : syncStatus?.signedIn
-                ? '已配置云同步账号（当前待解锁或待同步）'
-                : '本地配置，尚未云同步'
+                ? t('hosts.syncScopeSignedIn')
+                : t('hosts.syncScopeNone')
           }}
         </p>
       </aside>
@@ -847,13 +876,13 @@ async function handleCreateGroup(): Promise<void> {
 }
 [class*='container_hosts_card_body_name'] {
   margin: 0;
-  font-size: 14px;
+  font-size: var(--font-size-ui-md);
   font-weight: 600;
-  color: var(--color-text-primary);
+  color: var(--color-text-heading);
 }
 [class*='container_hosts_card_body_address'] {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--font-size-ui-xs);
   font-family: var(--font-mono);
   color: var(--color-text-muted);
 }
@@ -983,24 +1012,26 @@ async function handleCreateGroup(): Promise<void> {
   background: var(--surface-card-gradient);
 }
 .container_hosts_detail_header_label {
-  font-size: 11px;
+  font-size: var(--font-size-ui-2xs);
   color: var(--color-accent-primary);
 }
 .container_hosts_detail_header_name {
   margin: 6px 0 12px;
-  font-size: 16px;
+  font-family: var(--font-display);
+  font-size: var(--font-size-ui-xl);
+  color: var(--color-text-heading);
 }
 .container_hosts_detail_body_fields {
   margin: 0;
   display: grid;
   gap: 6px;
   dt {
-    font-size: 11px;
+    font-size: var(--font-size-ui-2xs);
     color: var(--color-text-muted);
   }
   dd {
     margin: 0 0 6px;
-    font-size: 12px;
+    font-size: var(--font-size-ui-xs);
     word-break: break-all;
   }
 }
@@ -1009,11 +1040,11 @@ async function handleCreateGroup(): Promise<void> {
   align-items: center;
   gap: 6px;
   margin: 10px 0 0;
-  font-size: 11px;
+  font-size: var(--font-size-ui-2xs);
   color: var(--color-text-muted);
 }
 .container_hosts_library_body_no-results {
   color: var(--color-text-muted);
-  font-size: 13px;
+  font-size: var(--font-size-ui-sm);
 }
 </style>

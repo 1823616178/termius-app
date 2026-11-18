@@ -9,6 +9,7 @@ import {
   sftpUploadSchema
 } from '../../src/shared/contracts'
 import {
+  extractFilePathsFromUriList,
   formatBytes,
   formatOctalMode,
   formatSpeed,
@@ -16,6 +17,7 @@ import {
   joinRemotePosixPath,
   normalizeRemotePosixPath,
   parentRemotePosixPath,
+  parseFileUriToLocalPath,
   remoteBaseName,
   remoteBreadcrumbs,
   sanitizeDownloadFilename,
@@ -222,5 +224,30 @@ describe('SFTP IPC Zod boundary contracts', () => {
     expect(sftpDeleteSchema.safeParse({ sessionId, path: '/a', recursive: true, shell: true }).success).toBe(
       false
     )
+  })
+})
+
+describe('local dropped file URI parsing', () => {
+  it('parses Windows, UNC and POSIX file URIs while filtering comments and non-file URLs', () => {
+    expect(parseFileUriToLocalPath('file:///C:/Users/Alice/My%20Docs/%E4%B8%AD%E6%96%87.txt')).toBe(
+      'C:\\Users\\Alice\\My Docs\\中文.txt'
+    )
+    expect(parseFileUriToLocalPath('file://fileserver/share/release/app.exe')).toBe(
+      '\\\\fileserver\\share\\release\\app.exe'
+    )
+    expect(parseFileUriToLocalPath('file:///home/alice/a%20b.txt')).toBe('/home/alice/a b.txt')
+    expect(parseFileUriToLocalPath('https://example.com/file.txt')).toBeNull()
+
+    expect(
+      extractFilePathsFromUriList(
+        [
+          '# comment line',
+          'https://example.com/ignored.zip',
+          'file:///D:/work/demo.txt',
+          'file:///D:/work/demo.txt',
+          'file:///D:/work/%E6%96%87%E6%A1%A3.md'
+        ].join('\r\n')
+      )
+    ).toEqual(['D:\\work\\demo.txt', 'D:\\work\\文档.md'])
   })
 })

@@ -17,7 +17,8 @@ import {
   trustQueue,
   updateState
 } from './workbench-state'
-import { disposeMotionMediaListener } from './workbench-preferences'
+import { locale } from '../services/i18n'
+import { disposeMotionMediaListener, loadSystemFonts } from './workbench-preferences'
 import { refreshKnownHosts, refreshTunnelStatuses } from './workbench-hosts'
 import { defaultShellProfile, openLocal } from './workbench-tabs'
 
@@ -49,6 +50,8 @@ export async function initialize(): Promise<void> {
     maximized.value = bootstrap.value.maximized
     if (bootstrap.value.tray) trayState.value = bootstrap.value.tray
     if (bootstrap.value.update) updateState.value = bootstrap.value.update
+    void window.orbit?.locale?.set?.(locale.value).catch(() => {})
+    void loadSystemFonts(false)
     void refreshTunnelStatuses()
     void refreshKnownHosts()
     if (!removeTrust) {
@@ -107,12 +110,21 @@ export async function initialize(): Promise<void> {
         const previousPhase = updateState.value.phase
         updateState.value = next
         if (previousPhase !== 'downloaded' && next.phase === 'downloaded' && next.latest) {
-          notify(`新版本 v${next.latest.version} 已下载并校验完成，前往设置即可安装`)
+          notify(
+            locale.value === 'en-US'
+              ? `Update v${next.latest.version} downloaded & verified. Open Settings to install.`
+              : `新版本 v${next.latest.version} 已下载并校验完成，前往设置即可安装`
+          )
         }
       })
     }
   } catch (error) {
-    initError.value = error instanceof Error ? error.message : '读取本地数据失败'
+    initError.value =
+      error instanceof Error
+        ? error.message
+        : locale.value === 'en-US'
+          ? 'Failed to read local data'
+          : '读取本地数据失败'
   }
 }
 
