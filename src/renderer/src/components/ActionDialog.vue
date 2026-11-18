@@ -104,6 +104,8 @@ onBeforeUnmount(() => {
         </button>
         <button
           class="container_shared_action_footer_confirm"
+          type="submit"
+          :autofocus="kind === 'trust' && !previous"
           :data-danger="kind === 'delete'"
           :data-primary="kind !== 'delete'"
           :disabled="busy || (!!previous && !acknowledge)"

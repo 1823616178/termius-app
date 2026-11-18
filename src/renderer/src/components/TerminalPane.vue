@@ -252,7 +252,6 @@ function copySelection() {
 function confirmPaste() {
   if (paste.value !== undefined) handle?.terminal.paste(paste.value)
   paste.value = undefined
-  handle?.terminal.focus()
 }
 
 async function pasteClipboard() {
@@ -922,7 +921,7 @@ onBeforeUnmount(() => {
     >
       <strong :class="c('container_workspace_terminal_dialog_paste-title')">确认粘贴多行内容</strong>
       <p :class="c('container_workspace_terminal_dialog_paste-help')">
-        换行可能触发命令执行。请检查内容及当前终端。
+        换行可能触发命令执行。请核对内容和当前终端，按 Enter 确认粘贴，按 Esc 取消。
       </p>
       <pre :class="c('container_workspace_terminal_dialog_paste-preview')">{{ paste }}</pre>
       <footer :class="c('container_workspace_terminal_dialog_footer')">
@@ -936,6 +935,7 @@ onBeforeUnmount(() => {
         <button
           :class="c('container_workspace_terminal_dialog_confirm-paste')"
           type="button"
+          autofocus
           data-primary
           @click="confirmPaste"
         >

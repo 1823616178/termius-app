@@ -89,6 +89,7 @@ const renameInputEl = ref<HTMLInputElement>()
 
 const chmodTarget = ref<SftpEntry | null>(null)
 const chmodOctal = ref('0644')
+const chmodInputEl = ref<HTMLInputElement>()
 
 const deleteTarget = ref<SftpEntry[] | null>(null)
 const conflictApplyAll = ref(false)
@@ -291,10 +292,13 @@ async function submitRename(): Promise<void> {
   }
 }
 
-function openChmodModal(entry: SftpEntry): void {
+async function openChmodModal(entry: SftpEntry): Promise<void> {
   contextMenu.value = null
   chmodTarget.value = entry
   chmodOctal.value = formatOctalMode(entry.mode)
+  await nextTick()
+  chmodInputEl.value?.focus()
+  chmodInputEl.value?.select()
 }
 
 function chmodBit(shift: number): boolean {
@@ -899,6 +903,7 @@ function revealLocalFile(localPath: string): void {
       <form class="container_workspace_sftp_chmod_card" @submit.prevent="submitChmod">
         <strong class="container_workspace_sftp_chmod_title">修改权限 · {{ chmodTarget.name }}</strong>
         <input
+          ref="chmodInputEl"
           v-model="chmodOctal"
           class="container_workspace_sftp_chmod_input"
           aria-label="八进制权限"
