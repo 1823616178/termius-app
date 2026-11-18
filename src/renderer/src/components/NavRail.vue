@@ -4,6 +4,7 @@ import {
   Server,
   SquareTerminal,
   HardDrive,
+  Monitor,
   Network,
   KeyRound,
   Cloud,
@@ -14,6 +15,7 @@ import { computed } from 'vue'
 import { t } from '../services/i18n'
 import { activeTransferCount } from '../services/sftp-store'
 import { activeFilesTransferCount } from '../services/files-workspace'
+import { activeRdpSessionCount } from '../services/rdp-workspace'
 import { activateTab, activeTab, page, showHelp, syncStatus, tunnelStatuses } from '../stores/workbench'
 
 const activeTunnelCount = computed(
@@ -80,6 +82,20 @@ const avatarTitle = computed(() => {
       <HardDrive :size="20" />
       <span v-if="totalTransferCount > 0" class="container_app_navigation_sidebar_files-badge">
         {{ totalTransferCount }}
+      </span>
+    </button>
+    <button
+      class="container_app_navigation_sidebar_remote"
+      type="button"
+      data-testid="nav-remote-btn"
+      :aria-current="page === 'remote' ? 'page' : undefined"
+      :aria-label="t('nav.remote')"
+      :title="t('nav.remoteTitle')"
+      @click="page = 'remote'"
+    >
+      <Monitor :size="20" />
+      <span v-if="activeRdpSessionCount > 0" class="container_app_navigation_sidebar_remote-badge">
+        {{ activeRdpSessionCount }}
       </span>
     </button>
     <span class="container_app_navigation_sidebar_divider" />
@@ -223,10 +239,12 @@ const avatarTitle = computed(() => {
 }
 .container_app_navigation_sidebar_sync,
 .container_app_navigation_sidebar_files,
+.container_app_navigation_sidebar_remote,
 .container_app_navigation_sidebar_tunnels {
   position: relative;
 }
 .container_app_navigation_sidebar_files-badge,
+.container_app_navigation_sidebar_remote-badge,
 .container_app_navigation_sidebar_tunnel-badge {
   position: absolute;
   top: 4px;

@@ -16,6 +16,12 @@ import {
   type AllProtocolSettings,
   type FileProfile
 } from '../../../shared/files'
+import {
+  DEFAULT_RDP_SETTINGS,
+  type KnownRdpHostEntry,
+  type RdpEnvironmentProbe,
+  type RdpProfile
+} from '../../../shared/rdp'
 import { DEFAULT_UPDATE_REPOSITORY, type UpdateStatusSnapshot } from '../../../shared/updater'
 import type { SyncGroup, SyncStatusSnapshot, SyncTunnel } from '../../../shared/sync'
 import {
@@ -32,7 +38,16 @@ import type { CursorShape, TerminalThemeId } from '../services/terminal-themes'
 import { DEFAULT_CUSTOM_COLORS, type CustomUiColors, type UiThemeId } from '../services/ui-themes'
 
 export type { MotionPreference, MotionTier } from '../services/motion-performance'
-export type Page = 'workspace' | 'hosts' | 'local' | 'files' | 'tunnels' | 'identities' | 'sync' | 'settings'
+export type Page =
+  | 'workspace'
+  | 'hosts'
+  | 'local'
+  | 'files'
+  | 'remote'
+  | 'tunnels'
+  | 'identities'
+  | 'sync'
+  | 'settings'
 export type SplitDropZone = 'left' | 'right' | 'top' | 'bottom'
 
 export interface Pane {
@@ -78,9 +93,22 @@ export const group = ref('all')
 export const favorites = ref(false)
 export const hosts = ref<Host[]>([])
 export const fileProfiles = ref<FileProfile[]>([])
+export const rdpProfiles = ref<RdpProfile[]>([])
+export const knownRdpHosts = ref<KnownRdpHostEntry[]>([])
+export const rdpProbe = ref<RdpEnvironmentProbe>({
+  platform: 'win32',
+  displaySession: 'windows',
+  schemeAAvailable: false,
+  schemeACmdkeyAvailable: false,
+  schemeBAvailable: true,
+  schemeBEngine: 'ironrdp-wasm',
+  candidates: []
+})
+export const settingsDomain = ref<'general' | 'ssh' | 'files' | 'rdp'>('general')
 export const protocolSettings = ref<AllProtocolSettings>({
   ssh: { ...DEFAULT_SSH_SETTINGS },
-  files: { ...DEFAULT_FILES_SETTINGS }
+  files: { ...DEFAULT_FILES_SETTINGS },
+  rdp: { ...DEFAULT_RDP_SETTINGS }
 })
 export const syncGroups = ref<SyncGroup[]>([])
 export const syncTunnels = ref<SyncTunnel[]>([])
@@ -179,7 +207,7 @@ export const trayState = ref<TrayState>({
 })
 export const updateState = ref<UpdateStatusSnapshot>({
   phase: 'idle',
-  currentVersion: '1.1.0',
+  currentVersion: '1.2.0',
   repository: { ...DEFAULT_UPDATE_REPOSITORY },
   preferences: {
     autoCheckOnStartup: true,

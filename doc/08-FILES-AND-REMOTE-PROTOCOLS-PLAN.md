@@ -268,12 +268,12 @@ RdpBroker (Main Process + 独立 helper / utility 边界)
 - [x] **T8.4 导航与 `FilesPage.vue` 渲染实现**：`NavRail.vue` 增加 `files` 按钮；实现 SSH/文件档案选择栏 + 手动新建/编辑弹窗 + 临时直连 + 按第 9 节修订的单栏远端文件浏览器 + 原生选择器/拖放上传 + 全局传输队列；全元素通过 `yarn check:classes`。
 - [x] **T8.5 自动化测试**：单元测试覆盖 Zod 校验（`file-profiles.test.ts`）、schema v4 迁移（`database.test.ts`）与 FTP/WebDAV/S3 Mock Server 集成测试及 SMB 显式拦截（`file-adapters.test.ts`）；Playwright E2E 验证多协议 Files 页（SFTP / WebDAV / S3）及三域设置持久化、中英文切换。
 
-### 里程碑 M9（目标版 `v1.2.0`）：跨平台远程桌面页面（Remote · RDP）
+### 里程碑 M9（已随 `v1.2.0` 交付，按第 10 节方案落地）：跨平台远程桌面页面（Remote · RDP）
 
-- [ ] **T9.1 数据模型与后端探测**：新增 `rdp_profiles` 与 `known_rdp_hosts` 表；在主进程实现 Windows 与 Ubuntu RDP 能力自检服务（探测内置 FreeRDP 渲染桥 / `mstsc.exe` / `xfreerdp3` / `wlfreerdp` 及 X11/Wayland 会话类型）。
-- [ ] **T9.2 RDP 会话托管与画布流传输**：实现内嵌渲染进程/helper 与二进制 `MessagePort`/IPC 帧推送、键盘 Scancode 与鼠标相对/绝对坐标映射、NLA/TLS 证书首次指纹弹窗及变更阻断；支持系统外部客户端兜底模式并回收退出子进程。
-- [ ] **T9.3 导航与 `RemoteDesktopPage.vue`**：`NavRail.vue` 增加 `remote` 按钮；支持选择已有 RDP 档案 / 基于 SSH 主机一键关联创建 / 手动输入直连；提供分辨率适应、剪贴板、工具栏与清晰无依赖缺失提示 UI。
-- [ ] **T9.4 跨平台测试与验证**：Windows 11 x64 与 Ubuntu 24.04 x64（CI 或实机容器验证）下完成安装探测、画布渲染或 `xfreerdp3` 拉起与进程清理回归、Playwright 桌面端页面/设置/安全边界回归。
+- [x] **T9.1 数据模型与后端探测**：数据库顺序迁移至 `schema_version = 5`（含 `.bak-v4-*` 备份），新增 `rdp_profiles` 与 `known_rdp_hosts` 表及 `protocol_settings(namespace='rdp')`；主进程实现 Windows（`mstsc.exe`/`cmdkey.exe`）与 Ubuntu（X11/Wayland，`xfreerdp3`/`xfreerdp`/`wlfreerdp` + apt 安装建议）环境自检服务，并校验内置 IronRDP WASM 备选引擎状态。
+- [x] **T9.2 RDP 双模会话托管与画布流**：首选 **方案 A**（安全参数构造、隔离 `.rdp` 临时文件与临时 `cmdkey` 自动清理、无 Shell 数组的 FreeRDP `/from-stdin` 启动与子进程回收）；备选 **方案 B**（基于 `@devolutions/iron-remote-desktop` + `@devolutions/iron-remote-desktop-rdp` Rust IronRDP WASM + 仅监听 `127.0.0.1` 的受鉴权 ASN.1 DER `RDCleanPath` TLS 代理），并打通方案 A/B 统一的 TLS X.509 SHA-256 首次信任（TOFU）及指纹变更阻断。
+- [x] **T9.3 导航、独立页面与四域设置页**：`NavRail.vue` 增加 `remote` 按钮与活动计数徽标；新增 `RemoteDesktopPage.vue` 与 `RdpProfileEditor.vue`（支持已保存 RDP 档案、从 SSH 主机一键关联生成/直连、行内快速直连、单机覆盖、A/B 缺失自动回退）；`SettingsPage.vue` 扩展第四域 **远程桌面 (RDP)** 支持直接切换方案 A / 方案 B、自动回退、自检刷新与已信任证书管理。
+- [x] **T9.4 自动化测试与已验证边界**：在 Windows 开发环境下通过 Vitest（Schema v5 迁移、A/B 切换与自动回退、Windows/Ubuntu X11/Wayland 探测矩阵、`RDCleanPath` ASN.1 编解码与本地 TLS TOFU/拒绝拦截、临时 `.rdp` 清理）及 Playwright 28 条全量桌面 E2E 回归（含真实 Chrome 内加载 IronRDP WASM、本地 TLS proxy + TOFU/变更告警）。注：Ubuntu 24.04 实机 GUI 窗口与真机 `xfreerdp3`/`wlfreerdp` 启动待在 Linux 实机运行进一步验证。
 
 ### 里程碑 M10（目标版 `v1.3.0`，前置条件：远程管理服务端完成第 6.2 节改造）：多协议 E2EE 同步联调
 
@@ -316,3 +316,24 @@ RdpBroker (Main Process + 独立 helper / utility 边界)
 ### 9.2 未在 v1.1.0 交付（诚实清单）
 
 SMB/Samba、双栏本地↔远端与跨服务器中转、TLS 证书指纹固定、RDP（v1.2.0）、多协议同步（v1.3.0，依赖服务端改造）。
+
+---
+
+## 10. M9（`v1.2.0`）开工方案确认：方案 A 首选 + 方案 B 备选，支持设置页切换
+
+根据用户确认（“方案 A 首选，方案 B 备选，都要做在设置中切换”），M9（目标版本 `v1.2.0`）确立如下具体落地设计：
+
+1. **双模协同与切换机制**：
+   - **方案 A（系统原生客户端托管，全局默认首选）**：
+     - Windows（`win32`）：探测 `%SystemRoot%\System32\mstsc.exe` 或设置页指定的自定义客户端路径；生成严格字段净化的隔离临时 `.rdp` 描述文件，可选通过临时 `cmdkey /generic:TERMSRV/<host>` 注入凭据（会话退出/停止/窗口关闭/应用退出时清理临时 `.rdp` 与本次写入的凭据条目），跟踪子进程 PID 与退出状态。
+     - Ubuntu（`linux`）：自动读取 `XDG_SESSION_TYPE` / `WAYLAND_DISPLAY` / `DISPLAY` 识别 Wayland 与 X11；Wayland 优先探测 `wlfreerdp3` / `wlfreerdp` 其次 `xfreerdp3` / `xfreerdp`，X11 探测 `xfreerdp3` / `xfreerdp`；通过无 Shell 的 `spawn(bin, args)` 与 `/from-stdin` 传入凭据避免命令行泄密；全部缺失时返回精确缺失原因与一键复制安装命令（`sudo apt update && sudo apt install freerdp3-wayland` / `freerdp3-x11`）。
+   - **方案 B（应用内嵌画布引擎，备选且可在设置中直接切换）**：
+     - 渲染层按需懒加载 `@devolutions/iron-remote-desktop` 与 `@devolutions/iron-remote-desktop-rdp`（Rust IronRDP WASM，内置 base64 `.wasm` 零外部原生 C++ 编译依赖），直接在 `RemoteDesktopPage.vue` 标签页 `<canvas>` 内渲染桌面画面并支持 `fit / full / real` 缩放、动态分辨率适配、`Ctrl+Alt+Del`、Win 键与剪贴板交互。
+     - 主进程提供仅监听 `127.0.0.1` 随机端口的受鉴权本地 `RDCleanPath` WebSocket 代理（基于 ASN.1 DER `VERSION_1 = 3390` + 一次性密码学 `authToken` + Node `net`/`tls` 连接到目标 RDP 3389）。
+     - Electron CSP 为该代理严格收窄至 `script-src 'self' 'wasm-unsafe-eval'` 与仅允许 `data:`（WASM 数据解码）及当前代理环回端口 `ws://127.0.0.1:<port>`。
+   - **设置切换与回退**：`protocol_settings(namespace='rdp')` 持久化 `preferredMode: 'external' | 'embedded'`（默认 `'external'`）、`autoFallbackToEmbedded: boolean`（默认 `true`，当选方案 A 但系统无原生客户端时自动回退方案 B 并给出提示）、自定义系统路径与显示/安全/重定向默认值；单个 `RdpProfile` 档案支持 `launchMode: 'inherit' | 'external' | 'embedded'` 单机覆盖。
+2. **统一证书安全与持久化（schema v5）**：
+   - 数据库 `schema_version` 由 `4` 顺序升级至 `5`（迁移前保留 `.bak-v4-*` 备份），新增 `rdp_profiles`（`safeStorage` 加密密码）与 `known_rdp_hosts`（X.509 SHA-256 指纹 + 颁发者 + 有效期）。
+   - 方案 A（当目标端口可达 TLS/X.224 时预检）与方案 B（`RDCleanPath` TLS 握手阶段）共享同一套证书预检与 `known_rdp_hosts` 首次信任（TOFU）/指纹变更阻断弹窗逻辑。
+3. **设置页与导航扩展**：
+   - `SettingsPage.vue` 扩展为四域切换：**通用与外观 / SSH 与终端 / 文件协议 / 远程桌面（RDP）**；`NavRail.vue` 新增 **Remote（`<Monitor />`，`data-testid="nav-remote-btn"`）** 入口与活动会话数量徽标；支持从已有 SSH 主机一键关联发起/创建 RDP 档案。

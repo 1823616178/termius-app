@@ -18,6 +18,16 @@ import type {
   ProtocolSettingsPatch
 } from './files'
 import type {
+  KnownRdpHostEntry,
+  RdpCertPromptRequest,
+  RdpConnectSource,
+  RdpEnvironmentProbe,
+  RdpProfile,
+  RdpProfileInput,
+  RdpSessionInfo,
+  RdpSessionStateEvent
+} from './rdp'
+import type {
   SyncConfigFormDefaults,
   SyncConflictResolutionItem,
   SyncDevice,
@@ -195,6 +205,9 @@ export interface Bootstrap {
   groups: SyncGroup[]
   tunnels: SyncTunnel[]
   fileProfiles: FileProfile[]
+  rdpProfiles: RdpProfile[]
+  knownRdpHosts: KnownRdpHostEntry[]
+  rdpProbe: RdpEnvironmentProbe
   protocolSettings: AllProtocolSettings
   sync: SyncStatusSnapshot
   shells: ShellProfile[]
@@ -533,6 +546,19 @@ export interface Bridge {
     cancelTransfer(sessionId: string, transferId: string): Promise<void>
     onProgress(callback: (event: FileProgressEvent) => void): () => void
     onSessionClosed(callback: (payload: { sessionId: string; reason?: string }) => void): () => void
+  }
+  rdp: {
+    probe(refresh?: boolean): Promise<RdpEnvironmentProbe>
+    listProfiles(): Promise<RdpProfile[]>
+    saveProfile(input: RdpProfileInput): Promise<RdpProfile[]>
+    removeProfile(id: string): Promise<RdpProfile[]>
+    listKnownHosts(): Promise<KnownRdpHostEntry[]>
+    removeKnownHost(id: string): Promise<KnownRdpHostEntry[]>
+    connect(source: RdpConnectSource): Promise<RdpSessionInfo>
+    disconnect(sessionId: string): Promise<void>
+    decideCert(promptId: string, accept: boolean): Promise<void>
+    onCertPrompt(callback: (request: RdpCertPromptRequest) => void): () => void
+    onSessionState(callback: (event: RdpSessionStateEvent) => void): () => void
   }
 }
 export { IPC } from './channels'

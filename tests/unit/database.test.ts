@@ -222,4 +222,126 @@ describe('Repository persistence and migrations', () => {
       repo.close()
     }
   })
+
+  it('migrates schema v4 to v5 with backup and manages rdp_profiles and known_rdp_hosts', () => {
+    const dir = makeTempDir()
+    const dbPath = join(dir, 'v4.db')
+    const legacy = new Database(dbPath)
+    legacy.pragma('journal_mode = WAL')
+    legacy.exec(`
+      CREATE TABLE hosts (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+        document TEXT NOT NULL,
+        secret BLOB,
+        sync_extras TEXT,
+        account_scope TEXT NOT NULL DEFAULT 'local'
+      );
+      CREATE TABLE known_hosts (
+        address TEXT NOT NULL,
+        port INTEGER NOT NULL,
+        fingerprint TEXT NOT NULL,
+        algorithm TEXT NOT NULL,
+        public_key BLOB,
+        trusted_at TEXT,
+        source TEXT NOT NULL DEFAULT 'local',
+        PRIMARY KEY(address, port)
+      );
+      CREATE TABLE sync_accounts (
+        id TEXT PRIMARY KEY,
+        server_url TEXT NOT NULL,
+        email TEXT NOT NULL,
+        remember_email INTEGER NOT NULL DEFAULT 1,
+        keep_signed_in INTEGER NOT NULL DEFAULT 0,
+        auto_sync INTEGER NOT NULL DEFAULT 1,
+        write_mode TEXT NOT NULL DEFAULT 'realtime',
+        allow_insecure_http INTEGER NOT NULL DEFAULT 0,
+        encrypted_refresh_token BLOB,
+        encrypted_vault_key BLOB,
+        device_id TEXT NOT NULL,
+        device_name TEXT NOT NULL,
+        vault_id TEXT,
+        key_version INTEGER NOT NULL DEFAULT 1,
+        sync_passwords INTEGER NOT NULL DEFAULT 0,
+        sync_private_keys INTEGER NOT NULL DEFAULT 0,
+        last_revision TEXT,
+        last_etag TEXT,
+        last_sync_at TEXT,
+        base_doc_cipher BLOB,
+        pending_changes INTEGER NOT NULL DEFAULT 0,
+        read_only_remote_schema INTEGER NOT NULL DEFAULT 0,
+        remote_schema_version INTEGER,
+        doc_extra TEXT,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE groups (id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL, updated_at TEXT NOT NULL, unknown_extra TEXT, account_scope TEXT NOT NULL DEFAULT 'local');
+      CREATE TABLE tunnels (id TEXT PRIMARY KEY, name TEXT NOT NULL, server_id TEXT NOT NULL, group_id TEXT, type TEXT NOT NULL, listen_host TEXT NOT NULL, listen_port INTEGER NOT NULL, dest_host TEXT NOT NULL, dest_port INTEGER NOT NULL, dest_server_id TEXT, auto_reconnect INTEGER NOT NULL DEFAULT 1, enabled INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, unknown_extra TEXT, account_scope TEXT NOT NULL DEFAULT 'local');
+      CREATE TABLE file_profiles (id TEXT PRIMARY KEY, name TEXT NOT NULL COLLATE NOCASE UNIQUE, protocol TEXT NOT NULL, document TEXT NOT NULL, secret BLOB, updated_at TEXT NOT NULL);
+      CREATE TABLE protocol_settings (namespace TEXT PRIMARY KEY, document TEXT NOT NULL, updated_at TEXT NOT NULL);
+      PRAGMA user_version = 4;
+    `)
+    legacy
+      .prepare('INSERT INTO protocol_settings (namespace, document, updated_at) VALUES (?, ?, ?)')
+      .run('ssh', JSON.stringify({ defaultPort: 2222, defaultKeepaliveSec: 45 }), '2026-11-18T00:00:00.000Z')
+    legacy.close()
+
+    const repo = new Repository(dbPath)
+    try {
+      const backups = readdirSync(dir).filter((name) => name.startsWith('v4.db.bak-v4-'))
+      expect(backups).toHaveLength(1)
+      expect(repo.protocolSettingsAll().ssh.defaultPort).toBe(2222)
+      expect(repo.protocolSettingsAll().rdp.preferredMode).toBe('external')
+
+      const enc = Uint8Array.from([10, 20, 30])
+      const list1 = repo.rdpProfileSave(
+        {
+          name: 'Win11-Box',
+          host: '192.168.1.50',
+          port: 3389,
+          username: 'Administrator',
+          savePassword: true,
+          options: { launchMode: 'embedded' }
+        },
+        enc
+      )
+      expect(list1).toHaveLength(1)
+      expect(list1[0]!.hasPassword).toBe(true)
+
+      expect(() => repo.rdpProfileSave({ name: 'win11-box', host: '10.0.0.1' })).toThrow(
+        '远程桌面名称已存在，请使用其他名称。'
+      )
+
+      const id = list1[0]!.id
+      const cleared = repo.rdpProfileSave({
+        id,
+        name: 'Win11-Box',
+        host: '192.168.1.50',
+        port: 3389,
+        clearPassword: true
+      })
+      expect(cleared[0]!.hasPassword).toBe(false)
+      expect(repo.rdpProfileGet(id).secret).toBeUndefined()
+
+      expect(repo.rdpKnownHostVerify('Win11.local', 3389, 'AA:BB')).toEqual({ status: 'unknown' })
+      const trusted = repo.rdpKnownHostTrust({
+        host: 'Win11.local',
+        port: 3389,
+        fingerprint: 'AA:BB',
+        subject: 'CN=Win11',
+        issuer: 'CN=Win11',
+        validFrom: '2026',
+        validTo: '2035'
+      })
+      expect(trusted).toHaveLength(1)
+      expect(repo.rdpKnownHostVerify('win11.local', 3389, 'aa:bb')).toEqual({ status: 'trusted' })
+      expect(repo.rdpKnownHostVerify('win11.local', 3389, 'CC:DD')).toEqual({
+        status: 'mismatch',
+        previousFingerprint: 'AA:BB'
+      })
+      expect(repo.rdpKnownHostRemove(trusted[0]!.id)).toEqual([])
+      expect(repo.rdpProfileRemove(id)).toEqual([])
+    } finally {
+      repo.close()
+    }
+  })
 })

@@ -1,6 +1,6 @@
 # Windows SSH 工作台 · 规划文档
 
-版本：v1.1.0（基于 `v1.0.0` 基线持续 SemVer 自动递增） · 日期：2026-11-18 · 当前发布版本 `1.1.0`；历史验证记录见[开发记录](07-IMPLEMENTATION-STATUS.md) 与 [多协议规划](08-FILES-AND-REMOTE-PROTOCOLS-PLAN.md)。
+版本：v1.2.0（基于 `v1.0.0` 基线持续 SemVer 自动递增） · 日期：2026-11-18 · 当前发布版本 `1.2.0`；历史验证记录见[开发记录](07-IMPLEMENTATION-STATUS.md) 与 [多协议规划](08-FILES-AND-REMOTE-PROTOCOLS-PLAN.md)。
 
 本文档集针对当前项目 `G:\code\termius-app`。目录名不是最终品牌名；产品名称暂称「Windows SSH 工作台」。以下功能、性能数字与界面规格均为拟实现要求，不能视为已通过测试。
 

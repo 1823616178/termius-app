@@ -9,6 +9,8 @@ import { startMockSyncServer } from '../helpers/mock-sync-server'
 import { startMockUpdateServer } from '../helpers/mock-update-server'
 import { startMockSftpSshServer } from '../helpers/mock-sftp-server'
 import { startMockS3Server } from '../helpers/mock-s3-server'
+import { startMockRdpTlsServer } from '../helpers/mock-rdp-tls-server'
+import { formatCertSha256 } from '../../src/main/rdp/tls-preflight'
 import { v2 as webdav } from 'webdav-server'
 import {
   decryptSyncDocument,
@@ -2716,8 +2718,8 @@ test('standalone multi-protocol Files page (SFTP, WebDAV, S3) and protocol-scope
   page.on('pageerror', (error) => errors.push(error.message))
 
   try {
-    // 0. Version badge reports v1.1.0
-    await expect(page.locator('.container_app_status_footer_version')).toContainText('v1.1.0')
+    // 0. Version badge reports v1.2.0
+    await expect(page.locator('.container_app_status_footer_version')).toContainText('v1.2.0')
 
     // 1. Settings domain separation & persistence (SSH defaults + Files concurrency/S3 defaults)
     await page.getByRole('button', { name: '设置', exact: true }).click()
@@ -2845,6 +2847,119 @@ test('standalone multi-protocol Files page (SFTP, WebDAV, S3) and protocol-scope
     })
     await rm(davRoot, { recursive: true, force: true }).catch(() => {})
     await rm(localTransferDir, { recursive: true, force: true }).catch(() => {})
+    await rm(appDir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('Remote Desktop (RDP) Scheme A/B Settings switch, SSH linking, fallback & IronRDP WASM RDCleanPath TLS TOFU work end-to-end', async ({}, info) => {
+  const appDir = await mkdtemp(join(tmpdir(), 'orbit-rdp-e2e-'))
+  const mockRdp = await startMockRdpTlsServer('win-rdp-e2e.test')
+  const { app, page } = await launch(appDir)
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(error.message))
+
+  try {
+    // 1. Verify Scheme A default + switching to Scheme B in Settings (4th domain) persists across reload
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByTestId('settings-tab-rdp').click()
+    const rdpSettings = page.getByTestId('rdp-protocol-settings-section')
+    await expect(rdpSettings).toBeVisible()
+    await expect(page.getByTestId('rdp-mode-external')).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.getByTestId('rdp-mode-embedded')).toHaveAttribute('aria-pressed', 'false')
+    await expect(page.getByTestId('rdp-probe-scheme-a-status')).toContainText('已就绪')
+    await expect(page.getByTestId('rdp-probe-scheme-b-status')).toContainText('ironrdp-wasm')
+    await checkClasses(page)
+
+    await page.getByTestId('rdp-mode-embedded').click()
+    await expect(page.getByTestId('rdp-mode-embedded')).toHaveAttribute('aria-pressed', 'true')
+
+    await page.reload()
+    await expect(page.getByRole('button', { name: '设置', exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByTestId('settings-tab-rdp').click()
+    await expect(page.getByTestId('rdp-mode-embedded')).toHaveAttribute('aria-pressed', 'true')
+
+    // Switch back to Scheme A preferred, set missing custom path to trigger missing probe & A->B auto fallback
+    await page.getByTestId('rdp-mode-external').click()
+    const pathInput = page.getByTestId('rdp-external-path-input')
+    await pathInput.fill('/nonexistent/e2e-freerdp-bin')
+    await pathInput.press('Tab')
+    await page.getByTestId('rdp-probe-refresh-btn').click()
+    await expect(page.getByTestId('rdp-probe-scheme-a-status')).toContainText('未找到自定义 RDP 客户端')
+
+    // 2. Create an SSH host first, then open Remote Desktop page via leftmost NavRail button
+    await createHost(page, 'Jump-SSH')
+
+    await page.getByTestId('nav-remote-btn').click()
+    const remotePage = page.getByTestId('remote-page')
+    await expect(remotePage).toBeVisible()
+    await expect(page.getByTestId('remote-scheme-a-missing-banner')).toBeVisible()
+    await checkClasses(page)
+
+    // 3. Quick-link from SSH Host -> RdpProfileEditor prefilled -> Save & Connect (triggers Scheme A -> B fallback & IronRDP WASM + TLS TOFU)
+    await page.getByTestId('rdp-link-ssh-Jump-SSH').click()
+    const rdpEditor = page.getByTestId('rdp-profile-editor')
+    await expect(rdpEditor).toBeVisible()
+    await expect(rdpEditor.getByTestId('rdp-editor-host')).toHaveValue('127.0.0.1')
+    await expect(rdpEditor.getByTestId('rdp-editor-username')).toHaveValue('orbit-test')
+    await rdpEditor.getByTestId('rdp-editor-name').fill('Win11-Embedded-E2E')
+    await rdpEditor.getByTestId('rdp-editor-port').fill(String(mockRdp.port))
+    await rdpEditor.getByTestId('rdp-editor-password').fill('RdpSecret!99')
+    await rdpEditor.getByTestId('rdp-editor-save-secret').check()
+    await checkClasses(page)
+    await rdpEditor.getByTestId('rdp-editor-save-connect').click()
+    await expect(rdpEditor).toHaveCount(0)
+
+    // Auto fallback banner shows it gracefully fell back from Scheme A -> Scheme B
+    await expect(page.getByTestId('remote-fallback-banner')).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByTestId('rdp-embedded-canvas')).toBeVisible()
+
+    // Loopback RDCleanPath WebSocket proxy pauses before sending CredSSP & triggers TLS TOFU prompt with exact SHA-256
+    const certPrompt = page.getByTestId('rdp-cert-prompt-modal')
+    await expect(certPrompt).toBeVisible({ timeout: 15_000 })
+    await expect(page.getByTestId('rdp-cert-fingerprint')).toHaveText(formatCertSha256(mockRdp.certDer))
+    await checkClasses(page)
+
+    // Trust certificate -> IronRDP WASM receives RDCleanPathResponse & sends CredSSP bytes over TLS
+    await page.getByTestId('rdp-cert-accept-btn').click()
+    await expect(certPrompt).toHaveCount(0)
+    await expect.poll(() => mockRdp.receivedAppBytes(), { timeout: 15_000 }).toBeGreaterThan(0)
+
+    // Verify Shadow DOM <iron-remote-desktop> mounted a real <canvas> under rdp-wasm-mount
+    const hasWasmCanvas = await page
+      .getByTestId('rdp-wasm-mount')
+      .evaluate((el) => Boolean(el.querySelector('iron-remote-desktop')?.shadowRoot?.querySelector('canvas')))
+    expect(hasWasmCanvas).toBe(true)
+
+    // 4. Verify known_rdp_hosts recorded in Settings -> RDP Known Hosts
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByTestId('settings-tab-rdp').click()
+    await expect(page.getByTestId(`rdp-known-host-127.0.0.1:${mockRdp.port}`)).toBeVisible()
+
+    // 5. Rotate server cert -> reconnect must warn on mismatch & reject cleanly without forwarding bytes
+    const bytesBeforeMismatch = mockRdp.receivedAppBytes()
+    const rotatedDer = mockRdp.rotateCertificate('mitm-evil.test')
+
+    await page.getByTestId('nav-remote-btn').click()
+    await page.locator('[class*="container_remote_tabs_close_btn"]').first().click()
+    await page.getByTestId('rdp-profile-card-Win11-Embedded-E2E').locator('[class*="connbtn"]').click()
+
+    await expect(certPrompt).toBeVisible({ timeout: 15_000 })
+    await expect(certPrompt.locator('.container_remote_cert_dialog_card')).toHaveAttribute(
+      'data-mismatch',
+      'true'
+    )
+    await expect(page.getByTestId('rdp-cert-fingerprint')).toHaveText(formatCertSha256(rotatedDer))
+    await page.getByTestId('rdp-cert-reject-btn').click()
+    await expect(certPrompt).toHaveCount(0)
+    expect(mockRdp.receivedAppBytes()).toBe(bytesBeforeMismatch)
+
+    await checkClasses(page)
+    await page.screenshot({ path: info.outputPath('remote-desktop-workbench.png') })
+    expect(errors).toEqual([])
+  } finally {
+    await stop(app)
+    await mockRdp.close()
     await rm(appDir, { recursive: true, force: true }).catch(() => {})
   }
 })

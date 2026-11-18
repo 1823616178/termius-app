@@ -94,6 +94,17 @@ export const IPC = {
   filesCancelTransfer: 'orbit:files-cancel-transfer',
   filesProgress: 'orbit:files-progress',
   filesSessionClosed: 'orbit:files-session-closed',
+  rdpProbe: 'orbit:rdp-probe',
+  rdpProfilesList: 'orbit:rdp-profiles-list',
+  rdpProfileSave: 'orbit:rdp-profile-save',
+  rdpProfileRemove: 'orbit:rdp-profile-remove',
+  rdpKnownHostsList: 'orbit:rdp-known-hosts-list',
+  rdpKnownHostRemove: 'orbit:rdp-known-host-remove',
+  rdpConnect: 'orbit:rdp-connect',
+  rdpDisconnect: 'orbit:rdp-disconnect',
+  rdpCertDecision: 'orbit:rdp-cert-decision',
+  rdpCertPrompt: 'orbit:rdp-cert-prompt',
+  rdpSessionState: 'orbit:rdp-session-state',
   fontsListSystem: 'orbit:fonts-list-system',
   localeSet: 'orbit:locale-set'
 } as const

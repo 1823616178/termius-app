@@ -15,6 +15,7 @@ import {
   normalizeProtocolSettings,
   protocolSettingsPatchSchema
 } from '../../src/shared/files'
+import { DEFAULT_RDP_SETTINGS } from '../../src/shared/rdp'
 
 const tempDirs: string[] = []
 afterEach(() => {
@@ -140,7 +141,11 @@ describe('protocol settings schema', () => {
     expect(
       protocolSettingsPatchSchema.safeParse({ namespace: 'ssh', patch: { defaultKeepaliveSec: 15 } }).success
     ).toBe(true)
-    expect(protocolSettingsPatchSchema.safeParse({ namespace: 'rdp', patch: {} }).success).toBe(false)
+    expect(
+      protocolSettingsPatchSchema.safeParse({ namespace: 'rdp', patch: { preferredMode: 'embedded' } })
+        .success
+    ).toBe(true)
+    expect(protocolSettingsPatchSchema.safeParse({ namespace: 'smb', patch: {} }).success).toBe(false)
   })
 })
 
@@ -205,7 +210,8 @@ describe('Repository v4: file profiles and protocol settings', () => {
     try {
       expect(repo.protocolSettingsAll()).toEqual({
         ssh: DEFAULT_SSH_SETTINGS,
-        files: DEFAULT_FILES_SETTINGS
+        files: DEFAULT_FILES_SETTINGS,
+        rdp: DEFAULT_RDP_SETTINGS
       })
       const afterFiles = repo.protocolSettingsPatch('files', { maxConcurrentTransfers: 6 })
       expect(afterFiles.files.maxConcurrentTransfers).toBe(6)
@@ -218,7 +224,7 @@ describe('Repository v4: file profiles and protocol settings', () => {
         defaultConflict: 'skip'
       })
       expect(() => repo.protocolSettingsPatch('files', { maxConcurrentTransfers: 99 })).toThrow()
-      expect(() => repo.protocolSettingsPatch('rdp' as unknown as 'files', {} as never)).toThrow(
+      expect(() => repo.protocolSettingsPatch('smb' as unknown as 'files', {} as never)).toThrow(
         '未知的设置分类'
       )
     } finally {
@@ -226,16 +232,18 @@ describe('Repository v4: file profiles and protocol settings', () => {
     }
   })
 
-  it('migrates a v3 database to v4 with a backup and keeps existing rows', () => {
+  it('migrates a v3 database to v5 with backup and keeps existing rows', () => {
     const dir = makeTempDir()
     const dbPath = join(dir, 'v3.db')
     const first = new Repository(dbPath)
     first.save({ name: 'Keep-Me', address: '10.0.0.1', port: 22, username: 'root' })
     first.close()
 
-    // Downgrade the marker and drop the v4 tables to mimic a real v3 file.
+    // Downgrade the marker and drop the v4 & v5 tables to mimic a real v3 file.
     const raw = new Database(dbPath)
-    raw.exec('DROP TABLE file_profiles; DROP TABLE protocol_settings; PRAGMA user_version = 3;')
+    raw.exec(
+      'DROP TABLE rdp_profiles; DROP TABLE known_rdp_hosts; DROP TABLE file_profiles; DROP TABLE protocol_settings; PRAGMA user_version = 3;'
+    )
     raw.close()
 
     const repo = new Repository(dbPath)
@@ -243,12 +251,17 @@ describe('Repository v4: file profiles and protocol settings', () => {
       expect(readdirSync(dir).filter((n) => n.startsWith('v3.db.bak-v3-'))).toHaveLength(1)
       expect(repo.list().map((h) => h.name)).toEqual(['Keep-Me'])
       expect(repo.fileProfilesList()).toEqual([])
+      expect(repo.rdpProfilesList()).toEqual([])
       expect(repo.protocolSettingsAll().files).toEqual(DEFAULT_FILES_SETTINGS)
+      expect(repo.protocolSettingsAll().rdp).toEqual(DEFAULT_RDP_SETTINGS)
     } finally {
       repo.close()
     }
     const verify = new Database(dbPath, { readonly: true })
-    expect(verify.pragma('user_version', { simple: true })).toBe(4)
-    verify.close()
+    try {
+      expect(verify.pragma('user_version', { simple: true })).toBe(5)
+    } finally {
+      verify.close()
+    }
   })
 })

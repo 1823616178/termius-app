@@ -18,6 +18,12 @@ import type {
   FileProgressEvent,
   ProtocolSettingsPatch
 } from '../shared/files'
+import type {
+  RdpCertPromptRequest,
+  RdpConnectSource,
+  RdpProfileInput,
+  RdpSessionStateEvent
+} from '../shared/rdp'
 import type { UpdatePreferencesPatch, UpdateStatusSnapshot } from '../shared/updater'
 import type {
   SyncConflictResolutionItem,
@@ -306,6 +312,32 @@ const api: Bridge = {
       ipcRenderer.on(IPC.filesSessionClosed, listener)
       return () => {
         ipcRenderer.removeListener(IPC.filesSessionClosed, listener)
+      }
+    }
+  },
+  rdp: {
+    probe: (refresh) => ipcRenderer.invoke(IPC.rdpProbe, Boolean(refresh)),
+    listProfiles: () => ipcRenderer.invoke(IPC.rdpProfilesList),
+    saveProfile: (input: RdpProfileInput) => ipcRenderer.invoke(IPC.rdpProfileSave, input),
+    removeProfile: (id: string) => ipcRenderer.invoke(IPC.rdpProfileRemove, id),
+    listKnownHosts: () => ipcRenderer.invoke(IPC.rdpKnownHostsList),
+    removeKnownHost: (id: string) => ipcRenderer.invoke(IPC.rdpKnownHostRemove, { id }),
+    connect: (source: RdpConnectSource) => ipcRenderer.invoke(IPC.rdpConnect, source),
+    disconnect: (sessionId: string) => ipcRenderer.invoke(IPC.rdpDisconnect, { sessionId }),
+    decideCert: (promptId: string, accept: boolean) =>
+      ipcRenderer.invoke(IPC.rdpCertDecision, { promptId, accept }),
+    onCertPrompt: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, req: RdpCertPromptRequest) => callback(req)
+      ipcRenderer.on(IPC.rdpCertPrompt, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.rdpCertPrompt, listener)
+      }
+    },
+    onSessionState: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, event: RdpSessionStateEvent) => callback(event)
+      ipcRenderer.on(IPC.rdpSessionState, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.rdpSessionState, listener)
       }
     }
   }

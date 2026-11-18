@@ -89,11 +89,19 @@ import {
   type AllProtocolSettings,
   type FileProfile
 } from '../shared/files'
+import {
+  rdpCertDecisionSchema,
+  rdpConnectSourceSchema,
+  rdpKnownHostRemoveSchema,
+  rdpProfileInputSchema,
+  rdpSessionIdSchema
+} from '../shared/rdp'
 import { DataClient } from './data-client'
 import { DiagnosticLog } from './diagnostics'
 import { FilesService } from './files-service'
 import { discoverSystemFonts } from './fonts'
 import { authorizeSender, createIpcRegistrar, isTrustedRendererUrl } from './ipc-auth'
+import { RdpService } from './rdp/service'
 import { discoverShells } from './shells'
 import { SyncService } from './sync-service'
 import { OrbitTrayManager } from './tray-manager'
@@ -132,6 +140,7 @@ if (process.env.ORBIT_USER_DATA) app.setPath('userData', process.env.ORBIT_USER_
 const windows = new Map<number, BrowserWindow>()
 let repository: DataClient
 let filesService: FilesService
+let rdpService: RdpService
 let syncService: SyncService
 let tunnelRuntime: TunnelRuntimeManager
 let trayManager: OrbitTrayManager | undefined
@@ -394,13 +403,17 @@ function registerSessionSecurity(): void {
   defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
   defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const devOrigin = rendererUrl ? new URL(rendererUrl).origin : ''
-    const connect = devOrigin ? `${devOrigin} ${devOrigin.replace(/^http/, 'ws')}` : "'none'"
+    const connect = [
+      ...(devOrigin ? [devOrigin, devOrigin.replace(/^http/, 'ws')] : []),
+      'data:',
+      'ws://127.0.0.1:*'
+    ].join(' ')
     const styleSrc = "style-src 'self' 'unsafe-inline'"
     callback({
       responseHeaders: {
         ...details.responseHeaders,
         'Content-Security-Policy': [
-          `default-src 'self'; script-src 'self'; ${styleSrc}; img-src 'self' data:; font-src 'self' data:; connect-src ${connect}; object-src 'none'; base-uri 'none'; frame-src 'none'`
+          `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; ${styleSrc}; img-src 'self' data:; font-src 'self' data:; connect-src ${connect}; object-src 'none'; base-uri 'none'; frame-src 'none'`
         ]
       }
     })
@@ -492,11 +505,24 @@ function registerIpc(): void {
     discoverSystemFonts(Boolean(refresh))
   )
   ipc.handle(IPC.bootstrap, async (owner) => {
-    const [hosts, groups, tunnels, fileProfiles, protocolSettings, sync] = await Promise.all([
+    const [
+      hosts,
+      groups,
+      tunnels,
+      fileProfiles,
+      rdpProfiles,
+      knownRdpHosts,
+      rdpProbe,
+      protocolSettings,
+      sync
+    ] = await Promise.all([
       repository.call<Host[]>('list'),
       repository.call<SyncGroup[]>('groupsList'),
       repository.call<SyncTunnel[]>('tunnelsList'),
       filesService.listProfiles(),
+      rdpService.listProfiles(),
+      rdpService.listKnownHosts(),
+      rdpService.probe(false),
       filesService.getProtocolSettings(),
       syncService.getStatus()
     ])
@@ -507,6 +533,9 @@ function registerIpc(): void {
       groups,
       tunnels,
       fileProfiles,
+      rdpProfiles,
+      knownRdpHosts,
+      rdpProbe,
       protocolSettings,
       sync,
       shells: profiles,
@@ -762,9 +791,11 @@ function registerIpc(): void {
   ipc.handleSchema(IPC.fileProfileSave, fileProfileInputSchema, (input) => filesService.saveProfile(input))
   ipc.handleSchema(IPC.fileProfileRemove, idSchema, (id) => filesService.removeProfile(id))
   ipc.handle(IPC.protocolSettingsGet, (): Promise<AllProtocolSettings> => filesService.getProtocolSettings())
-  ipc.handleSchema(IPC.protocolSettingsPatch, protocolSettingsPatchSchema, (patch) =>
-    filesService.patchProtocolSettings(patch)
-  )
+  ipc.handleSchema(IPC.protocolSettingsPatch, protocolSettingsPatchSchema, async (patch) => {
+    const next = await filesService.patchProtocolSettings(patch)
+    if (patch.namespace === 'rdp') rdpService.invalidateProbeCache()
+    return next
+  })
   ipc.handleSchema(IPC.filesConnect, fileConnectSchema, (source, owner) =>
     filesService.connect(owner.id, source)
   )
@@ -785,6 +816,23 @@ function registerIpc(): void {
     filesService.cancelTransfer(owner.id, sessionId, transferId)
   )
   void fileProfileIdSchema
+  ipc.handleSchema(IPC.rdpProbe, fontsListRequestSchema, (refresh) => rdpService.probe(Boolean(refresh)))
+  ipc.handle(IPC.rdpProfilesList, () => rdpService.listProfiles())
+  ipc.handleSchema(IPC.rdpProfileSave, rdpProfileInputSchema, (input) => rdpService.saveProfile(input))
+  ipc.handleSchema(IPC.rdpProfileRemove, idSchema, (id) => rdpService.removeProfile(id))
+  ipc.handle(IPC.rdpKnownHostsList, () => rdpService.listKnownHosts())
+  ipc.handleSchema(IPC.rdpKnownHostRemove, rdpKnownHostRemoveSchema, ({ id }) =>
+    rdpService.removeKnownHost(id)
+  )
+  ipc.handleSchema(IPC.rdpConnect, rdpConnectSourceSchema, (source, owner) =>
+    rdpService.connect(owner.id, source)
+  )
+  ipc.handleSchema(IPC.rdpDisconnect, rdpSessionIdSchema, ({ sessionId }, owner) =>
+    rdpService.disconnect(owner.id, sessionId)
+  )
+  ipc.handleSchema(IPC.rdpCertDecision, rdpCertDecisionSchema, ({ promptId, accept }, owner) =>
+    rdpService.decideCertPrompt(owner.id, promptId, accept)
+  )
   ipc.handle(IPC.trayState, () => trayManager?.getState() ?? defaultTrayState)
   ipc.handleSchema(IPC.trayUpdatePreferences, trayPreferencesPatchSchema, (patch) => {
     if (!trayManager) throw new Error('系统托盘尚未就绪')
@@ -848,6 +896,7 @@ async function createWindow(): Promise<void> {
   })
   contents.on('render-process-gone', () => {
     filesService?.closeOwnerSessions(windowId)
+    void rdpService?.closeWindowSessions(windowId)
     for (const [id, session] of sessions) {
       if (session.owner === windowId) closeSession(id)
     }
@@ -894,6 +943,7 @@ async function createWindow(): Promise<void> {
   })
   win.on('closed', () => {
     filesService?.closeOwnerSessions(windowId)
+    void rdpService?.closeWindowSessions(windowId)
     for (const [id, session] of sessions) {
       if (session.owner === windowId) closeSession(id)
     }
@@ -939,6 +989,46 @@ else {
           ownerWin.webContents.send(IPC.filesSessionClosed, { sessionId, reason }),
         (message) => diagnostics.write('file-vfs', message)
       )
+      rdpService = new RdpService({
+        data: repository,
+        encryptSecret: async (plaintext) => {
+          if (!(await isEncryptionUsable())) {
+            throw new Error(
+              process.platform === 'linux'
+                ? '当前 Linux 系统未检测到可用的 Keyring（gnome-keyring / kwallet），无法安全保存密码；请取消勾选保存并在连接时输入临时密码。'
+                : '系统凭据保护不可用，不能保存 RDP 密码。'
+            )
+          }
+          return safeStorage.encryptStringAsync(plaintext)
+        },
+        decryptSecret: async (profileId, blob) => {
+          try {
+            const decrypted = await safeStorage.decryptStringAsync(Buffer.from(blob))
+            if (decrypted.shouldReEncrypt && (await isEncryptionUsable())) {
+              await repository.call(
+                'rdpProfileUpdateSecret',
+                profileId,
+                await safeStorage.encryptStringAsync(decrypted.result)
+              )
+            }
+            return decrypted.result
+          } catch {
+            throw new Error('无法解锁已保存的 RDP 密码（系统凭据保护不可用），请在连接前重新输入密码。')
+          }
+        },
+        emitSessionState: (windowId, event) => {
+          const ownerWin = windows.get(windowId)
+          if (ownerWin && !ownerWin.isDestroyed()) {
+            ownerWin.webContents.send(IPC.rdpSessionState, event)
+          }
+        },
+        emitCertPrompt: (windowId, prompt) => {
+          const ownerWin = windows.get(windowId)
+          if (ownerWin && !ownerWin.isDestroyed()) {
+            ownerWin.webContents.send(IPC.rdpCertPrompt, prompt)
+          }
+        }
+      })
       tunnelRuntime = new TunnelRuntimeManager(repository)
       syncService = new SyncService(
         repository,
@@ -1074,6 +1164,7 @@ else {
     syncService?.dispose()
     const shutdownTasks = [
       ...(filesService ? [filesService.shutdown()] : []),
+      ...(rdpService ? [rdpService.shutdownAll()] : []),
       ...(tunnelRuntime ? [tunnelRuntime.dispose()] : []),
       ...[...workers.values()].map(
         (worker) =>

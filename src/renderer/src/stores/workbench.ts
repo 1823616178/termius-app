@@ -5,12 +5,16 @@ import {
   fileProfiles,
   hosts,
   initError,
+  knownRdpHosts,
   maximized,
   nextPromptAttempt,
   notify,
   page,
   prompt,
   protocolSettings,
+  rdpProbe,
+  rdpProfiles,
+  settingsDomain,
   syncGroups,
   syncStatus,
   syncTunnels,
@@ -20,6 +24,7 @@ import {
   updateState
 } from './workbench-state'
 import type { FileProfile, FileProfileInput, ProtocolSettingsPatch } from '../../../shared/files'
+import type { KnownRdpHostEntry, RdpEnvironmentProbe, RdpProfile, RdpProfileInput } from '../../../shared/rdp'
 import { locale } from '../services/i18n'
 import { disposeMotionMediaListener, loadSystemFonts } from './workbench-preferences'
 import { refreshKnownHosts, refreshTunnelStatuses } from './workbench-hosts'
@@ -45,6 +50,9 @@ export async function initialize(): Promise<void> {
     bootstrap.value = await window.orbit.bootstrap()
     hosts.value = bootstrap.value.hosts
     fileProfiles.value = bootstrap.value.fileProfiles ?? []
+    rdpProfiles.value = bootstrap.value.rdpProfiles ?? []
+    knownRdpHosts.value = bootstrap.value.knownRdpHosts ?? []
+    if (bootstrap.value.rdpProbe) rdpProbe.value = bootstrap.value.rdpProbe
     if (bootstrap.value.protocolSettings) protocolSettings.value = bootstrap.value.protocolSettings
     syncGroups.value = bootstrap.value.groups
     syncTunnels.value = bootstrap.value.tunnels
@@ -147,6 +155,44 @@ export async function removeFileProfile(id: string): Promise<FileProfile[]> {
 
 export async function patchProtocolSettings(patch: ProtocolSettingsPatch): Promise<void> {
   protocolSettings.value = await window.orbit.protocolSettings.patch(patch)
+  if (patch.namespace === 'rdp') {
+    void refreshRdpProbe(true)
+  }
+}
+
+export async function saveRdpProfile(input: RdpProfileInput): Promise<RdpProfile[]> {
+  const next = await window.orbit.rdp.saveProfile(input)
+  rdpProfiles.value = next
+  return next
+}
+
+export async function removeRdpProfile(id: string): Promise<RdpProfile[]> {
+  const next = await window.orbit.rdp.removeProfile(id)
+  rdpProfiles.value = next
+  return next
+}
+
+export async function refreshRdpProbe(refresh = true): Promise<RdpEnvironmentProbe> {
+  const next = await window.orbit.rdp.probe(refresh)
+  rdpProbe.value = next
+  return next
+}
+
+export async function refreshKnownRdpHosts(): Promise<KnownRdpHostEntry[]> {
+  const next = await window.orbit.rdp.listKnownHosts()
+  knownRdpHosts.value = next
+  return next
+}
+
+export async function removeKnownRdpHost(id: string): Promise<KnownRdpHostEntry[]> {
+  const next = await window.orbit.rdp.removeKnownHost(id)
+  knownRdpHosts.value = next
+  return next
+}
+
+export function openSettingsDomain(domain: 'general' | 'ssh' | 'files' | 'rdp'): void {
+  settingsDomain.value = domain
+  page.value = 'settings'
 }
 
 export function disposeWorkbenchListeners(): void {

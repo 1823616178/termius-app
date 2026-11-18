@@ -15,6 +15,12 @@ import {
   type ProtocolSettingsMap
 } from '../../shared/files'
 import {
+  rdpProfileInputSchema,
+  type KnownRdpHostEntry,
+  type RdpProfile,
+  type RdpProfileInput
+} from '../../shared/rdp'
+import {
   syncGroupInputSchema,
   syncTunnelInputSchema,
   type HostSyncExtras,
@@ -42,7 +48,7 @@ import {
   type LocalSyncSource
 } from './sync-merge'
 
-const CURRENT_SCHEMA_VERSION = 4
+const CURRENT_SCHEMA_VERSION = 5
 
 const FILES_TABLES_SQL = `
   CREATE TABLE IF NOT EXISTS file_profiles (
@@ -57,6 +63,27 @@ const FILES_TABLES_SQL = `
     namespace TEXT PRIMARY KEY,
     document TEXT NOT NULL,
     updated_at TEXT NOT NULL
+  );
+`
+
+const RDP_TABLES_SQL = `
+  CREATE TABLE IF NOT EXISTS rdp_profiles (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    document TEXT NOT NULL,
+    secret BLOB,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS known_rdp_hosts (
+    id TEXT PRIMARY KEY,
+    host TEXT NOT NULL,
+    port INTEGER NOT NULL,
+    fingerprint TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    issuer TEXT NOT NULL,
+    valid_from TEXT NOT NULL,
+    valid_to TEXT NOT NULL,
+    accepted_at TEXT NOT NULL
   );
 `
 
@@ -210,7 +237,8 @@ export class Repository {
           );
           ${SYNC_TABLES_SQL}
           ${FILES_TABLES_SQL}
-          PRAGMA user_version = 4;
+          ${RDP_TABLES_SQL}
+          PRAGMA user_version = 5;
         `)
       })()
       return
@@ -251,11 +279,26 @@ export class Repository {
       if (!backedUp && path !== ':memory:' && existsSync(path)) {
         this.db.pragma('wal_checkpoint(TRUNCATE)')
         copyFileSync(path, `${path}.bak-v3-${Date.now()}`)
+        backedUp = true
       }
       this.db.transaction(() => {
         this.db.exec(`
           ${FILES_TABLES_SQL}
           PRAGMA user_version = 4;
+        `)
+      })()
+      version = 4
+    }
+    if (version === 4) {
+      if (!backedUp && path !== ':memory:' && existsSync(path)) {
+        this.db.pragma('wal_checkpoint(TRUNCATE)')
+        copyFileSync(path, `${path}.bak-v4-${Date.now()}`)
+        backedUp = true
+      }
+      this.db.transaction(() => {
+        this.db.exec(`
+          ${RDP_TABLES_SQL}
+          PRAGMA user_version = 5;
         `)
       })()
     }
@@ -430,6 +473,137 @@ export class Repository {
     return this.fileProfilesList()
   }
 
+  /* ---------------- remote desktop profiles (RDP) & TLS certificate TOFU store ---------------- */
+
+  rdpProfilesList(): RdpProfile[] {
+    return (
+      this.stmt(
+        'SELECT document, secret IS NOT NULL AS saved FROM rdp_profiles ORDER BY name COLLATE NOCASE'
+      ).all() as { document: string; saved: number }[]
+    ).map((row) => ({ ...(JSON.parse(row.document) as RdpProfile), hasPassword: Boolean(row.saved) }))
+  }
+
+  rdpProfileGet(id: string): { profile: RdpProfile; secret?: Uint8Array } {
+    const row = this.stmt('SELECT document, secret FROM rdp_profiles WHERE id = ?').get(id) as
+      | { document: string; secret?: Buffer | null }
+      | undefined
+    if (!row) throw new Error('远程桌面配置已删除，请刷新列表。')
+    return {
+      profile: { ...(JSON.parse(row.document) as RdpProfile), hasPassword: Boolean(row.secret) },
+      secret: row.secret ?? undefined
+    }
+  }
+
+  /** `encrypted` replaces stored password blob; omitted preserves previous blob unless clearPassword is true. */
+  rdpProfileSave(raw: RdpProfileInput, encrypted?: Uint8Array): RdpProfile[] {
+    const input = rdpProfileInputSchema.parse(raw)
+    const id = input.id ?? randomUUID()
+    this.db.transaction(() => {
+      const previous = input.id
+        ? (this.stmt('SELECT secret FROM rdp_profiles WHERE id = ?').get(input.id) as
+            | { secret?: Buffer | null }
+            | undefined)
+        : undefined
+      if (input.id && !previous) throw new Error('远程桌面配置已删除，请刷新列表。')
+      const secret = input.clearPassword
+        ? null
+        : encrypted
+          ? Buffer.from(encrypted)
+          : (previous?.secret ?? null)
+      const now = new Date().toISOString()
+      const profile: RdpProfile = {
+        id,
+        name: input.name,
+        host: input.host,
+        port: input.port,
+        domain: input.domain,
+        username: input.username,
+        ...(input.linkedHostId ? { linkedHostId: input.linkedHostId } : {}),
+        notes: input.notes,
+        favorite: input.favorite,
+        options: input.options,
+        hasPassword: Boolean(secret),
+        updatedAt: now
+      }
+      try {
+        this.stmt(
+          `INSERT INTO rdp_profiles (id, name, document, secret, updated_at) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET name=excluded.name, document=excluded.document, secret=excluded.secret, updated_at=excluded.updated_at`
+        ).run(id, input.name, JSON.stringify(profile), secret, now)
+      } catch (error) {
+        if ((error as { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE')
+          throw new Error('远程桌面名称已存在，请使用其他名称。')
+        throw error
+      }
+    })()
+    return this.rdpProfilesList()
+  }
+
+  rdpProfileUpdateSecret(id: string, encrypted: Uint8Array): void {
+    const result = this.stmt('UPDATE rdp_profiles SET secret = ? WHERE id = ?').run(
+      Buffer.from(encrypted),
+      id
+    )
+    if (result.changes === 0) throw new Error('远程桌面配置已删除，无法更新密码。')
+  }
+
+  rdpProfileRemove(id: string): RdpProfile[] {
+    this.stmt('DELETE FROM rdp_profiles WHERE id = ?').run(id)
+    return this.rdpProfilesList()
+  }
+
+  rdpKnownHostsList(): KnownRdpHostEntry[] {
+    return this.stmt(
+      'SELECT id, host, port, fingerprint, subject, issuer, valid_from AS validFrom, valid_to AS validTo, accepted_at AS acceptedAt FROM known_rdp_hosts ORDER BY accepted_at DESC'
+    ).all() as KnownRdpHostEntry[]
+  }
+
+  rdpKnownHostVerify(
+    host: string,
+    port: number,
+    fingerprint: string
+  ): { status: 'unknown' | 'trusted' | 'mismatch'; previousFingerprint?: string } {
+    const id = `${host.trim().toLowerCase()}:${port}`
+    const row = this.stmt('SELECT fingerprint FROM known_rdp_hosts WHERE id = ?').get(id) as
+      | { fingerprint: string }
+      | undefined
+    if (!row) return { status: 'unknown' }
+    if (row.fingerprint.toLowerCase() === fingerprint.toLowerCase()) return { status: 'trusted' }
+    return { status: 'mismatch', previousFingerprint: row.fingerprint }
+  }
+
+  rdpKnownHostTrust(entry: Omit<KnownRdpHostEntry, 'id' | 'acceptedAt'>): KnownRdpHostEntry[] {
+    const host = entry.host.trim()
+    const id = `${host.toLowerCase()}:${entry.port}`
+    this.stmt(
+      `INSERT INTO known_rdp_hosts (id, host, port, fingerprint, subject, issuer, valid_from, valid_to, accepted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         fingerprint = excluded.fingerprint,
+         subject = excluded.subject,
+         issuer = excluded.issuer,
+         valid_from = excluded.valid_from,
+         valid_to = excluded.valid_to,
+         accepted_at = excluded.accepted_at`
+    ).run(
+      id,
+      host,
+      entry.port,
+      entry.fingerprint,
+      entry.subject,
+      entry.issuer,
+      entry.validFrom,
+      entry.validTo,
+      new Date().toISOString()
+    )
+    return this.rdpKnownHostsList()
+  }
+
+  rdpKnownHostRemove(id: string): KnownRdpHostEntry[] {
+    this.stmt('DELETE FROM known_rdp_hosts WHERE id = ?').run(id)
+    return this.rdpKnownHostsList()
+  }
+
   /* ---------------- protocol-scoped settings ---------------- */
 
   protocolSettingsAll(): AllProtocolSettings {
@@ -447,7 +621,8 @@ export class Repository {
     }
     return {
       ssh: normalizeProtocolSettings('ssh', stored.get('ssh')),
-      files: normalizeProtocolSettings('files', stored.get('files'))
+      files: normalizeProtocolSettings('files', stored.get('files')),
+      rdp: normalizeProtocolSettings('rdp', stored.get('rdp'))
     }
   }
 

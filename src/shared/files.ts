@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { DEFAULT_RDP_SETTINGS, rdpSettingsSchema, type RdpSettings } from './rdp'
 import type { SftpEntry, SftpListResult, SftpStatResult } from './sftp'
 
 /**
@@ -285,7 +286,7 @@ export function capabilitiesFor(protocol: FileProtocol): FileCapabilities {
 /* Protocol-scoped settings (persisted in SQLite `protocol_settings`)  */
 /* ------------------------------------------------------------------ */
 
-export const PROTOCOL_NAMESPACES = ['ssh', 'files'] as const
+export const PROTOCOL_NAMESPACES = ['ssh', 'files', 'rdp'] as const
 export type ProtocolNamespace = (typeof PROTOCOL_NAMESPACES)[number]
 
 /**
@@ -319,11 +320,13 @@ export type FilesSettings = z.infer<typeof filesSettingsSchema>
 export interface ProtocolSettingsMap {
   ssh: SshSettings
   files: FilesSettings
+  rdp: RdpSettings
 }
 
 export const protocolSettingsSchemas = {
   ssh: sshSettingsSchema,
-  files: filesSettingsSchema
+  files: filesSettingsSchema,
+  rdp: rdpSettingsSchema
 } as const
 
 export const DEFAULT_SSH_SETTINGS: SshSettings = {
@@ -344,12 +347,14 @@ export const DEFAULT_FILES_SETTINGS: FilesSettings = {
 
 export const DEFAULT_PROTOCOL_SETTINGS: ProtocolSettingsMap = {
   ssh: DEFAULT_SSH_SETTINGS,
-  files: DEFAULT_FILES_SETTINGS
+  files: DEFAULT_FILES_SETTINGS,
+  rdp: DEFAULT_RDP_SETTINGS
 }
 
 export const protocolSettingsPatchSchema = z.discriminatedUnion('namespace', [
   z.object({ namespace: z.literal('ssh'), patch: sshSettingsSchema.partial() }).strict(),
-  z.object({ namespace: z.literal('files'), patch: filesSettingsSchema.partial() }).strict()
+  z.object({ namespace: z.literal('files'), patch: filesSettingsSchema.partial() }).strict(),
+  z.object({ namespace: z.literal('rdp'), patch: rdpSettingsSchema.partial() }).strict()
 ])
 
 export type ProtocolSettingsPatch = z.infer<typeof protocolSettingsPatchSchema>
@@ -376,6 +381,7 @@ export function normalizeProtocolSettings<N extends ProtocolNamespace>(
 export interface AllProtocolSettings {
   ssh: SshSettings
   files: FilesSettings
+  rdp: RdpSettings
 }
 
 /* ------------------------------------------------------------------ */

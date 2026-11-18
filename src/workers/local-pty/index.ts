@@ -14,7 +14,7 @@ export function sanitizeShellEnv(
   env.TERM = 'xterm-256color'
   env.COLORTERM = 'truecolor'
   env.TERM_PROGRAM = 'GraphiteOrbit'
-  env.TERM_PROGRAM_VERSION = '1.1.0'
+  env.TERM_PROGRAM_VERSION = '1.2.0'
   env.CLICOLOR = '1'
   env.FORCE_COLOR = '3'
   if (platform === 'win32') {

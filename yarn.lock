@@ -481,6 +481,20 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@devolutions/iron-remote-desktop-rdp@npm:0.7.0":
+  version: 0.7.0
+  resolution: "@devolutions/iron-remote-desktop-rdp@npm:0.7.0"
+  checksum: 10c0/185e663afb3edcf602d2f7b8f8331cf9685cbfb27b6d3aabaec273f526587b47b6372a3f72d750d6d51ce5b6ab7f312b59cd8e23c02714583bbe78df52507b8a
+  languageName: node
+  linkType: hard
+
+"@devolutions/iron-remote-desktop@npm:0.11.0":
+  version: 0.11.0
+  resolution: "@devolutions/iron-remote-desktop@npm:0.11.0"
+  checksum: 10c0/d4e7c5cc1ed1acd12da02fad687e3170b575e422acb3e931fa6c3d0f40b42acee2bed48b26b01cee0d606cb34c6aa6b3e7a5e19cc73d69369d3ef98f3b91800f
+  languageName: node
+  linkType: hard
+
 "@dimforge/rapier3d-compat@npm:~0.12.0":
   version: 0.12.0
   resolution: "@dimforge/rapier3d-compat@npm:0.12.0"
@@ -1334,6 +1348,15 @@ __metadata:
   version: 0.5.24
   resolution: "@types/webxr@npm:0.5.24"
   checksum: 10c0/ff59ffd390d06ca3f89ab2531d583ac10bc5e2ab82e5a01ecc40fbc365224a3375e7caa5b14649cf6141db21fb024940da7ad2bd8faa3cd497a6665257cb53b5
+  languageName: node
+  linkType: hard
+
+"@types/ws@npm:^8":
+  version: 8.18.2
+  resolution: "@types/ws@npm:8.18.2"
+  dependencies:
+    "@types/node": "npm:*"
+  checksum: 10c0/8cf79499d26df06ffc27109fc86f1400371a5932082a4c1269be3f11e22b9e5a403a4ba2c1a3245d5fae420c270571aa833142a3d7fdce8f6cd24a45c52a98e4
   languageName: node
   linkType: hard
 
@@ -3004,6 +3027,8 @@ __metadata:
   dependencies:
     "@aws-sdk/client-s3": "npm:^3"
     "@aws-sdk/lib-storage": "npm:^3"
+    "@devolutions/iron-remote-desktop": "npm:0.11.0"
+    "@devolutions/iron-remote-desktop-rdp": "npm:0.7.0"
     "@electron/rebuild": "npm:4.2.1"
     "@lucide/vue": "npm:1.70.0"
     "@playwright/test": "npm:1.65.0"
@@ -3011,6 +3036,7 @@ __metadata:
     "@types/node": "npm:24.10.1"
     "@types/ssh2": "npm:1.15.6"
     "@types/three": "npm:0.187.0"
+    "@types/ws": "npm:^8"
     "@vitejs/plugin-vue": "npm:6.0.11"
     "@vue/compiler-sfc": "npm:3.5.45"
     "@xterm/addon-fit": "npm:0.11.0"
@@ -3035,6 +3061,7 @@ __metadata:
     vue-tsc: "npm:3.3.14"
     webdav: "npm:^5"
     webdav-server: "npm:2.6.3"
+    ws: "npm:^8"
     zod: "npm:4.6.7"
   dependenciesMeta:
     better-sqlite3:
@@ -5280,6 +5307,21 @@ __metadata:
   version: 1.0.2
   resolution: "wrappy@npm:1.0.2"
   checksum: 10c0/56fece1a4018c6a6c8e28fbc88c87e0fbf4ea8fd64fc6c63b18f4acc4bd13e0ad2515189786dd2c30d3eec9663d70f4ecf699330002f8ccb547e4a18231fc9f0
+  languageName: node
+  linkType: hard
+
+"ws@npm:^8":
+  version: 8.23.0
+  resolution: "ws@npm:8.23.0"
+  peerDependencies:
+    bufferutil: ^4.0.1
+    utf-8-validate: ">=5.0.2"
+  peerDependenciesMeta:
+    bufferutil:
+      optional: true
+    utf-8-validate:
+      optional: true
+  checksum: 10c0/1de9b70701c03cdb1b22abd17a1488dc6d22b4dc36a8c32b173d955356ea3634e78aea8ec734a78201dbb34f5a402d9603df32ef267bd477228cd54ae158e2f8
   languageName: node
   linkType: hard
 

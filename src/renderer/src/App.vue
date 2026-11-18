@@ -15,6 +15,7 @@ import ActionDialog from './components/ActionDialog.vue'
 const HostsPage = defineAsyncComponent(() => import('./pages/HostsPage.vue'))
 const LocalPage = defineAsyncComponent(() => import('./pages/LocalPage.vue'))
 const FilesPage = defineAsyncComponent(() => import('./pages/FilesPage.vue'))
+const RemoteDesktopPage = defineAsyncComponent(() => import('./pages/RemoteDesktopPage.vue'))
 const TunnelsPage = defineAsyncComponent(() => import('./pages/TunnelsPage.vue'))
 const IdentitiesPage = defineAsyncComponent(() => import('./pages/IdentitiesPage.vue'))
 const SyncPage = defineAsyncComponent(() => import('./pages/SyncPage.vue'))
@@ -22,6 +23,7 @@ const SettingsPage = defineAsyncComponent(() => import('./pages/SettingsPage.vue
 import { updateAllTerminalsAppearance } from './services/terminal-registry'
 import { resolveTerminalFontFamily } from './services/fonts'
 import { disposeFilesWorkspaceListeners } from './services/files-workspace'
+import { disposeRdpWorkspaceListeners } from './services/rdp-workspace'
 import { t } from './services/i18n'
 import {
   applyVisualPreferences,
@@ -83,6 +85,14 @@ import {
 } from './stores/workbench'
 
 const hostSidebar = ref<InstanceType<typeof HostSidebar>>()
+const remotePageVisited = ref(false)
+watch(
+  page,
+  (nextPage) => {
+    if (nextPage === 'remote') remotePageVisited.value = true
+  },
+  { immediate: true }
+)
 let panelCopyTimer: ReturnType<typeof setTimeout> | undefined
 let lastPanelCopiedAt = 0
 let lastPanelCopiedText = ''
@@ -333,6 +343,7 @@ watch(screenReaderDefault, (value) => {
 onBeforeUnmount(() => {
   clearTimeout(panelCopyTimer)
   disposeFilesWorkspaceListeners()
+  disposeRdpWorkspaceListeners()
   disposeWorkbenchListeners()
   document.removeEventListener('keydown', handleShortcut)
   document.removeEventListener('pointerup', handlePanelPointerUp)
@@ -364,6 +375,7 @@ onBeforeUnmount(() => {
           <HostsPage v-if="page === 'hosts'" />
           <LocalPage v-if="page === 'local'" />
           <FilesPage v-if="page === 'files'" />
+          <RemoteDesktopPage v-if="remotePageVisited" v-show="page === 'remote'" />
           <TunnelsPage v-if="page === 'tunnels'" />
           <IdentitiesPage v-if="page === 'identities'" />
           <SyncPage v-if="page === 'sync'" />

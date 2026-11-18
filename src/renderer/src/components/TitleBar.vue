@@ -60,7 +60,7 @@ const closeButtonTitle = computed(() => {
     <span class="container_app_brand_header_separator">/</span>
     <span class="container_app_brand_header_workspace">{{ t('titlebar.workspace') }}</span>
     <span class="container_app_brand_header_badge">
-      {{ t('titlebar.badgePrefix') }} · {{ bootstrap?.versions.app ?? '1.1.0' }}
+      {{ t('titlebar.badgePrefix') }} · {{ bootstrap?.versions.app ?? '1.2.0' }}
     </span>
     <div class="container_app_window_header_controls">
       <button

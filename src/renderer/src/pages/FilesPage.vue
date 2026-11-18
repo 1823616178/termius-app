@@ -23,7 +23,7 @@ import {
   X,
   Zap
 } from '@lucide/vue'
-import { instanceClass } from '../../../shared/classes'
+import { instanceClass, safeInstanceToken } from '../../../shared/classes'
 import type { Host, HostInput } from '../../../shared/contracts'
 import {
   describeFileEndpoint,
@@ -82,21 +82,7 @@ import {
   windowInstance
 } from '../stores/workbench'
 
-function safeToken(raw: string): string {
-  let hash = 2166136261
-  for (let i = 0; i < raw.length; i++) {
-    hash ^= raw.charCodeAt(i)
-    hash = Math.imul(hash, 16777619)
-  }
-  const slug = raw
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-|-$/g, '')
-    .slice(0, 20)
-  return `${slug || 'item'}-${(hash >>> 0).toString(36)}`
-}
-
-const c = (base: string, token: string) => instanceClass(base, windowInstance(safeToken(token)))
+const c = (base: string, token: string) => instanceClass(base, windowInstance(safeInstanceToken(token)))
 
 const inventoryQuery = ref('')
 const favOnly = ref(false)

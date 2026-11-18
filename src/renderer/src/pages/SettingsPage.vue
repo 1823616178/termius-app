@@ -10,7 +10,7 @@ import {
   Rocket,
   Languages
 } from '@lucide/vue'
-import { instanceClass } from '../../../shared/classes'
+import { instanceClass, safeInstanceToken } from '../../../shared/classes'
 import type { AppLocale, CloseButtonAction, TrayVisibilityMode } from '../../../shared/contracts'
 import orbitIcon from '../assets/orbit-icon.svg'
 import OrbitSelect from '../components/OrbitSelect.vue'
@@ -30,16 +30,22 @@ import {
   hideWindowToTray,
   highContrast,
   installDownloadedUpdate,
+  knownRdpHosts,
   motionPreference,
   motionStatus,
+  notify,
   openUpdateReleasePage,
   page,
   patchProtocolSettings,
   protocolSettings,
+  rdpProbe,
   refreshMotionPreference,
+  refreshRdpProbe,
+  removeKnownRdpHost,
   revealDownloadedUpdate,
   screenReaderDefault,
   setUiTheme,
+  settingsDomain,
   terminalTheme,
   terminalGpuEnabled,
   trayState,
@@ -51,17 +57,19 @@ import {
   windowInstance,
   type MotionPreference
 } from '../stores/workbench'
+import type { RdpSettings } from '../../../shared/rdp'
 
 const updateSectionRef = ref<HTMLElement>()
-type SettingsDomain = 'general' | 'ssh' | 'files'
-const activeDomain = ref<SettingsDomain>('general')
+type SettingsDomain = 'general' | 'ssh' | 'files' | 'rdp'
+const activeDomain = settingsDomain
 
 const domainTabs = computed<{ id: SettingsDomain; label: string }[]>(() => {
   void locale.value
   return [
     { id: 'general', label: t('settings.domainGeneral') },
     { id: 'ssh', label: t('settings.domainSsh') },
-    { id: 'files', label: t('settings.domainFiles') }
+    { id: 'files', label: t('settings.domainFiles') },
+    { id: 'rdp', label: t('settings.domainRdp') }
   ]
 })
 
@@ -92,6 +100,16 @@ function updateFilesSetting(
   }>
 ): void {
   void patchProtocolSettings({ namespace: 'files', patch }).catch(() => {})
+}
+
+function updateRdpSetting(patch: Partial<RdpSettings>): void {
+  void patchProtocolSettings({ namespace: 'rdp', patch }).catch(() => {})
+}
+
+async function copyRdpInstallHint(): Promise<void> {
+  if (!rdpProbe.value.schemeAInstallHint) return
+  await window.orbit.clipboard.writeText(rdpProbe.value.schemeAInstallHint)
+  notify(rdpProbe.value.schemeAInstallHint)
 }
 
 watch(focusUpdateSectionToken, async () => {
@@ -158,7 +176,7 @@ const updateMetaItems = computed(() => [
   }
 ])
 
-const c = (base: string, token: string) => instanceClass(base, windowInstance(token))
+const c = (base: string, token: string) => instanceClass(base, windowInstance(safeInstanceToken(token)))
 
 const cursorStyleOptions = computed(() => {
   void locale.value
@@ -1023,6 +1041,379 @@ function resetCustomUiTheme(): void {
         <p class="container_settings_fileproto_note_text">{{ t('settings.filesProtoNote') }}</p>
       </section>
     </template>
+
+    <template v-else-if="activeDomain === 'rdp'">
+      <section class="container_settings_rdpproto_body_section" data-testid="rdp-protocol-settings-section">
+        <h3 class="container_settings_rdpproto_header_title">{{ t('settings.rdpProtoTitle') }}</h3>
+        <p class="container_settings_rdpproto_header_desc">{{ t('settings.rdpProtoDesc') }}</p>
+
+        <div class="container_settings_rdpproto_mode_block">
+          <span class="container_settings_rdpproto_mode_heading">{{ t('settings.rdpModeHeading') }}</span>
+          <div class="container_settings_rdpproto_mode_grid">
+            <button
+              class="container_settings_rdpproto_mode_carda"
+              type="button"
+              data-testid="rdp-mode-external"
+              :aria-pressed="protocolSettings.rdp.preferredMode === 'external'"
+              @click="updateRdpSetting({ preferredMode: 'external' })"
+            >
+              <strong class="container_settings_rdpproto_mode_titlea">
+                {{ t('settings.rdpModeATitle') }}
+              </strong>
+              <span class="container_settings_rdpproto_mode_desca">
+                {{ t('settings.rdpModeADesc') }}
+              </span>
+            </button>
+            <button
+              class="container_settings_rdpproto_mode_cardb"
+              type="button"
+              data-testid="rdp-mode-embedded"
+              :aria-pressed="protocolSettings.rdp.preferredMode === 'embedded'"
+              @click="updateRdpSetting({ preferredMode: 'embedded' })"
+            >
+              <strong class="container_settings_rdpproto_mode_titleb">
+                {{ t('settings.rdpModeBTitle') }}
+              </strong>
+              <span class="container_settings_rdpproto_mode_descb">
+                {{ t('settings.rdpModeBDesc') }}
+              </span>
+            </button>
+          </div>
+        </div>
+
+        <label class="container_settings_rdpproto_fallback_label">
+          <input
+            class="container_settings_rdpproto_fallback_check"
+            data-testid="rdp-auto-fallback-check"
+            type="checkbox"
+            :checked="protocolSettings.rdp.autoFallbackToEmbedded"
+            @change="
+              updateRdpSetting({
+                autoFallbackToEmbedded: ($event.target as HTMLInputElement).checked
+              })
+            "
+          />
+          {{ t('settings.rdpAutoFallback') }}
+        </label>
+
+        <label class="container_settings_rdpproto_extpath_label">
+          {{ t('settings.rdpExternalPath') }}
+          <input
+            class="container_settings_rdpproto_extpath_input"
+            data-testid="rdp-external-path-input"
+            type="text"
+            :placeholder="t('settings.rdpExternalPathPlaceholder')"
+            :value="protocolSettings.rdp.externalClientPath"
+            @change="
+              updateRdpSetting({
+                externalClientPath: ($event.target as HTMLInputElement).value.trim()
+              })
+            "
+          />
+        </label>
+
+        <div class="container_settings_rdpproto_probe_card" data-testid="rdp-probe-card">
+          <div class="container_settings_rdpproto_probe_head">
+            <strong class="container_settings_rdpproto_probe_title">{{ t('settings.rdpProbeTitle') }}</strong>
+            <button
+              class="container_settings_rdpproto_probe_btn"
+              type="button"
+              data-testid="rdp-probe-refresh-btn"
+              @click="refreshRdpProbe(true)"
+            >
+              <RefreshCw :size="13" />
+              {{ t('settings.rdpProbeRefresh') }}
+            </button>
+          </div>
+          <dl class="container_settings_rdpproto_probe_grid">
+            <dt class="container_settings_rdpproto_probe_dtplat">{{ t('settings.rdpProbePlatform') }}</dt>
+            <dd class="container_settings_rdpproto_probe_dd">
+              {{ rdpProbe.platform }} ({{ rdpProbe.displaySession }})
+            </dd>
+            <dt class="container_settings_rdpproto_probe_dta">{{ t('settings.rdpProbeSchemeA') }}</dt>
+            <dd
+              class="container_settings_rdpproto_probe_dda"
+              :data-ready="rdpProbe.schemeAAvailable"
+              data-testid="rdp-probe-scheme-a-status"
+            >
+              <template v-if="rdpProbe.schemeAAvailable">
+                {{ t('settings.rdpProbeReady') }} · {{ rdpProbe.schemeABinaryPath || rdpProbe.schemeABinary }}
+              </template>
+              <template v-else>
+                {{ rdpProbe.schemeAMissingReason || t('settings.rdpProbeMissing') }}
+              </template>
+            </dd>
+            <dt class="container_settings_rdpproto_probe_dtb">{{ t('settings.rdpProbeSchemeB') }}</dt>
+            <dd class="container_settings_rdpproto_probe_ddb" data-testid="rdp-probe-scheme-b-status">
+              {{ t('settings.rdpProbeReady') }} · {{ rdpProbe.schemeBEngine }}
+            </dd>
+          </dl>
+          <div v-if="rdpProbe.schemeAInstallHint" class="container_settings_rdpproto_probe_aptrow">
+            <code class="container_settings_rdpproto_probe_aptcode">{{ rdpProbe.schemeAInstallHint }}</code>
+            <button
+              class="container_settings_rdpproto_probe_aptbtn"
+              type="button"
+              @click="copyRdpInstallHint"
+            >
+              {{ t('settings.rdpCopyInstallHint') }}
+            </button>
+          </div>
+        </div>
+
+        <div class="container_settings_rdpproto_grid_row">
+          <label class="container_settings_rdpproto_resmode_label">
+            {{ t('settings.rdpResolutionMode') }}
+            <select
+              class="container_settings_rdpproto_resmode_select"
+              :value="protocolSettings.rdp.resolutionMode"
+              @change="
+                updateRdpSetting({
+                  resolutionMode: ($event.target as HTMLSelectElement).value as 'fit' | 'fixed'
+                })
+              "
+            >
+              <option class="container_settings_rdpproto_resmode_optfit" value="fit">
+                {{ t('settings.rdpResolutionFit') }}
+              </option>
+              <option class="container_settings_rdpproto_resmode_optfix" value="fixed">
+                {{ t('settings.rdpResolutionFixed') }}
+              </option>
+            </select>
+          </label>
+          <label class="container_settings_rdpproto_w_label">
+            {{ t('settings.rdpDefaultWidth') }}
+            <input
+              class="container_settings_rdpproto_w_input"
+              type="number"
+              min="640"
+              max="7680"
+              :value="protocolSettings.rdp.defaultWidth"
+              @change="
+                updateRdpSetting({
+                  defaultWidth: Math.min(
+                    7680,
+                    Math.max(640, Number(($event.target as HTMLInputElement).value) || 1280)
+                  )
+                })
+              "
+            />
+          </label>
+          <label class="container_settings_rdpproto_h_label">
+            {{ t('settings.rdpDefaultHeight') }}
+            <input
+              class="container_settings_rdpproto_h_input"
+              type="number"
+              min="480"
+              max="4320"
+              :value="protocolSettings.rdp.defaultHeight"
+              @change="
+                updateRdpSetting({
+                  defaultHeight: Math.min(
+                    4320,
+                    Math.max(480, Number(($event.target as HTMLInputElement).value) || 800)
+                  )
+                })
+              "
+            />
+          </label>
+          <label class="container_settings_rdpproto_bpp_label">
+            {{ t('settings.rdpColorDepth') }}
+            <select
+              class="container_settings_rdpproto_bpp_select"
+              :value="protocolSettings.rdp.colorDepth"
+              @change="
+                updateRdpSetting({
+                  colorDepth: Number(($event.target as HTMLSelectElement).value) as 16 | 24 | 32
+                })
+              "
+            >
+              <option class="container_settings_rdpproto_bpp_opt32" :value="32">32-bit TrueColor</option>
+              <option class="container_settings_rdpproto_bpp_opt24" :value="24">24-bit</option>
+              <option class="container_settings_rdpproto_bpp_opt16" :value="16">16-bit HighColor</option>
+            </select>
+          </label>
+          <label class="container_settings_rdpproto_quality_label">
+            {{ t('settings.rdpQualityPreset') }}
+            <select
+              class="container_settings_rdpproto_quality_select"
+              :value="protocolSettings.rdp.qualityPreset"
+              @change="
+                updateRdpSetting({
+                  qualityPreset: ($event.target as HTMLSelectElement).value as 'lan' | 'balanced' | 'low'
+                })
+              "
+            >
+              <option class="container_settings_rdpproto_quality_optlan" value="lan">
+                {{ t('settings.rdpQualityLan') }}
+              </option>
+              <option class="container_settings_rdpproto_quality_optbal" value="balanced">
+                {{ t('settings.rdpQualityBalanced') }}
+              </option>
+              <option class="container_settings_rdpproto_quality_optlow" value="low">
+                {{ t('settings.rdpQualityLow') }}
+              </option>
+            </select>
+          </label>
+          <label class="container_settings_rdpproto_sec_label">
+            {{ t('settings.rdpSecurityLayer') }}
+            <select
+              class="container_settings_rdpproto_sec_select"
+              :value="protocolSettings.rdp.securityLayer"
+              @change="
+                updateRdpSetting({
+                  securityLayer: ($event.target as HTMLSelectElement).value as 'negotiate' | 'nla' | 'tls'
+                })
+              "
+            >
+              <option class="container_settings_rdpproto_sec_optneg" value="negotiate">
+                {{ t('settings.rdpSecNegotiate') }}
+              </option>
+              <option class="container_settings_rdpproto_sec_optnla" value="nla">
+                {{ t('settings.rdpSecNla') }}
+              </option>
+              <option class="container_settings_rdpproto_sec_opttls" value="tls">
+                {{ t('settings.rdpSecTls') }}
+              </option>
+            </select>
+          </label>
+          <label class="container_settings_rdpproto_cert_label">
+            {{ t('settings.rdpCertPolicy') }}
+            <select
+              class="container_settings_rdpproto_cert_select"
+              data-testid="settings-rdp-cert-policy"
+              :value="protocolSettings.rdp.certPolicy"
+              @change="
+                updateRdpSetting({
+                  certPolicy: ($event.target as HTMLSelectElement).value as 'tofu' | 'strict' | 'warn-allow'
+                })
+              "
+            >
+              <option class="container_settings_rdpproto_cert_opttofu" value="tofu">
+                {{ t('settings.rdpCertTofu') }}
+              </option>
+              <option class="container_settings_rdpproto_cert_optstrict" value="strict">
+                {{ t('settings.rdpCertStrict') }}
+              </option>
+              <option class="container_settings_rdpproto_cert_optwarn" value="warn-allow">
+                {{ t('settings.rdpCertWarnAllow') }}
+              </option>
+            </select>
+          </label>
+          <label class="container_settings_rdpproto_timeout_label">
+            {{ t('settings.rdpTimeoutSec') }}
+            <input
+              class="container_settings_rdpproto_timeout_input"
+              type="number"
+              min="5"
+              max="120"
+              :value="protocolSettings.rdp.connectTimeoutSec"
+              @change="
+                updateRdpSetting({
+                  connectTimeoutSec: Math.min(
+                    120,
+                    Math.max(5, Number(($event.target as HTMLInputElement).value) || 15)
+                  )
+                })
+              "
+            />
+          </label>
+          <label class="container_settings_rdpproto_drive_label">
+            {{ t('settings.rdpDriveRedirect') }}
+            <select
+              class="container_settings_rdpproto_drive_select"
+              :value="protocolSettings.rdp.driveRedirect"
+              @change="
+                updateRdpSetting({
+                  driveRedirect: ($event.target as HTMLSelectElement).value as
+                    | 'none'
+                    | 'readonly'
+                    | 'readwrite'
+                })
+              "
+            >
+              <option class="container_settings_rdpproto_drive_optnone" value="none">
+                {{ t('settings.rdpDriveNone') }}
+              </option>
+              <option class="container_settings_rdpproto_drive_optro" value="readonly">
+                {{ t('settings.rdpDriveReadonly') }}
+              </option>
+              <option class="container_settings_rdpproto_drive_optrw" value="readwrite">
+                {{ t('settings.rdpDriveReadwrite') }}
+              </option>
+            </select>
+          </label>
+          <label
+            v-if="protocolSettings.rdp.driveRedirect !== 'none'"
+            class="container_settings_rdpproto_sharepath_label"
+          >
+            {{ t('settings.rdpSharedDrivePath') }}
+            <input
+              class="container_settings_rdpproto_sharepath_input"
+              type="text"
+              :placeholder="t('settings.rdpSharedDrivePlaceholder')"
+              :value="protocolSettings.rdp.sharedDrivePath"
+              @change="
+                updateRdpSetting({
+                  sharedDrivePath: ($event.target as HTMLInputElement).value.trim()
+                })
+              "
+            />
+          </label>
+        </div>
+
+        <label class="container_settings_rdpproto_clip_label">
+          <input
+            class="container_settings_rdpproto_clip_check"
+            type="checkbox"
+            :checked="protocolSettings.rdp.enableClipboard"
+            @change="updateRdpSetting({ enableClipboard: ($event.target as HTMLInputElement).checked })"
+          />
+          {{ t('settings.rdpEnableClipboard') }}
+        </label>
+        <label class="container_settings_rdpproto_audio_label">
+          <input
+            class="container_settings_rdpproto_audio_check"
+            type="checkbox"
+            :checked="protocolSettings.rdp.enableAudio"
+            @change="updateRdpSetting({ enableAudio: ($event.target as HTMLInputElement).checked })"
+          />
+          {{ t('settings.rdpEnableAudio') }}
+        </label>
+
+        <div class="container_settings_rdpproto_known_box">
+          <strong class="container_settings_rdpproto_known_title">
+            {{ t('settings.rdpKnownHostsTitle', { count: knownRdpHosts.length }) }}
+          </strong>
+          <p v-if="knownRdpHosts.length === 0" class="container_settings_rdpproto_known_empty">
+            {{ t('settings.rdpKnownHostsEmpty') }}
+          </p>
+          <div
+            v-for="entry in knownRdpHosts"
+            :key="entry.id"
+            :class="c('container_settings_rdpproto_known_row', entry.id)"
+            :data-testid="`rdp-known-host-${entry.id}`"
+          >
+            <div :class="c('container_settings_rdpproto_known_meta', entry.id)">
+              <strong :class="c('container_settings_rdpproto_known_host', entry.id)">
+                {{ entry.host }}:{{ entry.port }}
+              </strong>
+              <span :class="c('container_settings_rdpproto_known_fp', entry.id)">
+                {{ entry.fingerprint }}
+              </span>
+            </div>
+            <button
+              :class="c('container_settings_rdpproto_known_delbtn', entry.id)"
+              type="button"
+              @click="removeKnownRdpHost(entry.id)"
+            >
+              {{ t('settings.rdpKnownHostRevoke') }}
+            </button>
+          </div>
+        </div>
+
+        <p class="container_settings_rdpproto_note_text">{{ t('settings.rdpProtoNote') }}</p>
+      </section>
+    </template>
   </section>
 </template>
 
@@ -1739,27 +2130,31 @@ function resetCustomUiTheme(): void {
 }
 .container_settings_motion_body_section,
 .container_settings_sshproto_body_section,
-.container_settings_fileproto_body_section {
+.container_settings_fileproto_body_section,
+.container_settings_rdpproto_body_section {
   max-width: 900px;
   padding: 18px 0 22px;
   border-bottom: 1px solid var(--color-border);
   margin-bottom: 18px;
 }
 .container_settings_sshproto_header_title,
-.container_settings_fileproto_header_title {
+.container_settings_fileproto_header_title,
+.container_settings_rdpproto_header_title {
   margin: 0;
   font-family: var(--font-display);
   font-size: var(--font-size-ui-lg);
   color: var(--color-text-heading);
 }
 .container_settings_sshproto_header_desc,
-.container_settings_fileproto_header_desc {
+.container_settings_fileproto_header_desc,
+.container_settings_rdpproto_header_desc {
   margin: 6px 0 14px;
   font-size: var(--font-size-ui-xs);
   color: var(--color-text-muted);
 }
 .container_settings_sshproto_grid_row,
-.container_settings_fileproto_grid_row {
+.container_settings_fileproto_grid_row,
+.container_settings_rdpproto_grid_row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 12px;
@@ -1769,7 +2164,18 @@ function resetCustomUiTheme(): void {
 .container_settings_fileproto_conc_label,
 .container_settings_fileproto_speed_label,
 .container_settings_fileproto_timeout_label,
-.container_settings_fileproto_s3part_label {
+.container_settings_fileproto_s3part_label,
+.container_settings_rdpproto_extpath_label,
+.container_settings_rdpproto_resmode_label,
+.container_settings_rdpproto_w_label,
+.container_settings_rdpproto_h_label,
+.container_settings_rdpproto_bpp_label,
+.container_settings_rdpproto_quality_label,
+.container_settings_rdpproto_sec_label,
+.container_settings_rdpproto_cert_label,
+.container_settings_rdpproto_timeout_label,
+.container_settings_rdpproto_drive_label,
+.container_settings_rdpproto_sharepath_label {
   display: flex;
   flex-direction: column;
   gap: 5px;
@@ -1785,7 +2191,10 @@ function resetCustomUiTheme(): void {
 }
 .container_settings_fileproto_hidden_label,
 .container_settings_fileproto_del_label,
-.container_settings_fileproto_pathstyle_label {
+.container_settings_fileproto_pathstyle_label,
+.container_settings_rdpproto_fallback_label,
+.container_settings_rdpproto_clip_label,
+.container_settings_rdpproto_audio_label {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1793,7 +2202,8 @@ function resetCustomUiTheme(): void {
   font-size: var(--font-size-ui-sm);
   color: var(--color-text-secondary);
 }
-.container_settings_fileproto_note_text {
+.container_settings_fileproto_note_text,
+.container_settings_rdpproto_note_text {
   margin: 14px 0 0;
   padding: 9px 12px;
   border-radius: 8px;
@@ -1802,5 +2212,164 @@ function resetCustomUiTheme(): void {
   color: var(--color-text-muted);
   font-size: var(--font-size-ui-xs);
   line-height: 1.55;
+}
+.container_settings_rdpproto_mode_block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.container_settings_rdpproto_mode_heading {
+  font-size: var(--font-size-ui-xs);
+  color: var(--color-text-secondary);
+}
+.container_settings_rdpproto_mode_grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
+}
+.container_settings_rdpproto_mode_carda,
+.container_settings_rdpproto_mode_cardb {
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border-control);
+  background: var(--color-surface-1);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  text-align: left;
+  &[aria-pressed='true'] {
+    border-color: var(--color-accent-primary);
+    background: var(--color-accent-primary-soft);
+    box-shadow: 0 0 0 1px var(--color-accent-primary-ring);
+  }
+}
+.container_settings_rdpproto_mode_titlea,
+.container_settings_rdpproto_mode_titleb {
+  color: var(--color-text-heading);
+  font-size: var(--font-size-ui-sm);
+}
+.container_settings_rdpproto_mode_desca,
+.container_settings_rdpproto_mode_descb {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-ui-xs);
+  line-height: 1.45;
+}
+.container_settings_rdpproto_extpath_label {
+  margin: 12px 0;
+}
+.container_settings_rdpproto_probe_card {
+  margin: 12px 0 16px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-1);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.container_settings_rdpproto_probe_head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.container_settings_rdpproto_probe_title {
+  font-size: var(--font-size-ui-xs);
+  color: var(--color-text-heading);
+}
+.container_settings_rdpproto_probe_btn,
+.container_settings_rdpproto_probe_aptbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--color-border-control);
+  background: var(--color-surface-2);
+  color: var(--color-text-primary);
+  font-size: 12px;
+}
+.container_settings_rdpproto_probe_grid {
+  margin: 0;
+  display: grid;
+  grid-template-columns: 150px 1fr;
+  gap: 4px 10px;
+  font-size: var(--font-size-ui-xs);
+}
+[class*='container_settings_rdpproto_probe_dt'] {
+  color: var(--color-text-muted);
+}
+.container_settings_rdpproto_probe_dd,
+.container_settings_rdpproto_probe_dda,
+.container_settings_rdpproto_probe_ddb {
+  margin: 0;
+  font-family: var(--font-term);
+  color: var(--color-text-primary);
+}
+.container_settings_rdpproto_probe_dda[data-ready='false'] {
+  color: #fcd34d;
+}
+.container_settings_rdpproto_probe_aptrow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--color-border-subtle);
+}
+.container_settings_rdpproto_probe_aptcode {
+  font-family: var(--font-term);
+  font-size: 12px;
+  color: #fde68a;
+}
+.container_settings_rdpproto_known_box {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid var(--color-border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.container_settings_rdpproto_known_title {
+  font-size: var(--font-size-ui-sm);
+  color: var(--color-text-heading);
+}
+.container_settings_rdpproto_known_empty {
+  margin: 0;
+  font-size: var(--font-size-ui-xs);
+  color: var(--color-text-muted);
+}
+[class*='container_settings_rdpproto_known_row'] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-surface-1);
+}
+[class*='container_settings_rdpproto_known_meta'] {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+[class*='container_settings_rdpproto_known_host'] {
+  font-size: var(--font-size-ui-xs);
+  color: var(--color-text-heading);
+}
+[class*='container_settings_rdpproto_known_fp'] {
+  font-family: var(--font-term);
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+[class*='container_settings_rdpproto_known_delbtn'] {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.12);
+  color: #fca5a5;
+  font-size: 12px;
 }
 </style>
