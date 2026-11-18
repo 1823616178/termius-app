@@ -8,6 +8,8 @@ import { createServer, type AddressInfo } from 'node:net'
 import { startMockSyncServer } from '../helpers/mock-sync-server'
 import { startMockUpdateServer } from '../helpers/mock-update-server'
 import { startMockSftpSshServer } from '../helpers/mock-sftp-server'
+import { startMockS3Server } from '../helpers/mock-s3-server'
+import { v2 as webdav } from 'webdav-server'
 import {
   decryptSyncDocument,
   encryptSyncDocument,
@@ -737,6 +739,7 @@ test('terminal uses hardware WebGL when available and keeps the session after co
     const workspace = page.getByRole('button', { name: '工作台', exact: true })
     const acceleration = page.getByRole('checkbox', { name: '启用终端 GPU 加速' })
     await settings.click()
+    await page.getByTestId('settings-tab-ssh').click()
     await expect(acceleration).toBeChecked()
     await acceleration.uncheck()
     await expect(canvas).toHaveCount(0)
@@ -747,6 +750,7 @@ test('terminal uses hardware WebGL when available and keeps the session after co
     await page.keyboard.press('Enter')
     await expect(page.locator('.xterm-rows')).toContainText('GPU_SWITCH')
     await settings.click()
+    await page.getByTestId('settings-tab-ssh').click()
     await acceleration.check()
     await workspace.click()
     await expect(canvas).toBeVisible()
@@ -760,9 +764,11 @@ test('terminal uses hardware WebGL when available and keeps the session after co
   await page.keyboard.press('Enter')
   await expect(page.locator('.xterm-rows')).toContainText('FALLBACK_READY')
   await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByTestId('settings-tab-ssh').click()
   await page.getByRole('checkbox', { name: '启用终端 GPU 加速' }).uncheck()
   await page.reload()
   await page.getByRole('button', { name: '设置', exact: true }).click()
+  await page.getByTestId('settings-tab-ssh').click()
   await expect(page.getByRole('checkbox', { name: '启用终端 GPU 加速' })).not.toBeChecked()
   await page.getByRole('button', { name: '返回首页', exact: true }).click()
   await page.getByRole('button', { name: '打开本地终端', exact: true }).click()
@@ -2497,16 +2503,16 @@ test('bilingual zh/en switch, separate terminal/panel typography & color setting
   await expect(page.getByText('Connections, Effortlessly Aligned.')).toBeVisible()
   await expect(page.getByRole('button', { name: 'Settings', exact: true })).toBeVisible()
 
-  // Navigate to Settings and verify language radio cards sync & persist across reload
+  // Navigate to Settings and verify language radio cards + 3 protocol domains sync cleanly
   await page.getByRole('button', { name: 'Settings', exact: true }).click()
   await expect(page.getByTestId('lang-card-en-US')).toHaveAttribute('aria-checked', 'true')
+  await expect(page.getByTestId('settings-domain-tabs')).toBeVisible()
   await expect(page.getByTestId('panel-typography-section')).toBeVisible()
-  await expect(page.getByTestId('terminal-typography-section')).toBeVisible()
   await checkClasses(page)
 
-  // 2. Panel typography & custom text color remain completely independent from terminal typography
+  // 2. Panel typography & custom text color live on General tab, completely independent from Terminal
   const panelSection = page.getByTestId('panel-typography-section')
-  const terminalSection = page.getByTestId('terminal-typography-section')
+  await expect(page.getByTestId('terminal-typography-section')).toHaveCount(0)
 
   await panelSection.getByRole('combobox', { name: 'Panel Body Font' }).click()
   await checkClasses(page)
@@ -2532,7 +2538,19 @@ test('bilingual zh/en switch, separate terminal/panel typography & color setting
   )
   expect(uiFontApplied).toContain('Orbit LXGW WenKai')
 
-  // 3. Configure independent Terminal font (Maple Mono woff2), size, and custom canvas colors
+  const panelCopyCheck = panelSection.getByRole('checkbox', {
+    name: /Copy panel text to clipboard automatically on selection/i
+  })
+  await panelCopyCheck.check()
+  await expect(panelCopyCheck).toBeChecked()
+
+  // Switch to SSH & Terminal domain and configure independent Terminal font, size, colors, and copy-on-select
+  await page.getByTestId('settings-tab-ssh').click()
+  const terminalSection = page.getByTestId('terminal-typography-section')
+  await expect(terminalSection).toBeVisible()
+  await expect(panelSection).toHaveCount(0)
+  await checkClasses(page)
+
   await terminalSection.getByRole('combobox', { name: 'Terminal Font' }).click()
   await page.getByRole('option', { name: /Maple Mono/ }).click()
   await terminalSection.locator('input[type="range"]').first().fill('17')
@@ -2547,17 +2565,14 @@ test('bilingual zh/en switch, separate terminal/panel typography & color setting
   expect(uiAfterTermChange.uiFont).toContain('Orbit LXGW WenKai')
   expect(uiAfterTermChange.uiSize).toBe('16px')
 
-  // 4. Enable BOTH select-to-copy checkboxes and mock Electron clipboard for deterministic verification
-  const panelCopyCheck = panelSection.getByRole('checkbox', {
-    name: /Copy panel text to clipboard automatically on selection/i
-  })
   const termCopyCheck = terminalSection.getByRole('checkbox', {
     name: /Copy terminal text automatically on selection/i
   })
-  await panelCopyCheck.check()
   await termCopyCheck.check()
-  await expect(panelCopyCheck).toBeChecked()
   await expect(termCopyCheck).toBeChecked()
+
+  // Return to General tab so Panel Live Preview is visible for drag-select copy check
+  await page.getByTestId('settings-tab-general').click()
 
   await app.evaluate(({ clipboard }) => {
     const g = globalThis as { __origWriteText?: typeof clipboard.writeText; __clipboardWrites?: string[] }
@@ -2648,9 +2663,10 @@ test('bilingual zh/en switch, separate terminal/panel typography & color setting
     await page.getByRole('button', { name: 'Settings', exact: true }).click()
     await expect(page.getByTestId('lang-card-en-US')).toHaveAttribute('aria-checked', 'true')
     await expect(panelCopyCheck).toBeChecked()
+    await expect(panelSection.getByRole('combobox', { name: 'Panel Body Font' })).toContainText('LXGW WenKai')
+    await page.getByTestId('settings-tab-ssh').click()
     await expect(termCopyCheck).toBeChecked()
     await expect(terminalSection.getByRole('combobox', { name: 'Terminal Font' })).toContainText('Maple Mono')
-    await expect(panelSection.getByRole('combobox', { name: 'Panel Body Font' })).toContainText('LXGW WenKai')
   } finally {
     await app.evaluate(({ clipboard }) => {
       const g = globalThis as { __origWriteText?: typeof clipboard.writeText; __clipboardWrites?: unknown }
@@ -2660,5 +2676,175 @@ test('bilingual zh/en switch, separate terminal/panel typography & color setting
       }
       delete g.__clipboardWrites
     })
+  }
+})
+
+test('standalone multi-protocol Files page (SFTP, WebDAV, S3) and protocol-scoped Settings persist end-to-end', async ({}, info) => {
+  const davRoot = await mkdtemp(join(tmpdir(), 'orbit-e2e-dav-'))
+  const sftpServer = await startMockSftpSshServer({
+    username: 'orbit-test',
+    password: 'SftpFilesPass!1'
+  })
+  const s3Server = await startMockS3Server()
+  const appDir = await mkdtemp(join(tmpdir(), 'orbit-files-e2e-'))
+  const localTransferDir = await mkdtemp(join(tmpdir(), 'orbit-files-local-'))
+  const sampleFile = join(localTransferDir, 'e2e-upload.txt')
+  const sampleBytes = Buffer.from('ORBIT_V110_FILES_PAGE_CONTENT', 'utf8')
+  await writeFile(sampleFile, sampleBytes)
+
+  const userManager = new webdav.SimpleUserManager()
+  const davUser = userManager.addUser('davuser', 'DavE2ePass!88', false)
+  const privilegeManager = new webdav.SimplePathPrivilegeManager()
+  privilegeManager.setRights(davUser, '/', ['all'])
+  const davServer = new webdav.WebDAVServer({
+    port: 0,
+    httpAuthentication: new webdav.HTTPBasicAuthentication(userManager, 'OrbitE2E'),
+    privilegeManager
+  })
+  await new Promise<void>((resolve, reject) => {
+    davServer.setFileSystem('/', new webdav.PhysicalFileSystem(davRoot), (ok) =>
+      ok ? resolve() : reject(new Error('WebDAV init failed'))
+    )
+  })
+  const davHttp = await new Promise<{ address(): { port: number } }>((resolve) => {
+    davServer.start((srv) => resolve(srv as unknown as { address(): { port: number } }))
+  })
+  const davUrl = `http://127.0.0.1:${davHttp.address().port}`
+
+  const { app, page } = await launch(appDir)
+  const errors: string[] = []
+  page.on('pageerror', (error) => errors.push(error.message))
+
+  try {
+    // 0. Version badge reports v1.1.0
+    await expect(page.locator('.container_app_status_footer_version')).toContainText('v1.1.0')
+
+    // 1. Settings domain separation & persistence (SSH defaults + Files concurrency/S3 defaults)
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByTestId('settings-tab-ssh').click()
+    const sshSec = page.getByTestId('ssh-protocol-settings-section')
+    await expect(sshSec).toBeVisible()
+    await sshSec.locator('.container_settings_sshproto_port_input').fill('2222')
+    await sshSec.locator('.container_settings_sshproto_port_input').press('Tab')
+    await sshSec.locator('.container_settings_sshproto_keepalive_input').fill('45')
+    await sshSec.locator('.container_settings_sshproto_keepalive_input').press('Tab')
+
+    await page.getByTestId('settings-tab-files').click()
+    const filesSec = page.getByTestId('files-protocol-settings-section')
+    await expect(filesSec).toBeVisible()
+    await filesSec.locator('.container_settings_fileproto_conc_input').fill('5')
+    await filesSec.locator('.container_settings_fileproto_conc_input').press('Tab')
+    await filesSec.locator('.container_settings_fileproto_pathstyle_check').check()
+    await checkClasses(page)
+
+    await page.reload()
+    await expect(page.getByRole('button', { name: '设置', exact: true })).toBeVisible()
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    await page.getByTestId('settings-tab-ssh').click()
+    await expect(sshSec.locator('.container_settings_sshproto_port_input')).toHaveValue('2222')
+    await page.getByTestId('settings-tab-files').click()
+    await expect(filesSec.locator('.container_settings_fileproto_conc_input')).toHaveValue('5')
+    await expect(filesSec.locator('.container_settings_fileproto_pathstyle_check')).toBeChecked()
+
+    // New Host form should pre-fill SSH default port 2222
+    await page.getByRole('button', { name: '新建主机', exact: true }).first().click()
+    const hostDialog = page.getByRole('dialog', { name: '新建主机' })
+    await expect(hostDialog.getByLabel('端口', { exact: true })).toHaveValue('2222')
+    await hostDialog.getByRole('button', { name: '取消', exact: true }).click()
+
+    // 2. Open standalone Files page via NavRail icon
+    await page.getByTestId('nav-files-btn').click()
+    const filesPage = page.getByTestId('files-page')
+    await expect(filesPage).toBeVisible()
+    await checkClasses(page)
+
+    // 3. Create & connect a WebDAV file profile (encrypted credentials)
+    await page.getByTestId('files-add-server-btn').click()
+    const editor = page.getByTestId('file-profile-editor')
+    await expect(editor).toBeVisible()
+    await editor.getByRole('combobox', { name: '文件协议' }).click()
+    await page.getByRole('option', { name: 'WebDAV' }).click()
+    await editor.locator('.container_files_editor_input_name').fill('Prod-WebDAV')
+    await editor.locator('.container_files_editor_input_davurl').fill(davUrl)
+    await editor.locator('.container_files_editor_input_user').fill('davuser')
+    await editor.locator('.container_files_editor_input_password').fill('DavE2ePass!88')
+    await editor.locator('.container_files_editor_input_savepw').check()
+    await checkClasses(page)
+    await editor.locator('.container_files_editor_btn_savego').click()
+    await expect(editor).toHaveCount(0)
+
+    await expect(
+      filesPage.locator('.container_files_group_files_section').getByText('Prod-WebDAV')
+    ).toBeVisible()
+    await expect(filesPage.locator('.container_files_tabs_item_proto').first()).toContainText('WEBDAV')
+
+    // Create folder on WebDAV and verify on physical filesystem
+    await filesPage.locator('.container_files_toolbar_mkdir_btn').click()
+    await filesPage.locator('.container_files_modal_dialog_input').fill('dav-folder')
+    await filesPage.locator('.container_files_modal_btn_confirm').click()
+    await expect(filesPage.getByText('dav-folder', { exact: true })).toBeVisible({ timeout: 5000 })
+    expect((await stat(join(davRoot, 'dav-folder'))).isDirectory()).toBe(true)
+
+    // 4. Add SSH host via FilesPage ("SFTP" protocol) -> connects directly into standalone SFTP tab
+    await page.getByTestId('files-add-server-btn').click()
+    await editor.getByRole('combobox', { name: '文件协议' }).click()
+    await page.getByRole('option', { name: 'SFTP (SSH)' }).click()
+    await editor.locator('.container_files_editor_input_name').fill('Files-SSH-Box')
+    await editor.locator('.container_files_editor_input_host').fill('127.0.0.1')
+    await editor.locator('.container_files_editor_input_port').fill(String(sftpServer.port))
+    await editor.locator('.container_files_editor_input_user').fill('orbit-test')
+    await editor.locator('.container_files_editor_input_password').fill('SftpFilesPass!1')
+    await editor.locator('.container_files_editor_input_savepw').check()
+    await editor.locator('.container_files_editor_btn_sftpgo').click()
+
+    const trust = page.getByRole('dialog', { name: '确认服务器身份' })
+    await expect(trust).toBeVisible({ timeout: 10_000 })
+    await trust.getByRole('button', { name: '信任并继续' }).click()
+    await expect(filesPage.getByText('readme.txt', { exact: true })).toBeVisible({ timeout: 10_000 })
+
+    // 5. Ad-hoc Quick Connect to Mock S3 server (does not save to file_profiles)
+    await page.getByTestId('files-quick-connect-btn').click()
+    await editor.getByRole('combobox', { name: '文件协议' }).click()
+    await page.getByRole('option', { name: /S3/ }).click()
+    await expect(editor.locator('.container_files_editor_input_pathstyle')).toBeChecked()
+    await editor.locator('.container_files_editor_input_name').fill('Temp-S3')
+    await editor.locator('.container_files_editor_input_s3ep').fill(s3Server.url)
+    await editor.locator('.container_files_editor_input_s3bucket').fill(s3Server.bucket)
+    await editor.locator('.container_files_editor_input_user').fill(s3Server.accessKeyId)
+    await editor.locator('.container_files_editor_input_s3secret').fill(s3Server.secretAccessKey)
+    await editor.locator('.container_files_editor_btn_adhoc').click()
+
+    await expect(filesPage.locator('.container_files_s3_notice_banner')).toBeVisible({ timeout: 10_000 })
+    await filesPage.locator('.container_files_toolbar_mkdir_btn').click()
+    await filesPage.locator('.container_files_modal_dialog_input').fill('s3-prefix')
+    await filesPage.locator('.container_files_modal_btn_confirm').click()
+    await expect.poll(() => s3Server.listKeys()).toContain('s3-prefix/')
+    // Ad-hoc session must NOT be persisted in saved File Servers list
+    await expect(filesPage.locator('.container_files_group_files_section')).not.toContainText('Temp-S3')
+
+    // 6. Reload and confirm saved WebDAV profile still connects silently with DPAPI-encrypted password
+    await page.reload()
+    await page.getByTestId('nav-files-btn').click()
+    const davCard = filesPage.locator('.container_files_group_files_section').getByText('Prod-WebDAV')
+    await expect(davCard).toBeVisible()
+    await filesPage.locator('[class*="container_files_card_profile_connect"]').first().click()
+    await expect(filesPage.getByText('dav-folder', { exact: true })).toBeVisible({ timeout: 10_000 })
+    await checkClasses(page)
+    await page.screenshot({ path: info.outputPath('files-page-workbench.png') })
+    expect(errors).toEqual([])
+  } finally {
+    await stop(app)
+    await sftpServer.close()
+    await s3Server.close()
+    await new Promise<void>((resolve) => {
+      try {
+        davServer.stop(() => resolve())
+      } catch {
+        resolve()
+      }
+    })
+    await rm(davRoot, { recursive: true, force: true }).catch(() => {})
+    await rm(localTransferDir, { recursive: true, force: true }).catch(() => {})
+    await rm(appDir, { recursive: true, force: true }).catch(() => {})
   }
 })

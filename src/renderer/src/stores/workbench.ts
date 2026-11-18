@@ -2,6 +2,7 @@ import {
   bootstrap,
   clearWorkbenchStateTimers,
   dismissStaleTrust,
+  fileProfiles,
   hosts,
   initError,
   maximized,
@@ -9,6 +10,7 @@ import {
   notify,
   page,
   prompt,
+  protocolSettings,
   syncGroups,
   syncStatus,
   syncTunnels,
@@ -17,6 +19,7 @@ import {
   trustQueue,
   updateState
 } from './workbench-state'
+import type { FileProfile, FileProfileInput, ProtocolSettingsPatch } from '../../../shared/files'
 import { locale } from '../services/i18n'
 import { disposeMotionMediaListener, loadSystemFonts } from './workbench-preferences'
 import { refreshKnownHosts, refreshTunnelStatuses } from './workbench-hosts'
@@ -41,6 +44,8 @@ export async function initialize(): Promise<void> {
   try {
     bootstrap.value = await window.orbit.bootstrap()
     hosts.value = bootstrap.value.hosts
+    fileProfiles.value = bootstrap.value.fileProfiles ?? []
+    if (bootstrap.value.protocolSettings) protocolSettings.value = bootstrap.value.protocolSettings
     syncGroups.value = bootstrap.value.groups
     syncTunnels.value = bootstrap.value.tunnels
     syncStatus.value = bootstrap.value.sync
@@ -126,6 +131,22 @@ export async function initialize(): Promise<void> {
           ? 'Failed to read local data'
           : '读取本地数据失败'
   }
+}
+
+export async function saveFileProfile(input: FileProfileInput): Promise<FileProfile[]> {
+  const next = await window.orbit.fileProfiles.save(input)
+  fileProfiles.value = next
+  return next
+}
+
+export async function removeFileProfile(id: string): Promise<FileProfile[]> {
+  const next = await window.orbit.fileProfiles.remove(id)
+  fileProfiles.value = next
+  return next
+}
+
+export async function patchProtocolSettings(patch: ProtocolSettingsPatch): Promise<void> {
+  protocolSettings.value = await window.orbit.protocolSettings.patch(patch)
 }
 
 export function disposeWorkbenchListeners(): void {

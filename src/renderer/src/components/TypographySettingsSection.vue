@@ -44,6 +44,13 @@ import {
 import FontSelector from './FontSelector.vue'
 import OrbitSelect from './OrbitSelect.vue'
 
+withDefaults(
+  defineProps<{
+    section?: 'panel' | 'terminal' | 'both'
+  }>(),
+  { section: 'both' }
+)
+
 const panelWeightOptions = computed(() => {
   void locale.value
   return [
@@ -182,9 +189,13 @@ function resetPanelTextColors(): void {
 
 <template>
   <div class="container_settings_typo_root_wrap">
-    <div class="container_settings_typo_grid_layout">
+    <div class="container_settings_typo_grid_layout" :data-single="section !== 'both'">
       <!-- PANEL & INTERFACE TYPOGRAPHY CARD (INDEPENDENT OF TERMINAL) -->
-      <section class="container_settings_typo_panel_card" data-testid="panel-typography-section">
+      <section
+        v-if="section === 'both' || section === 'panel'"
+        class="container_settings_typo_panel_card"
+        data-testid="panel-typography-section"
+      >
         <div class="container_settings_typo_panel_head">
           <div class="container_settings_typo_panel_titlewrap">
             <span class="container_settings_typo_panel_badge">
@@ -433,7 +444,11 @@ function resetPanelTextColors(): void {
       </section>
 
       <!-- TERMINAL TYPOGRAPHY & COLOR CARD (INDEPENDENT OF PANEL) -->
-      <section class="container_settings_typo_term_card" data-testid="terminal-typography-section">
+      <section
+        v-if="section === 'both' || section === 'terminal'"
+        class="container_settings_typo_term_card"
+        data-testid="terminal-typography-section"
+      >
         <div class="container_settings_typo_term_head">
           <div class="container_settings_typo_term_titlewrap">
             <span class="container_settings_typo_term_badge">
@@ -723,6 +738,9 @@ function resetPanelTextColors(): void {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(390px, 1fr));
   gap: 16px;
+  &[data-single='true'] {
+    grid-template-columns: minmax(390px, 900px);
+  }
 }
 
 .container_settings_typo_panel_card,

@@ -10,6 +10,12 @@ import type {
   TrayState
 } from '../../../shared/contracts'
 import type { TunnelRuntimeStatus } from '../../../shared/contracts'
+import {
+  DEFAULT_FILES_SETTINGS,
+  DEFAULT_SSH_SETTINGS,
+  type AllProtocolSettings,
+  type FileProfile
+} from '../../../shared/files'
 import { DEFAULT_UPDATE_REPOSITORY, type UpdateStatusSnapshot } from '../../../shared/updater'
 import type { SyncGroup, SyncStatusSnapshot, SyncTunnel } from '../../../shared/sync'
 import {
@@ -26,7 +32,7 @@ import type { CursorShape, TerminalThemeId } from '../services/terminal-themes'
 import { DEFAULT_CUSTOM_COLORS, type CustomUiColors, type UiThemeId } from '../services/ui-themes'
 
 export type { MotionPreference, MotionTier } from '../services/motion-performance'
-export type Page = 'workspace' | 'hosts' | 'local' | 'tunnels' | 'identities' | 'sync' | 'settings'
+export type Page = 'workspace' | 'hosts' | 'local' | 'files' | 'tunnels' | 'identities' | 'sync' | 'settings'
 export type SplitDropZone = 'left' | 'right' | 'top' | 'bottom'
 
 export interface Pane {
@@ -71,6 +77,11 @@ export const query = ref('')
 export const group = ref('all')
 export const favorites = ref(false)
 export const hosts = ref<Host[]>([])
+export const fileProfiles = ref<FileProfile[]>([])
+export const protocolSettings = ref<AllProtocolSettings>({
+  ssh: { ...DEFAULT_SSH_SETTINGS },
+  files: { ...DEFAULT_FILES_SETTINGS }
+})
 export const syncGroups = ref<SyncGroup[]>([])
 export const syncTunnels = ref<SyncTunnel[]>([])
 export const tunnelStatuses = ref<Record<string, TunnelRuntimeStatus>>({})
@@ -168,7 +179,7 @@ export const trayState = ref<TrayState>({
 })
 export const updateState = ref<UpdateStatusSnapshot>({
   phase: 'idle',
-  currentVersion: '1.0.0',
+  currentVersion: '1.1.0',
   repository: { ...DEFAULT_UPDATE_REPOSITORY },
   preferences: {
     autoCheckOnStartup: true,

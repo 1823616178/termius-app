@@ -255,18 +255,18 @@ RdpBroker (Main Process + 独立 helper / utility 边界)
 
 ## 7. 里程碑 Task Plan 与验收标准
 
-### 里程碑 M8（目标版 `v1.1.0`）：设置页按协议重组 + 独立多协议文件页面（Files）
+### 里程碑 M8（已随 `v1.1.0` 交付，按第 9 节修订边界落地）：设置页按协议重组 + 独立多协议文件页面（Files）
 
-- [ ] **T8.1 数据模型与数据库迁移**：`schema_version` 顺序升级，新增 `file_profiles`（支持 `sftp | ftp | ftps | smb | s3 | webdav`）、`known_file_certs` 与 `protocol_settings` 表，遵循现行 `safeStorage` 敏感字段加密契约（渲染层永不收发解密后密码/AKSK）。
-- [ ] **T8.2 设置页分域重构**：重造 `SettingsPage.vue` 左侧/顶部二级分域导航（通用与外观 / SSH 与终端 / 文件协议 / 远程桌面），迁移并归位现有排版、选中即复制、主题、终端配置、安全与更新板块；接入 `protocol_settings` 持久化与单主机覆盖标记。
-- [ ] **T8.3 隔离 VFS 工作进程实现**：搭建 `file-vfs` worker + 统一 `FileAdapter` 接口与 `ProtocolCapabilities`，依次接通并自测：
-  1. SFTP（支持直接选择现有 SSH 主机或独立配置）；
-  2. FTP / FTPS（`basic-ftp`，PASV/PORT、编码、TLS 指纹信任）；
-  3. S3（`@aws-sdk/client-s3`，兼容 MinIO / R2 / AWS / OSS、分片上传进度与取消）；
-  4. WebDAV（`webdav`，Basic/Digest/Token、流式进度）；
-  5. SMB / Samba（Windows 与 Ubuntu 统一抽象接口与安全方言控制 SMBv2+）。
-- [ ] **T8.4 导航与 `FilesPage.vue` 渲染实现**：`NavRail.vue` 增加 `files` 按钮；实现服务器快速选择栏 + 手动新建/编辑弹窗 + 双栏文件面板（Local ↔ Remote / Remote ↔ Remote）+ 多连接页签 + 全局传输队列与拖放；全元素通过 `yarn check:classes`。
-- [ ] **T8.5 自动化测试**：单元测试覆盖 Zod 校验、各适配器能力降级、S3/WebDAV/FTP 协议本地 Mock Server 集成测试；Playwright E2E 验证从已有主机发起连接、手动新建连接及切换中文/英文。
+- [x] **T8.1 数据模型与数据库迁移**：`schema_version` 顺序升级至 `4`（含迁移前 `.bak-v3-*` 备份），新增 `file_profiles`（`ftp | ftps | smb | s3 | webdav`）与 `protocol_settings` 表，遵循现行 `safeStorage` 敏感字段加密契约（渲染层永不收发解密后密码/AKSK）。（按第 9 节修订：SFTP 档案直接复用 `hosts` 表；TLS 指纹表 `known_file_certs` 延后，本版提供每档案 `tlsVerify: strict | insecure`。）
+- [x] **T8.2 设置页分域重构**：重造 `SettingsPage.vue` 顶部三域分域导航（通用与外观 / SSH 与终端 / 文件协议；按第 9 节修订，RDP 域随 `v1.2.0` M9 一起上线），迁移并归位排版、选中即复制、主题、终端与 GPU 配置、安全与更新板块；接入 SQLite `protocol_settings` 持久化。
+- [x] **T8.3 隔离 VFS 工作进程实现**：搭建 `file-vfs` worker + 统一 `FileAdapter` 接口与 `ProtocolCapabilities`，已接通并自测：
+  1. SFTP（复用 SSH Connection Worker，支持直接选择现有 SSH 主机或独立新建/临时直连）；
+  2. FTP / FTPS（`basic-ftp`，按第 9 节修订为被动模式 PASV + UTF-8 + `tlsVerify`）；
+  3. S3（`@aws-sdk/client-s3` + `@aws-sdk/lib-storage`，兼容 MinIO / R2 / AWS / OSS、分片上传进度与取消）；
+  4. WebDAV（`webdav@5`，Basic/Digest/Token、流式进度）；
+  5. SMB / Samba 按第 9 节修订移出 `v1.1.0`，当前后端显式返回 `'该协议在当前版本尚未提供'`。
+- [x] **T8.4 导航与 `FilesPage.vue` 渲染实现**：`NavRail.vue` 增加 `files` 按钮；实现 SSH/文件档案选择栏 + 手动新建/编辑弹窗 + 临时直连 + 按第 9 节修订的单栏远端文件浏览器 + 原生选择器/拖放上传 + 全局传输队列；全元素通过 `yarn check:classes`。
+- [x] **T8.5 自动化测试**：单元测试覆盖 Zod 校验（`file-profiles.test.ts`）、schema v4 迁移（`database.test.ts`）与 FTP/WebDAV/S3 Mock Server 集成测试及 SMB 显式拦截（`file-adapters.test.ts`）；Playwright E2E 验证多协议 Files 页（SFTP / WebDAV / S3）及三域设置持久化、中英文切换。
 
 ### 里程碑 M9（目标版 `v1.2.0`）：跨平台远程桌面页面（Remote · RDP）
 
@@ -288,3 +288,31 @@ RdpBroker (Main Process + 独立 helper / utility 边界)
 1. **远程管理服务端修改确认**：请核对第 **6.2 节（缺口 1–6）** 改造方案（特别是**采用 `/api/v1/sync/documents/:namespace` 多命名空间隔离以兼容鸿蒙端 v1**，以及 `POST /api/v1/vault/rotate` 批量多文档原子轮换），在远程管理服务端完成或确认具体路径/字段规范。
 2. **RDP 首选渲染策略确认**：M9 是优先先落地「**内置 FreeRDP 原生桥接内嵌画布**」（包体积略增，需打包/编译跨平台原生 helper），还是首阶段先支持「**检测并托管系统 `xfreerdp3` / `mstsc`（或嵌入窗体）+ 后续演进全内置画布**」。
 3. **开发执行顺序确认**：按 `M8（设置分类重构 + Files 多协议页面，发 v1.1.0） -> M9（Remote/RDP 页面，发 v1.2.0） -> M10（同步联调，发 v1.3.0）` 依次推进，确认后即可启动 M8 开发。
+
+---
+
+## 9. 开工前方案复核与修订（2026-11-18，以本节为准，与前文冲突处以本节覆盖）
+
+开工前对照现有源码（`sftp-store.ts` / `SftpPanel.vue` / `sftp-handler.ts` / `database.ts` / `electron.vite.config.ts` / `check-arch.mjs`）与各依赖的实际能力复核，发现原方案有以下问题，已修订：
+
+| # | 原方案 | 问题（已核实） | 修订 |
+| --- | --- | --- | --- |
+| 1 | SFTP 作为新协议，建 `file_profiles` 档案并另起 SFTP 适配器 | 现有 `connectStandaloneSftpHost` 已支持“独立 SFTP 会话”，走 SSH Connection Worker、known_hosts 信任弹窗与密码加密，且 SSH 主机已进入现有 v1 同步 | **SFTP 档案 = SSH 主机**：Files 页手动添加 SFTP 时写入 `hosts`，直接复用现有引擎与 v1 同步；`file_profiles` 仅存 FTP / FTPS / WebDAV / S3 / SMB。这同时缩小了第 6 节“服务端缺口”的范围（SFTP 无需新 wire 模型） |
+| 2 | SMB 使用 `@marsaud/smb2` | 该库 2021-04 后无更新，仅 SMB2，不支持 SMB3 签名/加密，无法兑现“最低 SMBv2.1、禁用 SMBv1”的安全承诺 | **SMB 移出 v1.1.0**，改为 v1.1.x 单独交付：Linux 调用系统 `smbclient`，Windows 走原生 UNC 路径；在能做真实验证前不对外宣称支持 |
+| 3 | FTP 支持 PASV/PORT 与 GB18030 编码 | `basic-ftp` 仅支持被动模式；编码仅支持 Node `Buffer` 编码，不含 GBK/GB18030 | 删除 PORT 模式与 GB18030 选项；仅 UTF-8 + 被动模式，并在设置页注明 |
+| 4 | 新增 `known_file_certs` 表做 TLS 指纹信任（TOFU） | v1.1.0 工作量与收益不匹配，且 FTPS/WebDAV/S3 的证书固定需要各库的 TLS 钩子 | v1.1.0 改为每档案 `tlsVerify: strict \| insecure`（默认 strict，选 insecure 时红色警告）；指纹固定列入后续版本 |
+| 5 | Files 页做“双栏 Local ↔ Remote / Remote ↔ Remote” | 需要新增本地文件系统浏览 IPC 与跨协议中转，体量等同于再做一个文件管理器 | v1.1.0 先做**单栏远端浏览器 + 原生选择器/拖放上传 + 全局传输队列**（与现有 SFTP 抽屉交互一致）；双栏与跨服务器中转列入后续 |
+| 6 | 新依赖放 `dependencies` | `electron.vite.config.ts` 对 `dependencies` 做外部化；`webdav@5` 为纯 ESM，外部化后在 CJS 主进程 `require` 会失败；纯 JS 依赖放 `devDependencies` 由 electron-vite 打进产物，包体更小 | `basic-ftp`、`webdav`、`@aws-sdk/client-s3`、`@aws-sdk/lib-storage` 放 `devDependencies`（与现有 renderer-only 依赖同一约定）；原生模块仍放 `dependencies` |
+| 7 | 设置页 4 个域（含 RDP） | RDP 页面在 v1.2.0 才交付，v1.1.0 先出 RDP 设置会成为无消费者的死设置 | v1.1.0 设置页三域：**通用与外观 / SSH 与终端 / 文件协议**；RDP 域随 v1.2.0 的 RDP 页一起上线 |
+| 8 | 协议设置沿用 localStorage | 主进程/工作进程需要读取并发数、超时、冲突策略，不能依赖渲染进程 | 协议设置落 SQLite `protocol_settings(namespace, document, updated_at)`；渲染层通过 IPC 读写，主进程校验 |
+
+### 9.1 v1.1.0（M8）修订后的交付范围
+
+1. 数据库 schema v4：`file_profiles`、`protocol_settings`（顺序迁移 + 迁移前备份，沿用既有策略）。
+2. 设置页三域分类；文件协议设置与 SSH 默认值（默认端口/保活）持久化到 `protocol_settings`。
+3. Files 页：SSH 主机（SFTP）+ 已保存文件档案选择；手动添加/临时直连；FTP / FTPS / WebDAV / S3 在独立 `file-vfs` utilityProcess 中运行；单栏浏览、新建/重命名/删除/上传/下载/取消、冲突策略、传输队列。
+4. 导航栏 `files` 入口；中英文完整；`check:classes` / `check:arch` / 类型 / 单测 / E2E 全部通过后再发 `v1.1.0`。
+
+### 9.2 未在 v1.1.0 交付（诚实清单）
+
+SMB/Samba、双栏本地↔远端与跨服务器中转、TLS 证书指纹固定、RDP（v1.2.0）、多协议同步（v1.3.0，依赖服务端改造）。

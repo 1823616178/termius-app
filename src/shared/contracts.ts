@@ -9,6 +9,15 @@ import type {
   SftpTransferItem
 } from './sftp'
 import type {
+  AllProtocolSettings,
+  FileConnectSource,
+  FileProfile,
+  FileProfileInput,
+  FileProgressEvent,
+  FileSessionInfo,
+  ProtocolSettingsPatch
+} from './files'
+import type {
   SyncConfigFormDefaults,
   SyncConflictResolutionItem,
   SyncDevice,
@@ -185,6 +194,8 @@ export interface Bootstrap {
   hosts: Host[]
   groups: SyncGroup[]
   tunnels: SyncTunnel[]
+  fileProfiles: FileProfile[]
+  protocolSettings: AllProtocolSettings
   sync: SyncStatusSnapshot
   shells: ShellProfile[]
   home: string
@@ -484,6 +495,44 @@ export interface Bridge {
     revealLocal(localPath: string): Promise<boolean>
     getDroppedPaths(files: FileList | File[]): string[]
     onProgress(callback: (event: SftpProgressEvent) => void): () => void
+  }
+  fileProfiles: {
+    list(): Promise<FileProfile[]>
+    save(input: FileProfileInput): Promise<FileProfile[]>
+    remove(id: string): Promise<FileProfile[]>
+  }
+  protocolSettings: {
+    getAll(): Promise<AllProtocolSettings>
+    patch(patch: ProtocolSettingsPatch): Promise<AllProtocolSettings>
+  }
+  files: {
+    connect(source: FileConnectSource): Promise<FileSessionInfo>
+    close(sessionId: string): Promise<void>
+    home(sessionId: string): Promise<string>
+    list(sessionId: string, path: string): Promise<SftpListResult>
+    stat(sessionId: string, path: string): Promise<SftpStatResult>
+    collectTree(sessionId: string, path: string): Promise<SftpRemoteTreeManifest>
+    mkdir(sessionId: string, path: string): Promise<void>
+    rename(sessionId: string, oldPath: string, newPath: string): Promise<void>
+    chmod(sessionId: string, path: string, mode: number): Promise<void>
+    remove(sessionId: string, path: string, recursive?: boolean): Promise<void>
+    upload(input: {
+      transferId: string
+      sessionId: string
+      localPath: string
+      remotePath: string
+      conflict: SftpConflictDecision
+    }): Promise<SftpTransferItem>
+    download(input: {
+      transferId: string
+      sessionId: string
+      remotePath: string
+      localPath: string
+      conflict: SftpConflictDecision
+    }): Promise<SftpTransferItem>
+    cancelTransfer(sessionId: string, transferId: string): Promise<void>
+    onProgress(callback: (event: FileProgressEvent) => void): () => void
+    onSessionClosed(callback: (payload: { sessionId: string; reason?: string }) => void): () => void
   }
 }
 export { IPC } from './channels'

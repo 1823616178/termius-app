@@ -4,6 +4,17 @@ import { randomUUID } from 'node:crypto'
 import type { Host, HostInput, KnownHostEntry } from '../../shared/contracts'
 import { hostInputSchema } from '../../shared/contracts'
 import {
+  fileProfileInputSchema,
+  normalizeProtocolSettings,
+  protocolSettingsSchemas,
+  PROTOCOL_NAMESPACES,
+  type AllProtocolSettings,
+  type FileProfile,
+  type FileProfileInput,
+  type ProtocolNamespace,
+  type ProtocolSettingsMap
+} from '../../shared/files'
+import {
   syncGroupInputSchema,
   syncTunnelInputSchema,
   type HostSyncExtras,
@@ -31,7 +42,23 @@ import {
   type LocalSyncSource
 } from './sync-merge'
 
-const CURRENT_SCHEMA_VERSION = 3
+const CURRENT_SCHEMA_VERSION = 4
+
+const FILES_TABLES_SQL = `
+  CREATE TABLE IF NOT EXISTS file_profiles (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+    protocol TEXT NOT NULL,
+    document TEXT NOT NULL,
+    secret BLOB,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS protocol_settings (
+    namespace TEXT PRIMARY KEY,
+    document TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+`
 
 const SYNC_TABLES_SQL = `
   CREATE TABLE IF NOT EXISTS sync_accounts (
@@ -182,7 +209,8 @@ export class Repository {
             PRIMARY KEY(address, port)
           );
           ${SYNC_TABLES_SQL}
-          PRAGMA user_version = 3;
+          ${FILES_TABLES_SQL}
+          PRAGMA user_version = 4;
         `)
       })()
       return
@@ -207,6 +235,7 @@ export class Repository {
       if (!backedUp && path !== ':memory:' && existsSync(path)) {
         this.db.pragma('wal_checkpoint(TRUNCATE)')
         copyFileSync(path, `${path}.bak-v2-${Date.now()}`)
+        backedUp = true
       }
       this.db.transaction(() => {
         this.db.exec(`
@@ -214,6 +243,19 @@ export class Repository {
           ALTER TABLE hosts ADD COLUMN account_scope TEXT NOT NULL DEFAULT 'local';
           ${SYNC_TABLES_SQL}
           PRAGMA user_version = 3;
+        `)
+      })()
+      version = 3
+    }
+    if (version === 3) {
+      if (!backedUp && path !== ':memory:' && existsSync(path)) {
+        this.db.pragma('wal_checkpoint(TRUNCATE)')
+        copyFileSync(path, `${path}.bak-v3-${Date.now()}`)
+      }
+      this.db.transaction(() => {
+        this.db.exec(`
+          ${FILES_TABLES_SQL}
+          PRAGMA user_version = 4;
         `)
       })()
     }
@@ -304,6 +346,129 @@ export class Repository {
   updateSecret(id: string, encrypted: Uint8Array): void {
     const result = this.stmt('UPDATE hosts SET secret = ? WHERE id = ?').run(Buffer.from(encrypted), id)
     if (result.changes === 0) throw new Error('主机已删除，无法更新凭据。')
+  }
+
+  /* ---------------- multi-protocol file profiles (FTP / FTPS / WebDAV / S3 / SMB) ---------------- */
+
+  fileProfilesList(): FileProfile[] {
+    return (
+      this.stmt(
+        'SELECT document, secret IS NOT NULL AS saved FROM file_profiles ORDER BY name COLLATE NOCASE'
+      ).all() as { document: string; saved: number }[]
+    ).map((row) => ({ ...(JSON.parse(row.document) as FileProfile), hasSecrets: Boolean(row.saved) }))
+  }
+
+  fileProfileGet(id: string): { profile: FileProfile; secret?: Uint8Array } {
+    const row = this.stmt('SELECT document, secret FROM file_profiles WHERE id = ?').get(id) as
+      | { document: string; secret?: Buffer | null }
+      | undefined
+    if (!row) throw new Error('文件服务器配置已删除，请刷新列表。')
+    return {
+      profile: { ...(JSON.parse(row.document) as FileProfile), hasSecrets: Boolean(row.secret) },
+      secret: row.secret ?? undefined
+    }
+  }
+
+  /**
+   * `encrypted` replaces the stored secret blob; when omitted the previous blob is kept unless
+   * the input asks to clear it. Secret values never reach this layer in plaintext.
+   */
+  fileProfileSave(raw: FileProfileInput, encrypted?: Uint8Array): FileProfile[] {
+    const input = fileProfileInputSchema.parse(raw)
+    const id = input.id ?? randomUUID()
+    this.db.transaction(() => {
+      const previous = input.id
+        ? (this.stmt('SELECT secret FROM file_profiles WHERE id = ?').get(input.id) as
+            | { secret?: Buffer | null }
+            | undefined)
+        : undefined
+      if (input.id && !previous) throw new Error('文件服务器配置已删除，请刷新列表。')
+      const secret = input.clearSecrets
+        ? null
+        : encrypted
+          ? Buffer.from(encrypted)
+          : (previous?.secret ?? null)
+      const now = new Date().toISOString()
+      const profile: FileProfile = {
+        id,
+        name: input.name,
+        protocol: input.protocol,
+        host: input.host,
+        port: input.port,
+        username: input.username,
+        initialPath: input.initialPath,
+        notes: input.notes,
+        favorite: input.favorite,
+        options: input.options,
+        hasSecrets: Boolean(secret),
+        updatedAt: now
+      }
+      try {
+        this.stmt(
+          `INSERT INTO file_profiles (id, name, protocol, document, secret, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET name=excluded.name, protocol=excluded.protocol, document=excluded.document, secret=excluded.secret, updated_at=excluded.updated_at`
+        ).run(id, input.name, input.protocol, JSON.stringify(profile), secret, now)
+      } catch (error) {
+        if ((error as { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE')
+          throw new Error('服务器名称已存在，请使用其他名称。')
+        throw error
+      }
+    })()
+    return this.fileProfilesList()
+  }
+
+  fileProfileUpdateSecret(id: string, encrypted: Uint8Array): void {
+    const result = this.stmt('UPDATE file_profiles SET secret = ? WHERE id = ?').run(
+      Buffer.from(encrypted),
+      id
+    )
+    if (result.changes === 0) throw new Error('文件服务器配置已删除，无法更新凭据。')
+  }
+
+  fileProfileRemove(id: string): FileProfile[] {
+    this.stmt('DELETE FROM file_profiles WHERE id = ?').run(id)
+    return this.fileProfilesList()
+  }
+
+  /* ---------------- protocol-scoped settings ---------------- */
+
+  protocolSettingsAll(): AllProtocolSettings {
+    const rows = this.stmt('SELECT namespace, document FROM protocol_settings').all() as {
+      namespace: string
+      document: string
+    }[]
+    const stored = new Map<string, unknown>()
+    for (const row of rows) {
+      try {
+        stored.set(row.namespace, JSON.parse(row.document))
+      } catch {
+        /* corrupt document -> defaults */
+      }
+    }
+    return {
+      ssh: normalizeProtocolSettings('ssh', stored.get('ssh')),
+      files: normalizeProtocolSettings('files', stored.get('files'))
+    }
+  }
+
+  protocolSettingsPatch<N extends ProtocolNamespace>(
+    namespace: N,
+    patch: Partial<ProtocolSettingsMap[N]>
+  ): AllProtocolSettings {
+    if (!PROTOCOL_NAMESPACES.includes(namespace)) throw new Error('未知的设置分类')
+    const schema = protocolSettingsSchemas[namespace] as unknown as {
+      partial(): { parse(value: unknown): Record<string, unknown> }
+    }
+    const checked = schema.partial().parse(patch)
+    this.db.transaction(() => {
+      const current = this.protocolSettingsAll()[namespace] as unknown as Record<string, unknown>
+      const next = normalizeProtocolSettings(namespace, { ...current, ...checked })
+      this.stmt(
+        `INSERT INTO protocol_settings (namespace, document, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(namespace) DO UPDATE SET document=excluded.document, updated_at=excluded.updated_at`
+      ).run(namespace, JSON.stringify(next), new Date().toISOString())
+    })()
+    return this.protocolSettingsAll()
   }
 
   known(

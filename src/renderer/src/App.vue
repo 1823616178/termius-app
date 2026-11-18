@@ -14,12 +14,14 @@ import ActionDialog from './components/ActionDialog.vue'
 
 const HostsPage = defineAsyncComponent(() => import('./pages/HostsPage.vue'))
 const LocalPage = defineAsyncComponent(() => import('./pages/LocalPage.vue'))
+const FilesPage = defineAsyncComponent(() => import('./pages/FilesPage.vue'))
 const TunnelsPage = defineAsyncComponent(() => import('./pages/TunnelsPage.vue'))
 const IdentitiesPage = defineAsyncComponent(() => import('./pages/IdentitiesPage.vue'))
 const SyncPage = defineAsyncComponent(() => import('./pages/SyncPage.vue'))
 const SettingsPage = defineAsyncComponent(() => import('./pages/SettingsPage.vue'))
 import { updateAllTerminalsAppearance } from './services/terminal-registry'
 import { resolveTerminalFontFamily } from './services/fonts'
+import { disposeFilesWorkspaceListeners } from './services/files-workspace'
 import { t } from './services/i18n'
 import {
   applyVisualPreferences,
@@ -330,6 +332,7 @@ watch(screenReaderDefault, (value) => {
 
 onBeforeUnmount(() => {
   clearTimeout(panelCopyTimer)
+  disposeFilesWorkspaceListeners()
   disposeWorkbenchListeners()
   document.removeEventListener('keydown', handleShortcut)
   document.removeEventListener('pointerup', handlePanelPointerUp)
@@ -360,6 +363,7 @@ onBeforeUnmount(() => {
           <WorkspacePage />
           <HostsPage v-if="page === 'hosts'" />
           <LocalPage v-if="page === 'local'" />
+          <FilesPage v-if="page === 'files'" />
           <TunnelsPage v-if="page === 'tunnels'" />
           <IdentitiesPage v-if="page === 'identities'" />
           <SyncPage v-if="page === 'sync'" />

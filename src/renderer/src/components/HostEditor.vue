@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, useId, w
 import { X, ShieldCheck } from '@lucide/vue'
 import { hostInputSchema, type Host, type HostInput } from '../../../shared/contracts'
 import { locale, t } from '../services/i18n'
-import { bootstrap } from '../stores/workbench'
+import { bootstrap, protocolSettings } from '../stores/workbench'
 import OrbitSelect from './OrbitSelect.vue'
 
 const isLinux = computed(() => bootstrap.value?.platform === 'linux')
@@ -35,10 +35,10 @@ const notesErrorId = useId()
 const form = reactive<HostInput>({
   name: props.host?.name ?? '',
   address: props.host?.address ?? '',
-  port: props.host?.port ?? 22,
+  port: props.host?.port ?? protocolSettings.value.ssh.defaultPort,
   username: props.host?.username ?? '',
   auth: props.host?.auth ?? 'password',
-  keepalive: props.host?.keepalive ?? 30,
+  keepalive: props.host?.keepalive ?? protocolSettings.value.ssh.defaultKeepaliveSec,
   group: props.host?.group ?? '',
   notes: props.host?.notes ?? '',
   favorite: props.host?.favorite ?? false,

@@ -1,12 +1,26 @@
 <script setup lang="ts">
-import { Terminal, Server, SquareTerminal, Network, KeyRound, Cloud, CircleHelp, Settings } from '@lucide/vue'
+import {
+  Terminal,
+  Server,
+  SquareTerminal,
+  HardDrive,
+  Network,
+  KeyRound,
+  Cloud,
+  CircleHelp,
+  Settings
+} from '@lucide/vue'
 import { computed } from 'vue'
 import { t } from '../services/i18n'
+import { activeTransferCount } from '../services/sftp-store'
+import { activeFilesTransferCount } from '../services/files-workspace'
 import { activateTab, activeTab, page, showHelp, syncStatus, tunnelStatuses } from '../stores/workbench'
 
 const activeTunnelCount = computed(
   () => Object.values(tunnelStatuses.value).filter((item) => item.active).length
 )
+
+const totalTransferCount = computed(() => activeTransferCount.value + activeFilesTransferCount.value)
 
 const avatarLetter = computed(() => {
   const email = syncStatus.value?.email?.trim()
@@ -53,6 +67,20 @@ const avatarTitle = computed(() => {
       @click="page = 'local'"
     >
       <SquareTerminal :size="21" />
+    </button>
+    <button
+      class="container_app_navigation_sidebar_files"
+      type="button"
+      data-testid="nav-files-btn"
+      :aria-current="page === 'files' ? 'page' : undefined"
+      :aria-label="t('nav.files')"
+      :title="t('nav.filesTitle')"
+      @click="page = 'files'"
+    >
+      <HardDrive :size="20" />
+      <span v-if="totalTransferCount > 0" class="container_app_navigation_sidebar_files-badge">
+        {{ totalTransferCount }}
+      </span>
     </button>
     <span class="container_app_navigation_sidebar_divider" />
     <button
@@ -194,9 +222,11 @@ const avatarTitle = computed(() => {
   flex: 1;
 }
 .container_app_navigation_sidebar_sync,
+.container_app_navigation_sidebar_files,
 .container_app_navigation_sidebar_tunnels {
   position: relative;
 }
+.container_app_navigation_sidebar_files-badge,
 .container_app_navigation_sidebar_tunnel-badge {
   position: absolute;
   top: 4px;

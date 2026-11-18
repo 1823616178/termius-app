@@ -73,8 +73,25 @@ import {
   type SyncStatusSnapshot,
   type SyncTunnel
 } from '../shared/sync'
+import {
+  fileCancelTransferSchema,
+  fileChmodRequestSchema,
+  fileConnectSchema,
+  fileDeleteRequestSchema,
+  fileDownloadRequestSchema,
+  filePathRequestSchema,
+  fileProfileIdSchema,
+  fileProfileInputSchema,
+  fileRenameRequestSchema,
+  fileSessionIdSchema,
+  fileUploadRequestSchema,
+  protocolSettingsPatchSchema,
+  type AllProtocolSettings,
+  type FileProfile
+} from '../shared/files'
 import { DataClient } from './data-client'
 import { DiagnosticLog } from './diagnostics'
+import { FilesService } from './files-service'
 import { discoverSystemFonts } from './fonts'
 import { authorizeSender, createIpcRegistrar, isTrustedRendererUrl } from './ipc-auth'
 import { discoverShells } from './shells'
@@ -114,6 +131,7 @@ async function isEncryptionUsable(): Promise<boolean> {
 if (process.env.ORBIT_USER_DATA) app.setPath('userData', process.env.ORBIT_USER_DATA)
 const windows = new Map<number, BrowserWindow>()
 let repository: DataClient
+let filesService: FilesService
 let syncService: SyncService
 let tunnelRuntime: TunnelRuntimeManager
 let trayManager: OrbitTrayManager | undefined
@@ -474,10 +492,12 @@ function registerIpc(): void {
     discoverSystemFonts(Boolean(refresh))
   )
   ipc.handle(IPC.bootstrap, async (owner) => {
-    const [hosts, groups, tunnels, sync] = await Promise.all([
+    const [hosts, groups, tunnels, fileProfiles, protocolSettings, sync] = await Promise.all([
       repository.call<Host[]>('list'),
       repository.call<SyncGroup[]>('groupsList'),
       repository.call<SyncTunnel[]>('tunnelsList'),
+      filesService.listProfiles(),
+      filesService.getProtocolSettings(),
       syncService.getStatus()
     ])
     return {
@@ -486,6 +506,8 @@ function registerIpc(): void {
       hosts,
       groups,
       tunnels,
+      fileProfiles,
+      protocolSettings,
       sync,
       shells: profiles,
       home: homedir(),
@@ -724,6 +746,45 @@ function registerIpc(): void {
     shell.showItemInFolder(localPath)
     return true
   })
+
+  const handleFiles = <TSchema extends z.ZodType<Record<string, unknown> & { sessionId: string }>>(
+    channel: string,
+    schema: TSchema,
+    action: string,
+    timeoutMs?: number
+  ): void => {
+    ipc.handleSchema(channel, schema, (input, owner) => {
+      const { sessionId, ...rest } = input
+      return filesService.callSession(owner.id, sessionId, action, rest, timeoutMs)
+    })
+  }
+  ipc.handle(IPC.fileProfilesList, (): Promise<FileProfile[]> => filesService.listProfiles())
+  ipc.handleSchema(IPC.fileProfileSave, fileProfileInputSchema, (input) => filesService.saveProfile(input))
+  ipc.handleSchema(IPC.fileProfileRemove, idSchema, (id) => filesService.removeProfile(id))
+  ipc.handle(IPC.protocolSettingsGet, (): Promise<AllProtocolSettings> => filesService.getProtocolSettings())
+  ipc.handleSchema(IPC.protocolSettingsPatch, protocolSettingsPatchSchema, (patch) =>
+    filesService.patchProtocolSettings(patch)
+  )
+  ipc.handleSchema(IPC.filesConnect, fileConnectSchema, (source, owner) =>
+    filesService.connect(owner.id, source)
+  )
+  ipc.handleSchema(IPC.filesClose, fileSessionIdSchema, ({ sessionId }, owner) =>
+    filesService.closeSession(owner.id, sessionId)
+  )
+  handleFiles(IPC.filesHome, fileSessionIdSchema, 'home')
+  handleFiles(IPC.filesList, filePathRequestSchema, 'list')
+  handleFiles(IPC.filesStat, filePathRequestSchema, 'stat')
+  handleFiles(IPC.filesCollectTree, filePathRequestSchema, 'collectTree', 60_000)
+  handleFiles(IPC.filesMkdir, filePathRequestSchema, 'mkdir')
+  handleFiles(IPC.filesRename, fileRenameRequestSchema, 'rename')
+  handleFiles(IPC.filesChmod, fileChmodRequestSchema, 'chmod')
+  handleFiles(IPC.filesDelete, fileDeleteRequestSchema, 'delete', 120_000)
+  handleFiles(IPC.filesUpload, fileUploadRequestSchema, 'upload', 0)
+  handleFiles(IPC.filesDownload, fileDownloadRequestSchema, 'download', 0)
+  ipc.handleSchema(IPC.filesCancelTransfer, fileCancelTransferSchema, ({ sessionId, transferId }, owner) =>
+    filesService.cancelTransfer(owner.id, sessionId, transferId)
+  )
+  void fileProfileIdSchema
   ipc.handle(IPC.trayState, () => trayManager?.getState() ?? defaultTrayState)
   ipc.handleSchema(IPC.trayUpdatePreferences, trayPreferencesPatchSchema, (patch) => {
     if (!trayManager) throw new Error('系统托盘尚未就绪')
@@ -786,6 +847,7 @@ async function createWindow(): Promise<void> {
     if (!trustedUrl(url)) event.preventDefault()
   })
   contents.on('render-process-gone', () => {
+    filesService?.closeOwnerSessions(windowId)
     for (const [id, session] of sessions) {
       if (session.owner === windowId) closeSession(id)
     }
@@ -831,6 +893,7 @@ async function createWindow(): Promise<void> {
     }
   })
   win.on('closed', () => {
+    filesService?.closeOwnerSessions(windowId)
     for (const [id, session] of sessions) {
       if (session.owner === windowId) closeSession(id)
     }
@@ -867,6 +930,15 @@ else {
         diagnostics.write('data-worker', message)
       )
       await repository.ready
+      filesService = new FilesService(
+        repository,
+        isEncryptionUsable,
+        (windowId) => windows.get(windowId),
+        (ownerWin, event) => ownerWin.webContents.send(IPC.filesProgress, event),
+        (ownerWin, sessionId, reason) =>
+          ownerWin.webContents.send(IPC.filesSessionClosed, { sessionId, reason }),
+        (message) => diagnostics.write('file-vfs', message)
+      )
       tunnelRuntime = new TunnelRuntimeManager(repository)
       syncService = new SyncService(
         repository,
@@ -1001,6 +1073,7 @@ else {
     updateService?.dispose()
     syncService?.dispose()
     const shutdownTasks = [
+      ...(filesService ? [filesService.shutdown()] : []),
       ...(tunnelRuntime ? [tunnelRuntime.dispose()] : []),
       ...[...workers.values()].map(
         (worker) =>

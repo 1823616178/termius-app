@@ -12,6 +12,12 @@ import type {
 } from '../shared/contracts'
 import type { SftpProgressEvent } from '../shared/sftp'
 import { extractFilePathsFromUriList } from '../shared/sftp'
+import type {
+  FileConnectSource,
+  FileProfileInput,
+  FileProgressEvent,
+  ProtocolSettingsPatch
+} from '../shared/files'
 import type { UpdatePreferencesPatch, UpdateStatusSnapshot } from '../shared/updater'
 import type {
   SyncConflictResolutionItem,
@@ -258,6 +264,48 @@ const api: Bridge = {
       ipcRenderer.on(IPC.sftpProgress, listener)
       return () => {
         ipcRenderer.removeListener(IPC.sftpProgress, listener)
+      }
+    }
+  },
+  fileProfiles: {
+    list: () => ipcRenderer.invoke(IPC.fileProfilesList),
+    save: (input: FileProfileInput) => ipcRenderer.invoke(IPC.fileProfileSave, input),
+    remove: (id: string) => ipcRenderer.invoke(IPC.fileProfileRemove, id)
+  },
+  protocolSettings: {
+    getAll: () => ipcRenderer.invoke(IPC.protocolSettingsGet),
+    patch: (patch: ProtocolSettingsPatch) => ipcRenderer.invoke(IPC.protocolSettingsPatch, patch)
+  },
+  files: {
+    connect: (source: FileConnectSource) => ipcRenderer.invoke(IPC.filesConnect, source),
+    close: (sessionId: string) => ipcRenderer.invoke(IPC.filesClose, { sessionId }),
+    home: (sessionId) => ipcRenderer.invoke(IPC.filesHome, { sessionId }),
+    list: (sessionId, path) => ipcRenderer.invoke(IPC.filesList, { sessionId, path }),
+    stat: (sessionId, path) => ipcRenderer.invoke(IPC.filesStat, { sessionId, path }),
+    collectTree: (sessionId, path) => ipcRenderer.invoke(IPC.filesCollectTree, { sessionId, path }),
+    mkdir: (sessionId, path) => ipcRenderer.invoke(IPC.filesMkdir, { sessionId, path }),
+    rename: (sessionId, oldPath, newPath) =>
+      ipcRenderer.invoke(IPC.filesRename, { sessionId, oldPath, newPath }),
+    chmod: (sessionId, path, mode) => ipcRenderer.invoke(IPC.filesChmod, { sessionId, path, mode }),
+    remove: (sessionId, path, recursive) =>
+      ipcRenderer.invoke(IPC.filesDelete, { sessionId, path, recursive }),
+    upload: (input) => ipcRenderer.invoke(IPC.filesUpload, input),
+    download: (input) => ipcRenderer.invoke(IPC.filesDownload, input),
+    cancelTransfer: (sessionId, transferId) =>
+      ipcRenderer.invoke(IPC.filesCancelTransfer, { sessionId, transferId }),
+    onProgress: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, event: FileProgressEvent) => callback(event)
+      ipcRenderer.on(IPC.filesProgress, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.filesProgress, listener)
+      }
+    },
+    onSessionClosed: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: { sessionId: string; reason?: string }) =>
+        callback(payload)
+      ipcRenderer.on(IPC.filesSessionClosed, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.filesSessionClosed, listener)
       }
     }
   }

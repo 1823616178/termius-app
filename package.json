@@ -1,6 +1,6 @@
 {
   "name": "graphite-orbit",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "跨平台 SSH 与本地终端工作台 · Graphite Orbit",
   "author": "Graphite Orbit contributors",
@@ -43,6 +43,8 @@
     "ssh2": "1.17.0"
   },
   "devDependencies": {
+    "@aws-sdk/client-s3": "^3",
+    "@aws-sdk/lib-storage": "^3",
     "@electron/rebuild": "4.2.1",
     "@lucide/vue": "1.70.0",
     "@playwright/test": "1.65.0",
@@ -56,9 +58,11 @@
     "@xterm/addon-search": "0.16.0",
     "@xterm/addon-webgl": "0.19.0",
     "@xterm/xterm": "6.0.0",
+    "basic-ftp": "^6",
     "electron": "45.3.1",
     "electron-builder": "26.18.0",
     "electron-vite": "6.0.0",
+    "ftp-srv": "4.6.3",
     "prettier": "3.6.2",
     "sass": "1.108.2",
     "three": "0.187.0",
@@ -67,6 +71,8 @@
     "vitest": "5.1.0",
     "vue": "3.5.45",
     "vue-tsc": "3.3.14",
+    "webdav": "^5",
+    "webdav-server": "2.6.3",
     "zod": "4.6.7"
   },
   "dependenciesMeta": {

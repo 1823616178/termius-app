@@ -710,7 +710,7 @@ export class SyncService {
       existing.email.toLowerCase() === input.email.toLowerCase()
 
     const fallbackDeviceName = input.deviceName || existing?.deviceName || hostname() || 'Orbit Desktop'
-    const appVersion = typeof app?.getVersion === 'function' ? app.getVersion() : '1.0.0'
+    const appVersion = typeof app?.getVersion === 'function' ? app.getVersion() : '1.1.0'
 
     if (input.keepSignedIn && !(await isSystemEncryptionAvailable())) {
       throw new Error(unavailableEncryptionMessage('无法启用保持登录状态'))
