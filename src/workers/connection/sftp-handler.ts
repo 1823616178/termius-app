@@ -1,5 +1,11 @@
-import { createReadStream, createWriteStream } from 'node:fs'
-import { mkdir, rename as fsRename, stat as fsStat, unlink as fsUnlink } from 'node:fs/promises'
+import {
+  mkdir,
+  open as fsOpen,
+  rename as fsRename,
+  stat as fsStat,
+  unlink as fsUnlink,
+  type FileHandle
+} from 'node:fs/promises'
 import { basename, dirname, extname, join } from 'node:path'
 import type { Client, FileEntryWithStats, SFTPWrapper, Stats } from 'ssh2'
 import {
@@ -50,10 +56,121 @@ export interface SftpWorkerRequest {
   localPath?: string
   remotePath?: string
   conflict?: SftpConflictDecision
+  speedLimitBps?: number
 }
 
-const STREAM_HIGH_WATER_MARK = 128 * 1024
+const PIPELINE_CHUNK_SIZE = 32 * 1024
+const PIPELINE_CONCURRENCY = 16
 const MAX_TREE_ENTRIES = 5000
+
+class AsyncRateLimiter {
+  private readonly bytesPerSec: number
+  private readonly capacity: number
+  private tokens: number
+  private lastRefillMs: number
+  private chain: Promise<void> = Promise.resolve()
+
+  constructor(speedLimitBps: number) {
+    this.bytesPerSec = Number.isFinite(speedLimitBps) && speedLimitBps > 0 ? speedLimitBps : 0
+    this.capacity =
+      this.bytesPerSec > 0
+        ? Math.max(PIPELINE_CHUNK_SIZE, Math.min(256 * 1024, Math.floor(this.bytesPerSec)))
+        : 0
+    this.tokens = this.capacity
+    this.lastRefillMs = Date.now()
+  }
+
+  async consume(bytes: number, signal: AbortSignal): Promise<void> {
+    if (this.bytesPerSec <= 0 || bytes <= 0) return
+    const waitTurn = this.chain.then(async () => {
+      if (signal.aborted) throw new Error('已取消传输')
+      let remaining = bytes
+      while (remaining > 0) {
+        if (signal.aborted) throw new Error('已取消传输')
+        const now = Date.now()
+        const elapsed = Math.max(0, now - this.lastRefillMs)
+        this.lastRefillMs = now
+        this.tokens = Math.min(this.capacity, this.tokens + (elapsed / 1000) * this.bytesPerSec)
+        if (this.tokens >= remaining) {
+          this.tokens -= remaining
+          return
+        }
+        if (this.tokens > 0) {
+          remaining -= this.tokens
+          this.tokens = 0
+        }
+        const waitMs = Math.max(10, Math.ceil((Math.min(remaining, this.capacity) / this.bytesPerSec) * 1000))
+        await new Promise<void>((resolve, reject) => {
+          const onAbort = () => {
+            clearTimeout(timer)
+            reject(new Error('已取消传输'))
+          }
+          const timer = setTimeout(() => {
+            signal.removeEventListener('abort', onAbort)
+            resolve()
+          }, waitMs)
+          signal.addEventListener('abort', onAbort, { once: true })
+        })
+      }
+    })
+    this.chain = waitTurn.catch(() => {})
+    return waitTurn
+  }
+}
+
+function sftpOpen(
+  sftp: SFTPWrapper,
+  path: string,
+  flags: 'r' | 'w',
+  attrs?: { mode?: number }
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const cb = (error: Error | undefined | null, handle: Buffer) => {
+      if (error || !handle) reject(error ?? new Error('无法打开远端文件句柄'))
+      else resolve(handle)
+    }
+    if (attrs) sftp.open(path, flags, attrs, cb)
+    else sftp.open(path, flags, cb)
+  })
+}
+
+function sftpClose(sftp: SFTPWrapper, handle: Buffer): Promise<void> {
+  return new Promise((resolve) => {
+    sftp.close(handle, () => resolve())
+  })
+}
+
+function sftpWriteChunk(
+  sftp: SFTPWrapper,
+  handle: Buffer,
+  buf: Buffer,
+  offset: number,
+  length: number,
+  position: number
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    sftp.write(handle, buf, offset, length, position, (error) => {
+      if (error) reject(error)
+      else resolve()
+    })
+  })
+}
+
+function sftpReadChunk(
+  sftp: SFTPWrapper,
+  handle: Buffer,
+  buf: Buffer,
+  offset: number,
+  length: number,
+  position: number
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    sftp.read(handle, buf, offset, length, position, (error, bytesRead) => {
+      if (error) reject(error)
+      else resolve(bytesRead ?? 0)
+    })
+  })
+}
 
 function isMissingError(error: unknown): boolean {
   if (!error || typeof error !== 'object') return false
@@ -136,10 +253,14 @@ function sftpExpandPath(sftp: SFTPWrapper, path: string): Promise<string | undef
       resolve(undefined)
       return
     }
-    sftp.ext_openssh_expandPath(path, (error, absPath) => {
-      if (error || !absPath) resolve(undefined)
-      else resolve(normalizeRemotePosixPath(absPath))
-    })
+    try {
+      sftp.ext_openssh_expandPath(path, (error, absPath) => {
+        if (error || !absPath) resolve(undefined)
+        else resolve(normalizeRemotePosixPath(absPath))
+      })
+    } catch {
+      resolve(undefined)
+    }
   })
 }
 
@@ -314,6 +435,14 @@ async function statRemote(sftp: SFTPWrapper, rawPath: string): Promise<SftpStatR
 async function ensureRemoteDirectory(sftp: SFTPWrapper, rawPath: string): Promise<void> {
   const target = await resolveRemotePath(sftp, rawPath)
   if (target === '/') return
+  // Fast path: check target directory directly before walking from root (saves N-1 RTTs on existing dirs).
+  try {
+    const existing = await sftpStat(sftp, target)
+    if (classifyStats(existing).startsWith('dir')) return
+    throw new Error(`路径已存在且不是目录：${target}`)
+  } catch (error) {
+    if (!isMissingError(error)) throw error
+  }
   const parts = target.split('/').filter(Boolean)
   let current = ''
   for (const part of parts) {
@@ -461,6 +590,7 @@ async function uploadFile(
     localPath: string
     remotePath: string
     conflict: SftpConflictDecision
+    speedLimitBps?: number
   },
   emitProgress: (event: SftpProgressEvent) => void
 ): Promise<SftpTransferItem> {
@@ -531,49 +661,52 @@ async function uploadFile(
   }
 
   sendUpdate('running', undefined, true)
+  let localFh: FileHandle | undefined
+  let remoteHandle: Buffer | undefined
   try {
-    await new Promise<void>((resolve, reject) => {
-      if (controller.signal.aborted) {
-        reject(new Error('已取消传输'))
-        return
-      }
-      const readStream = createReadStream(input.localPath, { highWaterMark: STREAM_HIGH_WATER_MARK })
-      const writeStream = sftp.createWriteStream(tempRemotePath, {
-        flags: 'w',
-        mode: localStats.mode & 0o777 || 0o644,
-        highWaterMark: STREAM_HIGH_WATER_MARK
-      })
-      let settled = false
-      const cleanup = () => {
-        controller.signal.removeEventListener('abort', onAbort)
-      }
-      const fail = (err: Error) => {
-        if (settled) return
-        settled = true
-        cleanup()
-        readStream.destroy()
-        writeStream.destroy()
-        reject(err)
-      }
-      const onAbort = () => fail(new Error('已取消传输'))
-      controller.signal.addEventListener('abort', onAbort, { once: true })
-
-      readStream.on('data', (chunk: Buffer | string) => {
-        transferredBytes += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length
-        sendUpdate('running')
-      })
-      readStream.on('error', fail)
-      writeStream.on('error', fail)
-      writeStream.on('close', () => {
-        if (settled) return
-        settled = true
-        cleanup()
-        resolve()
-      })
-      readStream.pipe(writeStream)
+    if (controller.signal.aborted) throw new Error('已取消传输')
+    localFh = await fsOpen(input.localPath, 'r')
+    remoteHandle = await sftpOpen(sftp, tempRemotePath, 'w', {
+      mode: localStats.mode & 0o777 || 0o644
     })
 
+    const limiter = new AsyncRateLimiter(input.speedLimitBps ?? 0)
+    const workerCount =
+      totalBytes > 0 ? Math.min(PIPELINE_CONCURRENCY, Math.ceil(totalBytes / PIPELINE_CHUNK_SIZE)) : 0
+    let nextOffset = 0
+    let firstError: unknown
+
+    const runners = Array.from({ length: workerCount }, async () => {
+      const buf = Buffer.allocUnsafe(PIPELINE_CHUNK_SIZE)
+      while (!firstError && !controller.signal.aborted) {
+        const offset = nextOffset
+        if (offset >= totalBytes) break
+        const len = Math.min(PIPELINE_CHUNK_SIZE, totalBytes - offset)
+        nextOffset += len
+        try {
+          const { bytesRead } = await localFh!.read(buf, 0, len, offset)
+          if (bytesRead <= 0) break
+          await limiter.consume(bytesRead, controller.signal)
+          if (controller.signal.aborted) throw new Error('已取消传输')
+          await sftpWriteChunk(sftp, remoteHandle!, buf, 0, bytesRead, offset)
+          transferredBytes += bytesRead
+          sendUpdate('running')
+        } catch (err) {
+          if (!firstError) firstError = err
+          break
+        }
+      }
+    })
+
+    await Promise.all(runners)
+    if (firstError) throw firstError
     if (controller.signal.aborted) throw new Error('已取消传输')
+
+    await sftpClose(sftp, remoteHandle)
+    remoteHandle = undefined
+    await localFh.close()
+    localFh = undefined
+
     await promoteRemoteTemp(sftp, tempRemotePath, targetRemotePath, input.conflict === 'overwrite')
     transferredBytes = totalBytes
     sendUpdate('completed', undefined, true)
@@ -592,6 +725,14 @@ async function uploadFile(
       updatedAt: Date.now()
     }
   } catch (error) {
+    if (remoteHandle) {
+      await sftpClose(sftp, remoteHandle).catch(() => {})
+      remoteHandle = undefined
+    }
+    if (localFh) {
+      await localFh.close().catch(() => {})
+      localFh = undefined
+    }
     await sftpUnlink(sftp, tempRemotePath).catch(() => {})
     const cancelled = controller.signal.aborted
     const message = cancelled ? '已取消传输' : error instanceof Error ? error.message : '上传失败'
@@ -611,6 +752,7 @@ async function downloadFile(
     remotePath: string
     localPath: string
     conflict: SftpConflictDecision
+    speedLimitBps?: number
   },
   emitProgress: (event: SftpProgressEvent) => void
 ): Promise<SftpTransferItem> {
@@ -681,48 +823,63 @@ async function downloadFile(
   }
 
   sendUpdate('running', undefined, true)
+  let remoteHandle: Buffer | undefined
+  let localFh: FileHandle | undefined
   try {
-    await new Promise<void>((resolve, reject) => {
-      if (controller.signal.aborted) {
-        reject(new Error('已取消传输'))
-        return
-      }
-      const readStream = sftp.createReadStream(resolvedRemote, { highWaterMark: STREAM_HIGH_WATER_MARK })
-      const writeStream = createWriteStream(tempLocalPath, {
-        flags: 'w',
-        highWaterMark: STREAM_HIGH_WATER_MARK
-      })
-      let settled = false
-      const cleanup = () => {
-        controller.signal.removeEventListener('abort', onAbort)
-      }
-      const fail = (err: Error) => {
-        if (settled) return
-        settled = true
-        cleanup()
-        readStream.destroy()
-        writeStream.destroy()
-        reject(err)
-      }
-      const onAbort = () => fail(new Error('已取消传输'))
-      controller.signal.addEventListener('abort', onAbort, { once: true })
+    if (controller.signal.aborted) throw new Error('已取消传输')
+    remoteHandle = await sftpOpen(sftp, resolvedRemote, 'r')
+    localFh = await fsOpen(tempLocalPath, 'w')
 
-      readStream.on('data', (chunk: Buffer | string) => {
-        transferredBytes += typeof chunk === 'string' ? Buffer.byteLength(chunk) : chunk.length
-        sendUpdate('running')
-      })
-      readStream.on('error', fail)
-      writeStream.on('error', fail)
-      writeStream.on('close', () => {
-        if (settled) return
-        settled = true
-        cleanup()
-        resolve()
-      })
-      readStream.pipe(writeStream)
+    const limiter = new AsyncRateLimiter(input.speedLimitBps ?? 0)
+    const workerCount =
+      totalBytes > 0 ? Math.min(PIPELINE_CONCURRENCY, Math.ceil(totalBytes / PIPELINE_CHUNK_SIZE)) : 0
+    let nextOffset = 0
+    let firstError: unknown
+
+    const runners = Array.from({ length: workerCount }, async () => {
+      const buf = Buffer.allocUnsafe(PIPELINE_CHUNK_SIZE)
+      while (!firstError && !controller.signal.aborted) {
+        const offset = nextOffset
+        if (offset >= totalBytes) break
+        const expected = Math.min(PIPELINE_CHUNK_SIZE, totalBytes - offset)
+        nextOffset += expected
+        try {
+          let filled = 0
+          while (filled < expected) {
+            if (controller.signal.aborted) throw new Error('已取消传输')
+            const n = await sftpReadChunk(
+              sftp,
+              remoteHandle!,
+              buf,
+              filled,
+              expected - filled,
+              offset + filled
+            )
+            if (n <= 0) break
+            await limiter.consume(n, controller.signal)
+            filled += n
+            transferredBytes += n
+            sendUpdate('running')
+          }
+          if (filled > 0) {
+            await localFh!.write(buf, 0, filled, offset)
+          }
+        } catch (err) {
+          if (!firstError) firstError = err
+          break
+        }
+      }
     })
 
+    await Promise.all(runners)
+    if (firstError) throw firstError
     if (controller.signal.aborted) throw new Error('已取消传输')
+
+    await localFh.close()
+    localFh = undefined
+    await sftpClose(sftp, remoteHandle)
+    remoteHandle = undefined
+
     try {
       await fsRename(tempLocalPath, targetLocalPath)
     } catch (renameError) {
@@ -750,6 +907,14 @@ async function downloadFile(
       updatedAt: Date.now()
     }
   } catch (error) {
+    if (localFh) {
+      await localFh.close().catch(() => {})
+      localFh = undefined
+    }
+    if (remoteHandle) {
+      await sftpClose(sftp, remoteHandle).catch(() => {})
+      remoteHandle = undefined
+    }
     await fsUnlink(tempLocalPath).catch(() => {})
     const cancelled = controller.signal.aborted
     const message = cancelled ? '已取消传输' : error instanceof Error ? error.message : '下载失败'
@@ -804,7 +969,8 @@ export async function handleSftpRequest(
           sessionId: req.sessionId,
           localPath: req.localPath,
           remotePath: req.remotePath,
-          conflict: req.conflict ?? 'overwrite'
+          conflict: req.conflict ?? 'overwrite',
+          speedLimitBps: typeof req.speedLimitBps === 'number' ? req.speedLimitBps : 0
         },
         emitProgress
       )
@@ -820,7 +986,8 @@ export async function handleSftpRequest(
           sessionId: req.sessionId,
           remotePath: req.remotePath,
           localPath: req.localPath,
-          conflict: req.conflict ?? 'overwrite'
+          conflict: req.conflict ?? 'overwrite',
+          speedLimitBps: typeof req.speedLimitBps === 'number' ? req.speedLimitBps : 0
         },
         emitProgress
       )

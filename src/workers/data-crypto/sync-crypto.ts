@@ -2,23 +2,29 @@ import { createCipheriv, createDecipheriv, createHash, hkdf as hkdfCallback, ran
 import { promisify } from 'node:util'
 import { runArgon2id } from './kdf-client'
 import {
+  MAX_SYNC_ALLOWED_DOCUMENT_BYTES,
   MAX_SYNC_DOCUMENT_BYTES,
+  MAX_SYNC_V2_DOCUMENT_BYTES,
   SYNC_A2_ITERATIONS,
   SYNC_A2_MEMORY_KIB,
   SYNC_A2_PARALLELISM,
   SYNC_A2_TAG_LENGTH,
   SYNC_AAD_DOMAIN_DOCUMENT,
+  SYNC_AAD_DOMAIN_DOCUMENT_V2,
   SYNC_AAD_DOMAIN_PASSWORD_WRAP,
   SYNC_AAD_DOMAIN_RECOVERY_WRAP,
   SYNC_AES_ALGORITHM,
   SYNC_GCM_NONCE_BYTES,
   SYNC_GCM_TAG_BYTES,
   SYNC_HKDF_RECOVERY_INFO,
+  SYNC_NAMESPACE_SCHEMA_VERSION,
   SYNC_RECOVERY_PREFIX,
   SYNC_SALT_BYTES,
   SYNC_SCHEMA_VERSION,
   type SyncDocumentEnvelope,
   type SyncDocumentV1,
+  type SyncNamespace,
+  type SyncNamespaceDocument,
   type VaultKdfParameters,
   type VaultMetadataWire
 } from '../../shared/sync'
@@ -379,6 +385,99 @@ export function decryptSyncDocument(
   return {
     schemaVersion: version,
     readOnlySchema: version > SYNC_SCHEMA_VERSION,
+    rawDocument: record
+  }
+}
+
+function resolveV2MaxBytes(maxDocumentBytes?: number): number {
+  if (typeof maxDocumentBytes !== 'number' || !Number.isFinite(maxDocumentBytes)) {
+    return MAX_SYNC_V2_DOCUMENT_BYTES
+  }
+  return Math.min(
+    Math.max(Math.trunc(maxDocumentBytes), MAX_SYNC_DOCUMENT_BYTES),
+    MAX_SYNC_ALLOWED_DOCUMENT_BYTES
+  )
+}
+
+export function encryptNamespaceDocument(
+  vaultKey: Buffer,
+  vaultId: string,
+  namespace: SyncNamespace,
+  keyVersion: number,
+  document: SyncNamespaceDocument,
+  maxDocumentBytes?: number
+): SyncDocumentEnvelope {
+  if (namespace === 'core') {
+    return encryptSyncDocument(vaultKey, vaultId, keyVersion, document as SyncDocumentV1)
+  }
+  const limitBytes = resolveV2MaxBytes(maxDocumentBytes)
+  const limitMiB = (limitBytes / 1024 / 1024).toFixed(2)
+  const serialized = JSON.stringify(document)
+  const byteSize = Buffer.byteLength(serialized, 'utf8')
+  if (byteSize > limitBytes) {
+    throw new Error(
+      `命名空间 ${namespace} 同步文档体积 ${(byteSize / 1024 / 1024).toFixed(2)} MiB 超过服务端上限 ${limitMiB} MiB，请精简数据后重试`
+    )
+  }
+  const aad = buildAad(
+    SYNC_AAD_DOMAIN_DOCUMENT_V2,
+    vaultId,
+    namespace,
+    String(document.schemaVersion),
+    String(keyVersion)
+  )
+  const box = aesGcmEncrypt(vaultKey, Buffer.from(serialized, 'utf8'), aad)
+  if (Buffer.byteLength(box.ciphertext, 'utf8') > limitBytes) {
+    throw new Error(`加密后的 ${namespace} 同步文档体积超过服务端 ${limitMiB} MiB 限制，请精简数据后重试`)
+  }
+  return {
+    schemaVersion: document.schemaVersion,
+    keyVersion,
+    algorithm: SYNC_AES_ALGORITHM,
+    nonce: box.nonce,
+    ciphertext: box.ciphertext,
+    ciphertextHash: box.ciphertextHash
+  }
+}
+
+export function decryptNamespaceDocument(
+  vaultKey: Buffer,
+  vaultId: string,
+  namespace: SyncNamespace,
+  envelope: SyncDocumentEnvelope
+): DecryptedRemoteDocument {
+  if (namespace === 'core') {
+    return decryptSyncDocument(vaultKey, vaultId, envelope)
+  }
+  if (envelope.algorithm && envelope.algorithm !== SYNC_AES_ALGORITHM) {
+    throw new Error(`不支持的文档加密算法：${envelope.algorithm}`)
+  }
+  const aad = buildAad(
+    SYNC_AAD_DOMAIN_DOCUMENT_V2,
+    vaultId,
+    namespace,
+    String(envelope.schemaVersion),
+    String(envelope.keyVersion)
+  )
+  const plaintext = aesGcmDecrypt(
+    vaultKey,
+    { nonce: envelope.nonce, ciphertext: envelope.ciphertext, ciphertextHash: envelope.ciphertextHash },
+    aad
+  )
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(plaintext.toString('utf8'))
+  } catch {
+    throw new Error(`远端 ${namespace} 同步文档 JSON 解析失败`)
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`远端 ${namespace} 同步文档结构无效`)
+  }
+  const record = parsed as Record<string, unknown>
+  const version = typeof record.schemaVersion === 'number' ? record.schemaVersion : envelope.schemaVersion
+  return {
+    schemaVersion: version,
+    readOnlySchema: version > SYNC_NAMESPACE_SCHEMA_VERSION,
     rawDocument: record
   }
 }

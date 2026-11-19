@@ -1,20 +1,23 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, useId, watch } from 'vue'
 import { X, Star } from '@lucide/vue'
 import type { EncryptionBackend, Host } from '../../../shared/contracts'
 import type {
   RdpCertPolicy,
   RdpColorDepth,
+  RdpDriveRedirectMode,
   RdpProfile,
   RdpProfileInput,
   RdpProfileLaunchOverride,
+  RdpProfileOptions,
   RdpQualityPreset,
   RdpResolutionMode,
   RdpSecurityLayer
 } from '../../../shared/rdp'
 import { RDP_DEFAULT_PORT } from '../../../shared/rdp'
-import { t } from '../services/i18n'
+import { locale, t } from '../services/i18n'
 import { protocolSettings } from '../stores/workbench'
+import OrbitSelect from './OrbitSelect.vue'
 
 const props = defineProps<{
   mode: 'add' | 'edit' | 'quick'
@@ -38,18 +41,15 @@ const emit = defineEmits<{
       username: string
       password: string
       launchMode?: 'external' | 'embedded'
-      resolutionMode: RdpResolutionMode
-      width: number
-      height: number
-      colorDepth: RdpColorDepth
-      qualityPreset: RdpQualityPreset
-      securityLayer: RdpSecurityLayer
-      certPolicy: RdpCertPolicy
-      enableClipboard: boolean
-      enableAudio: boolean
+      options: RdpProfileOptions
     }
   ]
 }>()
+
+const titleId = useId()
+const dialogRef = ref<HTMLDialogElement>()
+const nameInputRef = ref<HTMLInputElement>()
+const previousFocus = document.activeElement as HTMLElement | null
 
 const form = reactive({
   id: '' as string | undefined,
@@ -65,15 +65,19 @@ const form = reactive({
   favorite: false,
   notes: '',
   launchMode: 'inherit' as RdpProfileLaunchOverride,
-  resolutionMode: 'fit' as RdpResolutionMode,
+  resolutionMode: 'inherit' as 'inherit' | RdpResolutionMode,
   width: 1280,
   height: 800,
-  colorDepth: 32 as RdpColorDepth,
-  qualityPreset: 'balanced' as RdpQualityPreset,
-  securityLayer: 'negotiate' as RdpSecurityLayer,
-  certPolicy: 'tofu' as RdpCertPolicy,
+  colorDepth: 'inherit' as 'inherit' | '16' | '24' | '32',
+  qualityPreset: 'inherit' as 'inherit' | RdpQualityPreset,
+  securityLayer: 'inherit' as 'inherit' | RdpSecurityLayer,
+  certPolicy: 'inherit' as 'inherit' | RdpCertPolicy,
+  driveRedirect: 'inherit' as 'inherit' | RdpDriveRedirectMode,
+  sharedDrivePath: '',
   enableClipboard: true,
-  enableAudio: false
+  enableAudio: false,
+  clipboardOverridden: false,
+  audioOverridden: false
 })
 
 const validationError = ref('')
@@ -97,15 +101,21 @@ watch(
       form.favorite = profile.favorite
       form.notes = profile.notes
       form.launchMode = profile.options.launchMode ?? 'inherit'
-      form.resolutionMode = profile.options.resolutionMode ?? defaults.resolutionMode
+      form.resolutionMode = profile.options.resolutionMode ?? 'inherit'
       form.width = profile.options.width ?? defaults.defaultWidth
       form.height = profile.options.height ?? defaults.defaultHeight
-      form.colorDepth = profile.options.colorDepth ?? defaults.colorDepth
-      form.qualityPreset = profile.options.qualityPreset ?? defaults.qualityPreset
-      form.securityLayer = profile.options.securityLayer ?? defaults.securityLayer
-      form.certPolicy = profile.options.certPolicy ?? defaults.certPolicy
+      form.colorDepth = profile.options.colorDepth
+        ? (String(profile.options.colorDepth) as '16' | '24' | '32')
+        : 'inherit'
+      form.qualityPreset = profile.options.qualityPreset ?? 'inherit'
+      form.securityLayer = profile.options.securityLayer ?? 'inherit'
+      form.certPolicy = profile.options.certPolicy ?? 'inherit'
+      form.driveRedirect = profile.options.driveRedirect ?? 'inherit'
+      form.sharedDrivePath = profile.options.sharedDrivePath ?? defaults.sharedDrivePath
       form.enableClipboard = profile.options.enableClipboard ?? defaults.enableClipboard
       form.enableAudio = profile.options.enableAudio ?? defaults.enableAudio
+      form.clipboardOverridden = profile.options.enableClipboard !== undefined
+      form.audioOverridden = profile.options.enableAudio !== undefined
       return
     }
     form.id = undefined
@@ -121,18 +131,33 @@ watch(
     form.favorite = false
     form.notes = ''
     form.launchMode = 'inherit'
-    form.resolutionMode = defaults.resolutionMode
+    form.resolutionMode = 'inherit'
     form.width = defaults.defaultWidth
     form.height = defaults.defaultHeight
-    form.colorDepth = defaults.colorDepth
-    form.qualityPreset = defaults.qualityPreset
-    form.securityLayer = defaults.securityLayer
-    form.certPolicy = defaults.certPolicy
+    form.colorDepth = 'inherit'
+    form.qualityPreset = 'inherit'
+    form.securityLayer = 'inherit'
+    form.certPolicy = 'inherit'
+    form.driveRedirect = 'inherit'
+    form.sharedDrivePath = defaults.sharedDrivePath
     form.enableClipboard = defaults.enableClipboard
     form.enableAudio = defaults.enableAudio
+    form.clipboardOverridden = false
+    form.audioOverridden = false
   },
   { immediate: true }
 )
+
+onMounted(async () => {
+  dialogRef.value?.showModal()
+  await nextTick()
+  nameInputRef.value?.focus()
+})
+
+onBeforeUnmount(() => {
+  form.password = ''
+  if (previousFocus?.isConnected) previousFocus.focus()
+})
 
 const globalModeLabel = computed(() =>
   protocolSettings.value.rdp.preferredMode === 'embedded'
@@ -148,6 +173,118 @@ const dialogTitle = computed(() =>
       : t('rdpEditor.titleAdd')
 )
 
+const launchModeOptions = computed(() => {
+  void locale.value
+  return [
+    { value: 'inherit', label: t('rdpEditor.launchInherit', { mode: globalModeLabel.value }) },
+    { value: 'external', label: t('rdpEditor.launchExternal') },
+    { value: 'embedded', label: t('rdpEditor.launchEmbedded') }
+  ]
+})
+
+const securityOptions = computed(() => {
+  void locale.value
+  return [
+    { value: 'inherit', label: t('rdpEditor.inheritGlobal') },
+    { value: 'negotiate', label: t('settings.rdpSecNegotiate') },
+    { value: 'nla', label: t('settings.rdpSecNla') },
+    { value: 'tls', label: t('settings.rdpSecTls') }
+  ]
+})
+
+const certPolicyOptions = computed(() => {
+  void locale.value
+  return [
+    { value: 'inherit', label: t('rdpEditor.inheritGlobal') },
+    { value: 'tofu', label: t('settings.rdpCertTofu') },
+    { value: 'strict', label: t('settings.rdpCertStrict') },
+    { value: 'warn-allow', label: t('settings.rdpCertWarnAllow') }
+  ]
+})
+
+const resolutionOptions = computed(() => {
+  void locale.value
+  return [
+    { value: 'inherit', label: t('rdpEditor.inheritGlobal') },
+    { value: 'fit', label: t('settings.rdpResolutionFit') },
+    { value: 'fixed', label: t('settings.rdpResolutionFixed') }
+  ]
+})
+
+const colorDepthOptions = computed(() => {
+  void locale.value
+  return [
+    { value: 'inherit', label: t('rdpEditor.inheritGlobal') },
+    { value: '32', label: '32-bit TrueColor' },
+    { value: '24', label: '24-bit' },
+    { value: '16', label: '16-bit HighColor' }
+  ]
+})
+
+const qualityOptions = computed(() => {
+  void locale.value
+  return [
+    { value: 'inherit', label: t('rdpEditor.inheritGlobal') },
+    { value: 'lan', label: t('settings.rdpQualityLan') },
+    { value: 'balanced', label: t('settings.rdpQualityBalanced') },
+    { value: 'low', label: t('settings.rdpQualityLow') }
+  ]
+})
+
+const driveRedirectOptions = computed(() => {
+  void locale.value
+  return [
+    { value: 'inherit', label: t('rdpEditor.inheritGlobal') },
+    { value: 'none', label: t('settings.rdpDriveNone') },
+    { value: 'readonly', label: t('settings.rdpDriveReadonly') },
+    { value: 'readwrite', label: t('settings.rdpDriveReadwrite') }
+  ]
+})
+
+const effectiveFixedResolution = computed(
+  () =>
+    form.resolutionMode === 'fixed' ||
+    (form.resolutionMode === 'inherit' && protocolSettings.value.rdp.resolutionMode === 'fixed')
+)
+
+const effectiveDriveRedirect = computed(() =>
+  form.driveRedirect === 'inherit' ? protocolSettings.value.rdp.driveRedirect : form.driveRedirect
+)
+
+function buildOptionsPayload(): RdpProfileOptions {
+  const defaults = protocolSettings.value.rdp
+  const opts: RdpProfileOptions = {}
+  if (form.launchMode !== 'inherit') opts.launchMode = form.launchMode
+  if (form.resolutionMode !== 'inherit') opts.resolutionMode = form.resolutionMode
+  if (
+    form.resolutionMode === 'fixed' ||
+    Number(form.width) !== defaults.defaultWidth ||
+    Number(form.height) !== defaults.defaultHeight
+  ) {
+    if (effectiveFixedResolution.value) {
+      opts.width = Math.min(7680, Math.max(640, Number(form.width) || defaults.defaultWidth))
+      opts.height = Math.min(4320, Math.max(480, Number(form.height) || defaults.defaultHeight))
+    }
+  }
+  if (form.colorDepth !== 'inherit') opts.colorDepth = Number(form.colorDepth) as RdpColorDepth
+  if (form.qualityPreset !== 'inherit') opts.qualityPreset = form.qualityPreset
+  if (form.securityLayer !== 'inherit') opts.securityLayer = form.securityLayer
+  if (form.certPolicy !== 'inherit') opts.certPolicy = form.certPolicy
+  if (form.driveRedirect !== 'inherit') opts.driveRedirect = form.driveRedirect
+  if (effectiveDriveRedirect.value !== 'none' && form.sharedDrivePath.trim()) {
+    if (form.driveRedirect !== 'inherit' || form.sharedDrivePath.trim() !== defaults.sharedDrivePath) {
+      opts.sharedDrivePath = form.sharedDrivePath.trim()
+    }
+  }
+  if (form.clipboardOverridden || form.enableClipboard !== defaults.enableClipboard) {
+    opts.enableClipboard = form.enableClipboard
+  }
+  if (form.audioOverridden || form.enableAudio !== defaults.enableAudio) {
+    opts.enableAudio = form.enableAudio
+  }
+  return opts
+}
+
 function submitQuick(): void {
   validationError.value = ''
   if (!form.host.trim()) {
@@ -162,15 +299,7 @@ function submitQuick(): void {
     username: form.username.trim(),
     password: form.password,
     launchMode: form.launchMode === 'inherit' ? undefined : form.launchMode,
-    resolutionMode: form.resolutionMode,
-    width: Math.min(7680, Math.max(640, Number(form.width) || 1280)),
-    height: Math.min(4320, Math.max(480, Number(form.height) || 800)),
-    colorDepth: form.colorDepth,
-    qualityPreset: form.qualityPreset,
-    securityLayer: form.securityLayer,
-    certPolicy: form.certPolicy,
-    enableClipboard: form.enableClipboard,
-    enableAudio: form.enableAudio
+    options: buildOptionsPayload()
   })
 }
 
@@ -195,18 +324,7 @@ function submitSave(connectAfter: boolean): void {
       ...(form.linkedHostId ? { linkedHostId: form.linkedHostId } : {}),
       notes: form.notes,
       favorite: form.favorite,
-      options: {
-        launchMode: form.launchMode,
-        resolutionMode: form.resolutionMode,
-        width: Math.min(7680, Math.max(640, Number(form.width) || 1280)),
-        height: Math.min(4320, Math.max(480, Number(form.height) || 800)),
-        colorDepth: form.colorDepth,
-        qualityPreset: form.qualityPreset,
-        securityLayer: form.securityLayer,
-        certPolicy: form.certPolicy,
-        enableClipboard: form.enableClipboard,
-        enableAudio: form.enableAudio
-      }
+      options: buildOptionsPayload()
     },
     connectAfter
   )
@@ -214,15 +332,21 @@ function submitSave(connectAfter: boolean): void {
 </script>
 
 <template>
-  <div class="container_rdp-editor_overlay_backdrop_base" @click.self="emit('close')">
-    <div
-      class="container_rdp-editor_modal_panel_base"
-      role="dialog"
-      aria-modal="true"
-      data-testid="rdp-profile-editor"
+  <dialog
+    ref="dialogRef"
+    class="container_rdp-editor_modal_panel_base"
+    :aria-labelledby="titleId"
+    data-testid="rdp-profile-editor"
+    @cancel.prevent="emit('close')"
+    @click.self="emit('close')"
+  >
+    <form
+      class="container_rdp-editor_form_root_base"
+      novalidate
+      @submit.prevent="mode === 'quick' ? submitQuick() : submitSave(true)"
     >
       <div class="container_rdp-editor_header_row_base">
-        <h3 class="container_rdp-editor_header_title_text">{{ dialogTitle }}</h3>
+        <h3 :id="titleId" class="container_rdp-editor_header_title_text">{{ dialogTitle }}</h3>
         <button
           class="container_rdp-editor_header_close_btn"
           type="button"
@@ -238,6 +362,7 @@ function submitSave(connectAfter: boolean): void {
           <label class="container_rdp-editor_field_name_label">
             {{ t('rdpEditor.name') }}
             <input
+              ref="nameInputRef"
               v-model="form.name"
               class="container_rdp-editor_field_name_input"
               data-testid="rdp-editor-name"
@@ -292,73 +417,57 @@ function submitSave(connectAfter: boolean): void {
               data-testid="rdp-editor-password"
               type="password"
               autocomplete="new-password"
+              @input="form.password && (form.clearPassword = false)"
             />
           </label>
         </div>
 
         <div class="container_rdp-editor_overrides_grid_row">
-          <label class="container_rdp-editor_override_launch_label">
-            {{ t('rdpEditor.launchMode') }}
-            <select
-              v-model="form.launchMode"
-              class="container_rdp-editor_override_launch_select"
-              data-testid="rdp-editor-launch-mode"
-            >
-              <option class="container_rdp-editor_override_launch_optinh" value="inherit">
-                {{ t('rdpEditor.launchInherit', { mode: globalModeLabel }) }}
-              </option>
-              <option class="container_rdp-editor_override_launch_optext" value="external">
-                {{ t('rdpEditor.launchExternal') }}
-              </option>
-              <option class="container_rdp-editor_override_launch_optemb" value="embedded">
-                {{ t('rdpEditor.launchEmbedded') }}
-              </option>
-            </select>
-          </label>
-          <label class="container_rdp-editor_override_sec_label">
-            {{ t('rdpEditor.securityLayer') }}
-            <select v-model="form.securityLayer" class="container_rdp-editor_override_sec_select">
-              <option class="container_rdp-editor_override_sec_optneg" value="negotiate">
-                {{ t('settings.rdpSecNegotiate') }}
-              </option>
-              <option class="container_rdp-editor_override_sec_optnla" value="nla">
-                {{ t('settings.rdpSecNla') }}
-              </option>
-              <option class="container_rdp-editor_override_sec_opttls" value="tls">
-                {{ t('settings.rdpSecTls') }}
-              </option>
-            </select>
-          </label>
-          <label class="container_rdp-editor_override_cert_label">
-            {{ t('rdpEditor.certPolicy') }}
-            <select
-              v-model="form.certPolicy"
-              class="container_rdp-editor_override_cert_select"
-              data-testid="rdp-editor-cert-policy"
-            >
-              <option class="container_rdp-editor_override_cert_opttofu" value="tofu">
-                {{ t('settings.rdpCertTofu') }}
-              </option>
-              <option class="container_rdp-editor_override_cert_optstrict" value="strict">
-                {{ t('settings.rdpCertStrict') }}
-              </option>
-              <option class="container_rdp-editor_override_cert_optwarn" value="warn-allow">
-                {{ t('settings.rdpCertWarnAllow') }}
-              </option>
-            </select>
-          </label>
-          <label class="container_rdp-editor_override_res_label">
-            {{ t('rdpEditor.resolutionMode') }}
-            <select v-model="form.resolutionMode" class="container_rdp-editor_override_res_select">
-              <option class="container_rdp-editor_override_res_optfit" value="fit">
-                {{ t('settings.rdpResolutionFit') }}
-              </option>
-              <option class="container_rdp-editor_override_res_optfix" value="fixed">
-                {{ t('settings.rdpResolutionFixed') }}
-              </option>
-            </select>
-          </label>
-          <label class="container_rdp-editor_override_w_label">
+          <div class="container_rdp-editor_override_launch_label" data-testid="rdp-editor-launch-mode">
+            <span class="container_rdp-editor_override_launch_text">{{ t('rdpEditor.launchMode') }}</span>
+            <OrbitSelect
+              :model-value="form.launchMode"
+              :options="launchModeOptions"
+              :aria-label="t('rdpEditor.launchMode')"
+              width="100%"
+              instance="rdp-editor-launch"
+              @update:model-value="form.launchMode = $event as RdpProfileLaunchOverride"
+            />
+          </div>
+          <div class="container_rdp-editor_override_sec_label">
+            <span class="container_rdp-editor_override_sec_text">{{ t('rdpEditor.securityLayer') }}</span>
+            <OrbitSelect
+              :model-value="form.securityLayer"
+              :options="securityOptions"
+              :aria-label="t('rdpEditor.securityLayer')"
+              width="100%"
+              instance="rdp-editor-sec"
+              @update:model-value="form.securityLayer = $event as 'inherit' | RdpSecurityLayer"
+            />
+          </div>
+          <div class="container_rdp-editor_override_cert_label" data-testid="rdp-editor-cert-policy">
+            <span class="container_rdp-editor_override_cert_text">{{ t('rdpEditor.certPolicy') }}</span>
+            <OrbitSelect
+              :model-value="form.certPolicy"
+              :options="certPolicyOptions"
+              :aria-label="t('rdpEditor.certPolicy')"
+              width="100%"
+              instance="rdp-editor-cert"
+              @update:model-value="form.certPolicy = $event as 'inherit' | RdpCertPolicy"
+            />
+          </div>
+          <div class="container_rdp-editor_override_res_label">
+            <span class="container_rdp-editor_override_res_text">{{ t('rdpEditor.resolutionMode') }}</span>
+            <OrbitSelect
+              :model-value="form.resolutionMode"
+              :options="resolutionOptions"
+              :aria-label="t('rdpEditor.resolutionMode')"
+              width="100%"
+              instance="rdp-editor-res"
+              @update:model-value="form.resolutionMode = $event as 'inherit' | RdpResolutionMode"
+            />
+          </div>
+          <label class="container_rdp-editor_override_w_label" :title="t('rdpEditor.fixedSizeHint')">
             {{ t('rdpEditor.width') }}
             <input
               v-model.number="form.width"
@@ -366,9 +475,10 @@ function submitSave(connectAfter: boolean): void {
               type="number"
               min="640"
               max="7680"
+              :disabled="!effectiveFixedResolution"
             />
           </label>
-          <label class="container_rdp-editor_override_h_label">
+          <label class="container_rdp-editor_override_h_label" :title="t('rdpEditor.fixedSizeHint')">
             {{ t('rdpEditor.height') }}
             <input
               v-model.number="form.height"
@@ -376,9 +486,53 @@ function submitSave(connectAfter: boolean): void {
               type="number"
               min="480"
               max="4320"
+              :disabled="!effectiveFixedResolution"
             />
           </label>
+          <div class="container_rdp-editor_override_bpp_label">
+            <span class="container_rdp-editor_override_bpp_text">{{ t('rdpEditor.colorDepth') }}</span>
+            <OrbitSelect
+              :model-value="form.colorDepth"
+              :options="colorDepthOptions"
+              :aria-label="t('rdpEditor.colorDepth')"
+              width="100%"
+              instance="rdp-editor-bpp"
+              @update:model-value="form.colorDepth = $event as 'inherit' | '16' | '24' | '32'"
+            />
+          </div>
+          <div class="container_rdp-editor_override_qual_label">
+            <span class="container_rdp-editor_override_qual_text">{{ t('rdpEditor.qualityPreset') }}</span>
+            <OrbitSelect
+              :model-value="form.qualityPreset"
+              :options="qualityOptions"
+              :aria-label="t('rdpEditor.qualityPreset')"
+              width="100%"
+              instance="rdp-editor-qual"
+              @update:model-value="form.qualityPreset = $event as 'inherit' | RdpQualityPreset"
+            />
+          </div>
+          <div class="container_rdp-editor_override_drv_label">
+            <span class="container_rdp-editor_override_drv_text">{{ t('rdpEditor.driveRedirect') }}</span>
+            <OrbitSelect
+              :model-value="form.driveRedirect"
+              :options="driveRedirectOptions"
+              :aria-label="t('rdpEditor.driveRedirect')"
+              width="100%"
+              instance="rdp-editor-drv"
+              @update:model-value="form.driveRedirect = $event as 'inherit' | RdpDriveRedirectMode"
+            />
+          </div>
         </div>
+
+        <label v-if="effectiveDriveRedirect !== 'none'" class="container_rdp-editor_override_share_label">
+          {{ t('rdpEditor.sharedDrivePath') }}
+          <input
+            v-model="form.sharedDrivePath"
+            class="container_rdp-editor_override_share_input"
+            type="text"
+            :placeholder="t('settings.rdpSharedDrivePlaceholder')"
+          />
+        </label>
 
         <div class="container_rdp-editor_checks_row_base">
           <label class="container_rdp-editor_check_clip_label">
@@ -386,6 +540,7 @@ function submitSave(connectAfter: boolean): void {
               v-model="form.enableClipboard"
               class="container_rdp-editor_check_clip_input"
               type="checkbox"
+              @change="form.clipboardOverridden = true"
             />
             {{ t('rdpEditor.clipboard') }}
           </label>
@@ -394,17 +549,18 @@ function submitSave(connectAfter: boolean): void {
               v-model="form.enableAudio"
               class="container_rdp-editor_check_audio_input"
               type="checkbox"
+              @change="form.audioOverridden = true"
             />
             {{ t('rdpEditor.audio') }}
           </label>
-          <label v-if="mode !== 'quick'" class="container_rdp-editor_check_fav_label">
+          <label class="container_rdp-editor_check_fav_label">
             <input v-model="form.favorite" class="container_rdp-editor_check_fav_input" type="checkbox" />
             <Star :size="13" />
             {{ t('rdpEditor.favorite') }}
           </label>
         </div>
 
-        <div v-if="mode !== 'quick'" class="container_rdp-editor_secret_box_base">
+        <div class="container_rdp-editor_secret_box_base">
           <label v-if="encryptionAvailable" class="container_rdp-editor_secret_save_label">
             <input
               v-model="form.savePassword"
@@ -423,7 +579,7 @@ function submitSave(connectAfter: boolean): void {
               v-model="form.clearPassword"
               class="container_rdp-editor_secret_clear_input"
               type="checkbox"
-              @change="form.clearPassword && (form.password = '')"
+              @change="form.clearPassword && ((form.password = ''), (form.savePassword = false))"
             />
             {{ t('rdpEditor.clearPassword') }}
           </label>
@@ -440,6 +596,9 @@ function submitSave(connectAfter: boolean): void {
       </div>
 
       <div class="container_rdp-editor_footer_actions_row">
+        <button class="container_rdp-editor_action_cancel_btn" type="button" @click="emit('close')">
+          {{ t('actionDialog.cancel') }}
+        </button>
         <button
           v-if="mode === 'quick'"
           class="container_rdp-editor_action_quick_btn"
@@ -470,29 +629,31 @@ function submitSave(connectAfter: boolean): void {
           {{ t('rdpEditor.saveAndConnect') }}
         </button>
       </div>
-    </div>
-  </div>
+    </form>
+  </dialog>
 </template>
 
 <style scoped lang="scss">
-.container_rdp-editor_overlay_backdrop_base {
-  position: fixed;
-  inset: 0;
-  z-index: 90;
-  display: grid;
-  place-items: center;
-  background: rgba(6, 9, 14, 0.72);
-  backdrop-filter: blur(6px);
-}
 .container_rdp-editor_modal_panel_base {
-  width: min(680px, 94vw);
+  margin: auto;
+  padding: 0;
+  width: min(700px, 94vw);
   max-height: 88vh;
-  display: flex;
-  flex-direction: column;
   border-radius: 14px;
   border: 1px solid var(--color-border-strong);
   background: var(--color-surface-card);
+  color: var(--color-text-primary);
   box-shadow: var(--shadow-3d-lg);
+  overflow: hidden;
+  &::backdrop {
+    background: rgba(6, 9, 14, 0.72);
+    backdrop-filter: blur(6px);
+  }
+}
+.container_rdp-editor_form_root_base {
+  display: flex;
+  flex-direction: column;
+  max-height: 88vh;
 }
 .container_rdp-editor_header_row_base {
   display: flex;
@@ -542,6 +703,10 @@ function submitSave(connectAfter: boolean): void {
 .container_rdp-editor_override_res_label,
 .container_rdp-editor_override_w_label,
 .container_rdp-editor_override_h_label,
+.container_rdp-editor_override_bpp_label,
+.container_rdp-editor_override_qual_label,
+.container_rdp-editor_override_drv_label,
+.container_rdp-editor_override_share_label,
 .container_rdp-editor_notes_field_label {
   display: flex;
   flex-direction: column;
@@ -582,6 +747,7 @@ function submitSave(connectAfter: boolean): void {
   padding: 14px 20px;
   border-top: 1px solid var(--color-border);
 }
+.container_rdp-editor_action_cancel_btn,
 .container_rdp-editor_action_quick_btn,
 .container_rdp-editor_action_save_btn,
 .container_rdp-editor_action_connect_btn {
@@ -589,6 +755,7 @@ function submitSave(connectAfter: boolean): void {
   border-radius: 8px;
   font-size: var(--font-size-ui-sm);
 }
+.container_rdp-editor_action_cancel_btn,
 .container_rdp-editor_action_quick_btn,
 .container_rdp-editor_action_save_btn {
   border: 1px solid var(--color-border-control);

@@ -4,7 +4,8 @@ import {
   createTerminalLinkIntegration,
   extractTerminalLinks,
   mapRangeFromStringOffsets,
-  normalizeTerminalLinkUrl
+  normalizeTerminalLinkUrl,
+  textMayContainTerminalLink
 } from '../../src/renderer/src/services/terminal-links'
 
 interface MockCell {
@@ -63,6 +64,14 @@ function asciiCells(text: string, cols: number): MockCell[] {
 }
 
 describe('terminal-links', () => {
+  it('skips the link scan for ordinary terminal lines', () => {
+    expect(textMayContainTerminalLink('user@host:~$ ls -la')).toBe(false)
+    expect(textMayContainTerminalLink('total 12')).toBe(false)
+    expect(textMayContainTerminalLink('see https://example.com')).toBe(true)
+    expect(textMayContainTerminalLink('open localhost:3000')).toBe(true)
+    expect(textMayContainTerminalLink('ping 10.0.0.8 ok')).toBe(true)
+  })
+
   it('recognizes http/https, www, localhost:port and IPv4:port links cleanly', () => {
     const sample =
       'Open https://github.com/1823616178/termius-app, www.example.com/docs?q=1, localhost:5173/ui and 127.0.0.1:8080/health'

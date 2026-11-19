@@ -18,6 +18,10 @@ const emit = defineEmits<{
 const c = (base: string, id: string) => instanceClass(base, windowInstance(groupToken(`sync:${id}`)))
 const conflictChoices = ref<Record<string, 'local' | 'remote'>>({})
 
+function entityTypeLabel(entityType: SyncConflict['entityType']): string {
+  return t(`sync.entity.${entityType}`)
+}
+
 const allConflictsChosen = computed(
   () => props.conflicts.length > 0 && props.conflicts.every((item) => Boolean(conflictChoices.value[item.id]))
 )
@@ -76,9 +80,14 @@ function submitResolutions() {
         :class="c('container_sync_conflict_body_item', item.id)"
       >
         <div :class="c('container_sync_conflict_body_item-head', item.id)">
-          <strong :class="c('container_sync_conflict_body_item-name', item.id)">
-            {{ item.entityName }}
-          </strong>
+          <div :class="c('container_sync_conflict_body_item-title', item.id)">
+            <span :class="c('container_sync_conflict_body_item-kind', item.id)">
+              {{ entityTypeLabel(item.entityType) }}
+            </span>
+            <strong :class="c('container_sync_conflict_body_item-name', item.id)">
+              {{ item.entityName }}
+            </strong>
+          </div>
           <span :class="c('container_sync_conflict_body_item-field', item.id)">{{ item.fieldLabel }}</span>
         </div>
         <div :class="c('container_sync_conflict_body_choices', item.id)">
@@ -143,8 +152,25 @@ function submitResolutions() {
 .container_sync_conflict_body_item-head {
   display: flex;
   justify-content: space-between;
+  align-items: center;
+  gap: 8px;
   margin-bottom: 8px;
   font-size: 13px;
+}
+.container_sync_conflict_body_item-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.container_sync_conflict_body_item-kind {
+  font-size: 11px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-control);
+  background: var(--color-surface-elevated);
+  color: var(--color-accent-primary);
+  white-space: nowrap;
 }
 .container_sync_conflict_body_item-field {
   color: var(--color-text-muted);

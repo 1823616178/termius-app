@@ -109,8 +109,14 @@ process.parentPort?.on('message', ({ data, ports }) => {
         rows = r
         stream?.setWindow(r, c, 0, 0)
       },
-      pause: () => stream?.pause(),
-      resume: () => stream?.resume(),
+      pause: () => {
+        stream?.pause()
+        stream?.stderr.pause()
+      },
+      resume: () => {
+        stream?.resume()
+        stream?.stderr.resume()
+      },
       close: () => {
         clearTimeout(deadline)
         ended = true
@@ -175,7 +181,7 @@ process.parentPort?.on('message', ({ data, ports }) => {
         env: {
           COLORTERM: 'truecolor',
           TERM_PROGRAM: 'GraphiteOrbit',
-          TERM_PROGRAM_VERSION: '1.2.0',
+          TERM_PROGRAM_VERSION: '1.3.0',
           CLICOLOR: '1',
           LS_COLORS:
             'rs=0:di=01;36:ln=01;35:so=01;32:pi=40;33:ex=01;32:*.tar=01;31:*.gz=01;31:*.zip=01;31:*.jpg=01;35:*.png=01;35:*.json=01;33:*.yml=01;33:*.md=01;34'

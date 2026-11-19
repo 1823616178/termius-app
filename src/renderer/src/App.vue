@@ -85,10 +85,12 @@ import {
 } from './stores/workbench'
 
 const hostSidebar = ref<InstanceType<typeof HostSidebar>>()
+const filesPageVisited = ref(false)
 const remotePageVisited = ref(false)
 watch(
   page,
   (nextPage) => {
+    if (nextPage === 'files') filesPageVisited.value = true
     if (nextPage === 'remote') remotePageVisited.value = true
   },
   { immediate: true }
@@ -100,7 +102,11 @@ let lastPanelCopiedText = ''
 function isInsideTerminalOrInput(node: Node | null): boolean {
   const el = node instanceof Element ? node : node?.parentElement
   if (!el) return false
-  return Boolean(el.closest('.xterm, input, textarea, select, [contenteditable]'))
+  return Boolean(
+    el.closest(
+      '.xterm, input, textarea, select, [contenteditable], iron-remote-desktop, [data-rdp-capture="true"]'
+    )
+  )
 }
 
 function tryCopyPanelSelection(target: EventTarget | null): void {
@@ -374,7 +380,7 @@ onBeforeUnmount(() => {
           <WorkspacePage />
           <HostsPage v-if="page === 'hosts'" />
           <LocalPage v-if="page === 'local'" />
-          <FilesPage v-if="page === 'files'" />
+          <FilesPage v-if="filesPageVisited" v-show="page === 'files'" />
           <RemoteDesktopPage v-if="remotePageVisited" v-show="page === 'remote'" />
           <TunnelsPage v-if="page === 'tunnels'" />
           <IdentitiesPage v-if="page === 'identities'" />

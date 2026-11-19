@@ -12,7 +12,9 @@ import {
 } from './fonts'
 import { locale, t } from './i18n'
 import { createTerminalLinkIntegration } from './terminal-links'
-import { attachTerminalWebgl, loadTerminalWebgl } from './terminal-webgl'
+import { isAppForeground, onAppForegroundChange } from './app-foreground'
+import { createTerminalOutput } from './terminal-present'
+import { attachTerminalWebgl } from './terminal-webgl'
 import { type CursorShape, type TerminalThemeId } from './terminal-themes'
 
 interface XtermModules {
@@ -73,6 +75,8 @@ export interface TerminalHandle {
   isConnected: () => boolean
   getLastState: () => Extract<TerminalEvent, { type: 'state' }>
   detachHost: (hostElement: HTMLElement) => void
+  setPresented: (visible: boolean) => void
+  setGpuHeld: (held: boolean) => void
   dispose: () => void
   connect: (
     input: { kind: 'local'; profileId: string } | { kind: 'ssh'; hostId: string; password?: string }
@@ -143,24 +147,33 @@ export function writeTerminalInputByToken(token: string, data: string): boolean 
   return true
 }
 
+export interface TerminalPresentation {
+  presented?: boolean
+  holdGpu?: boolean
+}
+
 export async function createTerminal(
   token: string,
   element: HTMLElement,
   onState: (event: Extract<TerminalEvent, { type: 'state' }>) => void,
   initialScreenReaderMode = false,
-  initialAppearance: TerminalAppearanceOptions = DEFAULT_APPEARANCE
+  initialAppearance: TerminalAppearanceOptions = DEFAULT_APPEARANCE,
+  presentation: TerminalPresentation = {}
 ): Promise<TerminalHandle> {
   const existingBeforeLoad = registry.get(token)
   if (existingBeforeLoad) {
-    return existingBeforeLoad.reattach(element, onState, initialScreenReaderMode, initialAppearance)
+    const rebound = existingBeforeLoad.reattach(element, onState, initialScreenReaderMode, initialAppearance)
+    rebound.setPresented(presentation.presented !== false)
+    rebound.setGpuHeld(presentation.holdGpu === true)
+    return rebound
   }
-  const [{ Terminal, FitAddon, SearchAddon }, Webgl] = await Promise.all([
-    loadXtermModules(),
-    terminalGpuEnabled.value ? loadTerminalWebgl() : undefined
-  ])
+  const { Terminal, FitAddon, SearchAddon } = await loadXtermModules()
   const existingAfterLoad = registry.get(token)
   if (existingAfterLoad) {
-    return existingAfterLoad.reattach(element, onState, initialScreenReaderMode, initialAppearance)
+    const rebound = existingAfterLoad.reattach(element, onState, initialScreenReaderMode, initialAppearance)
+    rebound.setPresented(presentation.presented !== false)
+    rebound.setGpuHeld(presentation.holdGpu === true)
+    return rebound
   }
   const resolvedTheme = resolveEffectiveTerminalTheme(
     initialAppearance.themeId,
@@ -229,8 +242,17 @@ export async function createTerminal(
   let resizeTimer: ReturnType<typeof setTimeout> | undefined
   let lastSize = ''
   let dprMedia: MediaQueryList | undefined
-
+  let presented = presentation.presented !== false
+  let gpuHeld = presentation.holdGpu === true
+  let webglSync: (() => void) | undefined
+  let resumeToken = 0
   const send = (message: unknown) => port?.postMessage(message)
+  const canPresent = () => isAppForeground() && presented
+  const output = createTerminalOutput(
+    (bytes, parsed) => terminal.write(bytes, parsed),
+    (sequence) => send({ type: 'ack', sequence }),
+    canPresent()
+  )
 
   const emitState = (event: Extract<TerminalEvent, { type: 'state' }>) => {
     lastState = event
@@ -238,7 +260,7 @@ export async function createTerminal(
   }
 
   const resize = () => {
-    if (disposed || !currentElement.clientWidth || !currentElement.clientHeight) return
+    if (disposed || !canPresent() || !currentElement.clientWidth || !currentElement.clientHeight) return
     const activeBuffer = terminal.buffer.active
     const wasAtBottom = activeBuffer.viewportY >= activeBuffer.baseY
     fit.fit()
@@ -256,24 +278,34 @@ export async function createTerminal(
   }
 
   const refresh = () => {
-    if (disposed || !currentElement.clientWidth || !currentElement.clientHeight) return
+    if (disposed || !canPresent() || !currentElement.clientWidth || !currentElement.clientHeight) return
     scheduleFit()
     if (terminal.rows > 0) terminal.refresh(0, terminal.rows - 1)
   }
 
+  const resumeView = () => {
+    const token = ++resumeToken
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        if (token !== resumeToken || disposed || !canPresent()) return
+        scheduleFit()
+      })
+    })
+  }
+
+  const gpuWanted = () => presented && !gpuHeld
+
   const stopGpuPreference = watch(
     terminalGpuEnabled,
-    async (enabled, _, onCleanup) => {
+    (enabled, _, onCleanup) => {
       if (!enabled) return
-      let cancelled = false
-      let release: (() => void) | undefined
+      const binding = attachTerminalWebgl(terminal, refresh, gpuWanted)
+      webglSync = binding.sync
       onCleanup(() => {
-        cancelled = true
-        release?.()
+        webglSync = undefined
+        binding.stop()
         if (!disposed) refresh()
       })
-      const Renderer = Webgl ?? (await loadTerminalWebgl())
-      if (!cancelled && Renderer) release = attachTerminalWebgl(terminal, Renderer, refresh)
     },
     { immediate: true }
   )
@@ -345,8 +377,9 @@ export async function createTerminal(
   // Panel transitions generate a size change every frame. Fit once they settle,
   // avoiding repeated PTY resizes and scrollback reflow during the animation.
   const observer = new ResizeObserver(() => {
+    if (!canPresent() || !currentElement.clientWidth || !currentElement.clientHeight) return
     clearTimeout(resizeTimer)
-    resizeTimer = setTimeout(scheduleFit, 60)
+    resizeTimer = setTimeout(scheduleFit, 80)
   })
   observer.observe(element)
 
@@ -402,17 +435,43 @@ export async function createTerminal(
 
   const detachHost = (hostElement: HTMLElement) => {
     if (disposed || currentElement !== hostElement) return
+    setPresented(false)
     links.hideHover()
     observer.disconnect()
     clearTimeout(resizeTimer)
     cancelAnimationFrame(frame)
   }
 
+  const syncPresentation = () => {
+    const visible = canPresent()
+    send({ type: 'presentation', visible })
+    output.setVisible(visible)
+    webglSync?.()
+    if (visible) resumeView()
+  }
+
+  const setPresented = (visible: boolean) => {
+    if (presented === visible) return
+    presented = visible
+    syncPresentation()
+  }
+
+  const setGpuHeld = (held: boolean) => {
+    if (gpuHeld === held) return
+    gpuHeld = held
+    webglSync?.()
+  }
+
+  const stopForegroundWatch = onAppForegroundChange(syncPresentation)
+
   const dispose = () => {
     if (disposed) return
     disposed = true
     connected = false
     inputQueue = []
+    output.dispose()
+    resumeToken += 1
+    stopForegroundWatch()
     observer.disconnect()
     clearTimeout(resizeTimer)
     dprMedia?.removeEventListener('change', onDprChange)
@@ -450,6 +509,8 @@ export async function createTerminal(
     isConnected: () => connected,
     getLastState: () => lastState,
     detachHost,
+    setPresented,
+    setGpuHeld,
     dispose,
     async connect(connectInput) {
       if (connected) {
@@ -526,9 +587,7 @@ export async function createTerminal(
           terminal.writeln(banner)
           port.onmessage = ({ data }: MessageEvent<TerminalEvent>) => {
             if (data.type === 'data') {
-              terminal.write(data.data, () => {
-                if (!disposed) send({ type: 'ack', sequence: data.sequence })
-              })
+              output.push(data)
             } else {
               finished = data.state === 'exited' || data.state === 'error'
               emitState(data)
@@ -545,6 +604,7 @@ export async function createTerminal(
                     : '终端后台通道已关闭，请新建会话。'
               })
           })
+          send({ type: 'presentation', visible: canPresent() })
           port.start()
           // A resize before the port arrived was only applied locally.
           lastSize = ''

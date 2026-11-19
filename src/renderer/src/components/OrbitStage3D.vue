@@ -4,6 +4,7 @@ import { instanceClass } from '../../../shared/classes'
 import orbitIcon from '../assets/orbit-icon.svg'
 import { t, translateMotionReason } from '../services/i18n'
 import { INTRO_SECONDS, MOVEMENT_SECONDS } from '../services/sword-motion'
+import { isAppForeground, onAppForegroundChange } from '../services/app-foreground'
 import { parseMotionTier, REDUCED_MOTION_REASON, type MotionTier } from '../services/motion-performance'
 import type { SwordScene, SwordSceneOptions, SwordTipProjection } from '../services/sword-scene'
 
@@ -63,7 +64,9 @@ let lastHeight = 0
 let lastDpr = 0
 let loading = false
 let disposed = false
-let visible = true
+let visible = isAppForeground()
+let stopForeground: (() => void) | undefined
+let resumeTimer = 0
 let attrObserver: MutationObserver | null = null
 let resizeObserver: ResizeObserver | null = null
 
@@ -301,9 +304,22 @@ function handleMotionChange(): void {
   })
 }
 
-function handleVisibilityChange(): void {
-  visible = document.visibilityState !== 'hidden'
-  ensureRunning()
+function applyForeground(active: boolean, immediate = false): void {
+  visible = active
+  window.clearTimeout(resumeTimer)
+  resumeTimer = 0
+  if (!active) {
+    ensureRunning()
+    return
+  }
+  if (immediate) {
+    ensureRunning()
+    return
+  }
+  resumeTimer = window.setTimeout(() => {
+    resumeTimer = 0
+    if (visible) ensureRunning()
+  }, 700)
 }
 
 function handleContextLost(event: Event): void {
@@ -503,7 +519,8 @@ defineExpose({
 })
 
 onMounted(() => {
-  visible = document.visibilityState !== 'hidden'
+  visible = isAppForeground()
+  stopForeground = onAppForegroundChange((active) => applyForeground(active))
   readPreferences()
   attrObserver = new MutationObserver(() => {
     handleMotionChange()
@@ -525,7 +542,6 @@ onMounted(() => {
     canvas.value.addEventListener('webglcontextlost', handleContextLost)
     canvas.value.addEventListener('webglcontextrestored', handleContextRestored)
   }
-  document.addEventListener('visibilitychange', handleVisibilityChange)
   ensureRunning()
 })
 
@@ -553,10 +569,11 @@ watch(
 onBeforeUnmount(() => {
   cancelDrag()
   disposed = true
+  window.clearTimeout(resumeTimer)
+  stopForeground?.()
   stopLoop()
   attrObserver?.disconnect()
   resizeObserver?.disconnect()
-  document.removeEventListener('visibilitychange', handleVisibilityChange)
   canvas.value?.removeEventListener('webglcontextlost', handleContextLost)
   canvas.value?.removeEventListener('webglcontextrestored', handleContextRestored)
   scene?.dispose()

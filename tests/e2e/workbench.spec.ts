@@ -724,6 +724,10 @@ test('terminal uses hardware WebGL when available and keeps the session after co
   if (hardware) {
     const canvas = page.locator('.xterm-screen > canvas').last()
     await expect(canvas).toBeVisible()
+    // ConPTY can clear the startup banner before the deferred GPU renderer attaches.
+    await page.locator('.xterm-helper-textarea').focus()
+    await page.keyboard.type('$esc=[char]27; [Console]::WriteLine("$esc[1mBold$esc[0m normal")')
+    await page.keyboard.press('Enter')
     // Check the actual font used to rasterize glyphs, not just the terminal options.
     await expect
       .poll(() =>
@@ -756,9 +760,18 @@ test('terminal uses hardware WebGL when available and keeps the session after co
     await acceleration.check()
     await workspace.click()
     await expect(canvas).toBeVisible()
+    const original = await canvas.elementHandle()
     await canvas.evaluate((el) =>
       (el as HTMLCanvasElement).getContext('webgl2')!.getExtension('WEBGL_lose_context')!.loseContext()
     )
+    await page.waitForFunction((old) => {
+      const next = document.querySelector<HTMLCanvasElement>('.xterm-screen > canvas:last-of-type')
+      return next && next !== old && next.getContext('webgl2')
+    }, original)
+    await canvas.evaluate((el) =>
+      (el as HTMLCanvasElement).getContext('webgl2')!.getExtension('WEBGL_lose_context')!.loseContext()
+    )
+    await expect(canvas).toHaveCount(0)
   }
   await expect(page.locator('.xterm-rows')).toContainText('PS ', { timeout: 15_000 })
   await page.locator('.xterm-helper-textarea').focus()
@@ -915,6 +928,7 @@ test('real SSH handshake, trust prompt, encrypted credential and PTY data', asyn
   }) as string
   const password = `ssh-fixture-${crypto.randomUUID()}`
   const connections = new Set<Connection>()
+  let sendToTerminal: (output: string) => void
   const server = new Server({ hostKeys: [hostKey] }, (client) => {
     connections.add(client)
     client.on('error', () => {})
@@ -931,6 +945,9 @@ test('real SSH handshake, trust prompt, encrypted credential and PTY data', asyn
         session.on('window-change', (acceptResize) => acceptResize?.())
         session.on('shell', (acceptShell) => {
           const stream = acceptShell()
+          sendToTerminal = (output) => {
+            stream.write(output)
+          }
           // Split a Unicode code point across packets to verify streaming decoding.
           const bytes = Buffer.from('ORBIT_SSH_READY 中文\r\n')
           stream.write(bytes.subarray(0, 17))
@@ -956,6 +973,16 @@ test('real SSH handshake, trust prompt, encrypted credential and PTY data', asyn
     await page.locator('.xterm-helper-textarea').focus()
     await page.keyboard.type('ssh-roundtrip')
     await expect(page.locator('.xterm-accessibility-tree')).toContainText('ssh-roundtrip')
+    await page.getByRole('button', { name: '设置', exact: true }).click()
+    // Keep the entire visible payload on screen while crossing the 1 MiB ACK window.
+    const lines = Array.from({ length: 8 }, (_, i) => `SSH-backlog-${i}-完整-0123456789`)
+    const burst = Array.from(lines.join('\r\n'), (char) => '\x1b[0m'.repeat(1500) + char).join('')
+    expect(Buffer.byteLength(burst)).toBeGreaterThan(1024 * 1024)
+    sendToTerminal!('\r\n' + burst + '\r\n')
+    await page.getByRole('button', { name: '工作台', exact: true }).click()
+    for (const line of lines) {
+      await expect(page.locator('.xterm-accessibility-tree')).toContainText(line, { timeout: 20_000 })
+    }
     await page.getByRole('button', { name: '关闭标签 协议测试服务器', exact: true }).click()
     await page.getByRole('button', { name: '连接 协议测试服务器', exact: true }).click()
     await expect(page.getByText('运行中', { exact: true })).toBeVisible()
@@ -1050,6 +1077,30 @@ test('real SSH handshake, trust prompt, encrypted credential and PTY data', asyn
     if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()))
     if (replacement?.listening) await new Promise<void>((resolve) => replacement!.close(() => resolve()))
   }
+})
+
+test('a hidden terminal drains high-volume output and remains interactive after the stall timeout', async ({
+  orbit
+}) => {
+  test.setTimeout(100_000)
+  const { page, app } = orbit
+  await enableTerminalTextForAssertions(page)
+  await page.getByRole('button', { name: '打开本地终端', exact: true }).click()
+  const rows = page.locator('.xterm-accessibility-tree')
+  await expect(rows).toContainText('PS ', { timeout: 15_000 })
+  await page.locator('.xterm-helper-textarea').focus()
+  await page.keyboard.type(
+    'Start-Sleep 1; $s="X"*8192; for($i=0;$i -lt 256;$i++){[Console]::WriteLine($s)}; Write-Output ("HIDDEN_"+"TAIL")'
+  )
+  await page.keyboard.press('Enter')
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.hide())
+  await new Promise((resolve) => setTimeout(resolve, 42_000))
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.show())
+  await expect(rows).toContainText('HIDDEN_TAIL', { timeout: 25_000 })
+  await page.locator('.xterm-helper-textarea').focus()
+  await page.keyboard.type('Write-Output ("STILL_"+"ALIVE")')
+  await page.keyboard.press('Enter')
+  await expect(rows).toContainText('STILL_ALIVE')
 })
 
 test('bounded high-volume ConPTY output and local worker failure recovery', async ({ orbit }) => {
@@ -1918,6 +1969,16 @@ test('checks GitHub releases, downloads verified installer and respects prerelea
   }
 })
 
+async function seedLargeDirectory(root: string): Promise<void> {
+  const directory = join(root, 'large-directory')
+  await mkdir(directory)
+  await Promise.all(
+    Array.from({ length: 180 }, (_, index) =>
+      writeFile(join(directory, `item-${String(index).padStart(3, '0')}.txt`), '')
+    )
+  )
+}
+
 test('terminal right-side SFTP drawer browses, uploads, downloads, chmods, renames and deletes over live SSH', async ({}, info) => {
   const sftpServer = await startMockSftpSshServer({
     username: 'orbit-test',
@@ -1933,6 +1994,7 @@ test('terminal right-side SFTP drawer browses, uploads, downloads, chmods, renam
     Buffer.from('\nORBIT_SFTP_UPLOAD_TAIL', 'utf8')
   ])
   await writeFile(localUploadFile, uploadPayload)
+  await seedLargeDirectory(sftpServer.homeDir)
 
   const { app, page } = await launch(appDir)
   await enableTerminalTextForAssertions(page)
@@ -1993,6 +2055,13 @@ test('terminal right-side SFTP drawer browses, uploads, downloads, chmods, renam
     // Navigate into subdirectory and back via home/breadcrumb
     await sftpAside.getByText('projects', { exact: true }).dblclick()
     await expect(sftpAside.getByText('deploy.sh', { exact: true })).toBeVisible()
+    await sftpAside.getByRole('button', { name: '主目录', exact: true }).click()
+    await expect(sftpAside.getByText('readme.txt', { exact: true })).toBeVisible()
+
+    await sftpAside.getByText('large-directory', { exact: true }).dblclick()
+    await expect(sftpAside.getByText('item-000.txt', { exact: true })).toBeInViewport()
+    await sftpAside.getByRole('list').evaluate((el) => (el.scrollTop = el.scrollHeight))
+    await expect(sftpAside.getByText('item-179.txt', { exact: true })).toBeInViewport()
     await sftpAside.getByRole('button', { name: '主目录', exact: true }).click()
     await expect(sftpAside.getByText('readme.txt', { exact: true })).toBeVisible()
 
@@ -2683,6 +2752,7 @@ test('bilingual zh/en switch, separate terminal/panel typography & color setting
 
 test('standalone multi-protocol Files page (SFTP, WebDAV, S3) and protocol-scoped Settings persist end-to-end', async ({}, info) => {
   const davRoot = await mkdtemp(join(tmpdir(), 'orbit-e2e-dav-'))
+  await seedLargeDirectory(davRoot)
   const sftpServer = await startMockSftpSshServer({
     username: 'orbit-test',
     password: 'SftpFilesPass!1'
@@ -2718,8 +2788,8 @@ test('standalone multi-protocol Files page (SFTP, WebDAV, S3) and protocol-scope
   page.on('pageerror', (error) => errors.push(error.message))
 
   try {
-    // 0. Version badge reports v1.2.0
-    await expect(page.locator('.container_app_status_footer_version')).toContainText('v1.2.0')
+    // 0. Version badge reports v1.3.0
+    await expect(page.locator('.container_app_status_footer_version')).toContainText('v1.3.0')
 
     // 1. Settings domain separation & persistence (SSH defaults + Files concurrency/S3 defaults)
     await page.getByRole('button', { name: '设置', exact: true }).click()
@@ -2786,6 +2856,13 @@ test('standalone multi-protocol Files page (SFTP, WebDAV, S3) and protocol-scope
     await filesPage.locator('.container_files_modal_btn_confirm').click()
     await expect(filesPage.getByText('dav-folder', { exact: true })).toBeVisible({ timeout: 5000 })
     expect((await stat(join(davRoot, 'dav-folder'))).isDirectory()).toBe(true)
+
+    await filesPage.getByText('large-directory', { exact: true }).dblclick()
+    await expect(filesPage.getByText('item-000.txt', { exact: true })).toBeInViewport()
+    await filesPage
+      .locator('.container_files_table_scroll_wrap')
+      .evaluate((el) => (el.scrollTop = el.scrollHeight))
+    await expect(filesPage.getByText('item-179.txt', { exact: true })).toBeInViewport()
 
     // 4. Add SSH host via FilesPage ("SFTP" protocol) -> connects directly into standalone SFTP tab
     await page.getByTestId('files-add-server-btn').click()
@@ -2961,5 +3038,138 @@ test('Remote Desktop (RDP) Scheme A/B Settings switch, SSH linking, fallback & I
     await stop(app)
     await mockRdp.close()
     await rm(appDir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+test('multi-namespace E2EE sync: legacy v1 server degrades gracefully, v2 server syncs file/RDP profiles across devices and rotates all namespaces on credential opt-out', async ({}, info) => {
+  const legacyServer = await startMockSyncServer()
+  const multiServer = await startMockSyncServer({ multiNamespace: true })
+  const dirLegacy = await mkdtemp(join(tmpdir(), 'orbit-e2e-sync-v1-'))
+  const dirA = await mkdtemp(join(tmpdir(), 'orbit-e2e-sync-v2a-'))
+  const dirB = await mkdtemp(join(tmpdir(), 'orbit-e2e-sync-v2b-'))
+  const apps: ElectronApplication[] = []
+  const errors: string[] = []
+  const password = 'AccountPass123!'
+  const master = 'MasterVaultPass#1'
+
+  async function registerAndCreateVault(page: Page, serverUrl: string, email: string) {
+    await page.getByRole('button', { name: '远程同步', exact: true }).click()
+    await page.getByRole('button', { name: '注册新账号', exact: true }).click()
+    await page.getByPlaceholder('https://sync.example.com').fill(serverUrl)
+    await page.getByPlaceholder('name@example.com').fill(email)
+    await page.locator('.container_sync_account_body_password-input').fill(password)
+    await page.getByRole('button', { name: '注册并连接', exact: true }).click()
+    await expect(page.getByText(email, { exact: true })).toBeVisible()
+    await page.locator('.container_sync_vault_body_create-pw-input').fill(master)
+    await page.locator('.container_sync_vault_body_create-confirm-input').fill(master)
+    await page.getByRole('button', { name: '创建加密保管库并上传初始文档', exact: true }).click()
+    await expect(page.locator('.container_sync_recovery_body_code')).toBeVisible({ timeout: 20_000 })
+    await page.getByRole('button', { name: '我已保存，关闭', exact: true }).click()
+  }
+
+  try {
+    // ---- A. Legacy v1 server: compatibility notice, SSH sync keeps working, protocols stay local ----
+    const legacy = await launch(dirLegacy)
+    apps.push(legacy.app)
+    legacy.page.on('pageerror', (error) => errors.push(error.message))
+    await registerAndCreateVault(legacy.page, legacyServer.url, 'legacy-e2e@example.com')
+    const legacyBanner = legacy.page.getByTestId('sync-capability-banner')
+    await expect(legacyBanner).toHaveAttribute('data-mode', 'legacy-v1', { timeout: 10_000 })
+    await expect(legacyBanner).toContainText('旧版 v1 同步服务端兼容模式')
+    await legacy.page.evaluate(() =>
+      window.orbit.fileProfiles.save({ name: 'Local-Only-FTP', protocol: 'ftp', host: 'ftp.local.test' })
+    )
+    await expect
+      .poll(() => legacyServer.getUserState('legacy-e2e@example.com').namespaceRevisions.core.revisionCount)
+      .toBeGreaterThanOrEqual(1)
+    expect(
+      legacyServer.getUserState('legacy-e2e@example.com').namespaceRevisions.protocols.revisionCount
+    ).toBe(0)
+    await checkClasses(legacy.page)
+    await stop(legacy.app)
+
+    // ---- B. v2 server: device A creates profiles ----
+    const emailV2 = 'multi-e2e@example.com'
+    const devA = await launch(dirA)
+    apps.push(devA.app)
+    devA.page.on('pageerror', (error) => errors.push(error.message))
+    await registerAndCreateVault(devA.page, multiServer.url, emailV2)
+    const multiBanner = devA.page.getByTestId('sync-capability-banner')
+    await expect(multiBanner).toHaveAttribute('data-mode', 'multi-namespace', { timeout: 10_000 })
+    await expect(multiBanner).toContainText('core · protocols · settings')
+
+    await devA.page.evaluate(async () => {
+      await window.orbit.fileProfiles.save({
+        name: 'Cloud-WebDAV',
+        protocol: 'webdav',
+        options: { url: 'https://dav.example.com/files' }
+      })
+      await window.orbit.rdp.saveProfile({ name: 'Win-Jump', host: '10.20.30.40', username: 'admin' })
+      await window.orbit.protocolSettings.patch({ namespace: 'ssh', patch: { defaultPort: 2244 } })
+    })
+    await expect
+      .poll(() => multiServer.getUserState(emailV2).namespaceRevisions.protocols.revisionCount, {
+        timeout: 15_000
+      })
+      .toBeGreaterThanOrEqual(1)
+    await expect
+      .poll(() => multiServer.getUserState(emailV2).namespaceRevisions.settings.revisionCount, {
+        timeout: 15_000
+      })
+      .toBeGreaterThanOrEqual(1)
+    const wireDump = JSON.stringify(multiServer.getUserState(emailV2).namespaceRevisions)
+    expect(wireDump).not.toContain('Cloud-WebDAV')
+    expect(wireDump).not.toContain('10.20.30.40')
+    await checkClasses(devA.page)
+
+    // ---- C. Device B logs in, unlocks the vault and receives every namespace ----
+    const devB = await launch(dirB)
+    apps.push(devB.app)
+    devB.page.on('pageerror', (error) => errors.push(error.message))
+    await devB.page.getByRole('button', { name: '远程同步', exact: true }).click()
+    await devB.page.getByPlaceholder('https://sync.example.com').fill(multiServer.url)
+    await devB.page.getByPlaceholder('name@example.com').fill(emailV2)
+    await devB.page.locator('.container_sync_account_body_password-input').fill(password)
+    await devB.page.getByRole('button', { name: '登录并连接', exact: true }).click()
+    await devB.page.locator('.container_sync_vault_body_unlock-pw-input').fill(master)
+    await devB.page.getByRole('button', { name: '解锁保管库并拉取同步', exact: true }).click()
+    await expect
+      .poll(
+        () =>
+          devB.page.evaluate(async () => ({
+            files: (await window.orbit.fileProfiles.list()).map((p) => p.name),
+            rdp: (await window.orbit.rdp.listProfiles()).map((p) => p.name),
+            sshPort: (await window.orbit.protocolSettings.getAll()).ssh.defaultPort
+          })),
+        { timeout: 20_000 }
+      )
+      .toEqual({ files: ['Cloud-WebDAV'], rdp: ['Win-Jump'], sshPort: 2244 })
+    await expect(devB.page.getByTestId('sync-capability-banner')).toHaveAttribute(
+      'data-mode',
+      'multi-namespace'
+    )
+    await stop(devB.app)
+
+    // ---- D. Device A enables then disables file credential sync -> atomic batch key rotation ----
+    await devA.page.locator('.container_sync_vault_body_filecreds-check').check()
+    await expect(devA.page.locator('.container_sync_vault_body_filecreds-check')).toBeChecked()
+    await devA.page.locator('.container_sync_vault_body_filecreds-check').uncheck()
+    await devA.page.getByRole('textbox', { name: '输入当前账号登录密码以确认密钥轮换' }).fill(password)
+    await devA.page.getByRole('textbox', { name: '输入保管库新主密码以加密新密钥' }).fill(master)
+    await devA.page.getByRole('button', { name: '确认轮换密钥并关闭文件凭据同步', exact: true }).click()
+    await expect(devA.page.locator('.container_sync_recovery_body_code')).toBeVisible({ timeout: 20_000 })
+    const rotated = multiServer.getUserState(emailV2)
+    expect(rotated.vault?.keyVersion).toBe(2)
+    for (const ns of ['core', 'protocols', 'settings'] as const) {
+      expect(rotated.namespaceRevisions[ns].latestRevision?.envelope.keyVersion).toBe(2)
+    }
+    await checkClasses(devA.page)
+    await devA.page.screenshot({ path: info.outputPath('sync-multi-namespace.png') })
+    expect(errors).toEqual([])
+  } finally {
+    for (const app of apps) await stop(app)
+    await legacyServer.close()
+    await multiServer.close()
+    for (const dir of [dirLegacy, dirA, dirB]) await rm(dir, { recursive: true, force: true }).catch(() => {})
   }
 })

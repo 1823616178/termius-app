@@ -12,10 +12,19 @@ import {
   type SftpTransferDirection,
   type SftpTransferItem
 } from '../../../shared/sftp'
-import { currentTab, focusedPane, hosts, notify, tabs, windowInstance } from '../stores/workbench'
+import {
+  currentTab,
+  focusedPane,
+  hosts,
+  notify,
+  protocolSettings,
+  tabs,
+  windowInstance
+} from '../stores/workbench'
 import { writeTerminalInputByToken } from './terminal-registry'
 import { markHostUsed } from './host-recency'
 import { t } from './i18n'
+import { planUploads, trimTransferHistory, type UploadConflictChoice } from './file-transfers'
 
 export interface ActiveSftpContext {
   source: 'pane' | 'standalone'
@@ -34,8 +43,6 @@ interface PendingJob {
   remotePath: string
   conflict: SftpConflictDecision
 }
-
-const MAX_CONCURRENT_TRANSFERS = 2
 
 export const sftpDrawerOpen = ref(false)
 export const sftpPanelWidth = ref(loadSavedWidth())
@@ -60,15 +67,19 @@ export const sftpPasswordPrompt = ref<{ host: Host; error?: string } | null>(nul
 export const sftpConflictPrompt = ref<{
   name: string
   direction: SftpTransferDirection
-  resolve: (choice: { decision: SftpConflictDecision; applyAll: boolean }) => void
+  resolve: (choice: UploadConflictChoice) => void
 } | null>(null)
 
 const pendingJobs = new Map<string, PendingJob>()
+let runningJobCount = 0
 const loadedSessions = new Map<string, string>()
 let standalonePort: MessagePort | undefined
 let removeProgressListener: (() => void) | undefined
 let removeFailureListener: (() => void) | undefined
 let listRequestSerial = 0
+let listedSessionId: string | undefined
+let refreshDebounceTimer: ReturnType<typeof setTimeout> | undefined
+let hiddenSyncedFromSettings = false
 
 function loadSavedWidth(): number {
   try {
@@ -159,10 +170,56 @@ export const visibleSftpEntries = computed(() => {
   return sortSftpEntries(filtered, sftpSortBy.value, sftpSortAsc.value)
 })
 
+function pushTransferItem(item: SftpTransferItem): void {
+  sftpTransfers.value = trimTransferHistory([item, ...sftpTransfers.value])
+}
+
+function scheduleUploadRefresh(sessionId: string, dirPath: string): void {
+  if (activeSftpContext.value?.sessionId !== sessionId || sftpCurrentPath.value !== dirPath) return
+  clearTimeout(refreshDebounceTimer)
+  refreshDebounceTimer = setTimeout(() => {
+    refreshDebounceTimer = undefined
+    if (activeSftpContext.value?.sessionId === sessionId && sftpCurrentPath.value === dirPath) {
+      void refreshSftpDirectory(dirPath)
+    }
+  }, 300)
+}
+
+function cancelSessionTransfers(sessionId: string): void {
+  const now = Date.now()
+  let changed = false
+  const next = sftpTransfers.value.map((item) => {
+    if (item.sessionId !== sessionId) return item
+    if (item.status === 'queued') {
+      pendingJobs.delete(item.id)
+      changed = true
+      return {
+        ...item,
+        status: 'cancelled' as const,
+        error: t('sftp.queueCancelled'),
+        updatedAt: now
+      }
+    }
+    if (item.status === 'running') {
+      void window.orbit.sftp.cancelTransfer(sessionId, item.id).catch(() => {})
+      changed = true
+      return {
+        ...item,
+        status: 'cancelled' as const,
+        error: t('sftp.queueCancelled'),
+        updatedAt: now
+      }
+    }
+    return item
+  })
+  if (changed) sftpTransfers.value = trimTransferHistory(next)
+}
+
 function handleProgressEvent(event: SftpProgressEvent): void {
   const idx = sftpTransfers.value.findIndex((item) => item.id === event.transferId)
   if (idx < 0) return
   const current = sftpTransfers.value[idx]!
+  if (current.status === 'cancelled') return
   sftpTransfers.value[idx] = {
     ...current,
     totalBytes: event.totalBytes,
@@ -177,6 +234,10 @@ function handleProgressEvent(event: SftpProgressEvent): void {
 }
 
 export function initSftpBridgeListeners(): void {
+  if (!hiddenSyncedFromSettings) {
+    hiddenSyncedFromSettings = true
+    sftpShowHidden.value = Boolean(protocolSettings.value.files.showHidden)
+  }
   if (!removeProgressListener) {
     removeProgressListener = window.orbit.sftp.onProgress(handleProgressEvent)
   }
@@ -194,6 +255,8 @@ export function initSftpBridgeListeners(): void {
 }
 
 export function disposeSftpBridgeListeners(): void {
+  clearTimeout(refreshDebounceTimer)
+  refreshDebounceTimer = undefined
   removeProgressListener?.()
   removeProgressListener = undefined
   removeFailureListener?.()
@@ -213,10 +276,18 @@ export function closeStandaloneSftpSession(): void {
   }
   const sid = sftpStandalone.value?.sessionId
   if (sid) {
+    cancelSessionTransfers(sid)
     loadedSessions.delete(sid)
     void window.orbit.sessions.close(sid).catch(() => {})
   }
   sftpStandalone.value = null
+}
+
+export function reconnectStandaloneSftp(): void {
+  const hostId = sftpStandalone.value?.hostId
+  if (!hostId) return
+  const host = hosts.value.find((item) => item.id === hostId)
+  if (host) void connectStandaloneSftpHost(host)
 }
 
 export async function connectStandaloneSftpHost(host: Host, password?: string): Promise<void> {
@@ -224,6 +295,7 @@ export async function connectStandaloneSftpHost(host: Host, password?: string): 
   sftpTargetPaneToken.value = ''
   sftpEntries.value = []
   sftpError.value = ''
+  sftpFilter.value = ''
   if (host.auth === 'password' && !host.hasPassword && password === undefined) {
     sftpPasswordPrompt.value = { host }
     return
@@ -333,6 +405,7 @@ export function selectSftpPaneTarget(paneToken: string): void {
   sftpTargetPaneToken.value = paneToken
   sftpEntries.value = []
   sftpError.value = ''
+  sftpFilter.value = ''
   const sessionId = activeSftpContext.value?.sessionId
   if (sessionId && activeSftpContext.value?.state === 'running') {
     const savedPath = loadedSessions.get(sessionId)
@@ -343,17 +416,23 @@ export function selectSftpPaneTarget(paneToken: string): void {
 export async function refreshSftpDirectory(targetPath?: string): Promise<void> {
   const ctx = activeSftpContext.value
   if (!ctx?.sessionId || ctx.state !== 'running') return
+  const sessionId = ctx.sessionId
   const serial = ++listRequestSerial
   sftpLoading.value = true
   sftpError.value = ''
+  const previousPath = sftpCurrentPath.value
   try {
     const resolvedPath =
-      targetPath ?? (loadedSessions.get(ctx.sessionId) || (await window.orbit.sftp.home(ctx.sessionId)))
-    const res = await window.orbit.sftp.list(ctx.sessionId, resolvedPath)
-    if (serial !== listRequestSerial) return
+      targetPath ?? (loadedSessions.get(sessionId) || (await window.orbit.sftp.home(sessionId)))
+    const res = await window.orbit.sftp.list(sessionId, resolvedPath)
+    if (serial !== listRequestSerial || activeSftpContext.value?.sessionId !== sessionId) return
+    if (res.path !== previousPath) {
+      sftpFilter.value = ''
+    }
     sftpCurrentPath.value = res.path
     sftpEntries.value = res.entries
-    loadedSessions.set(ctx.sessionId, res.path)
+    listedSessionId = sessionId
+    loadedSessions.set(sessionId, res.path)
   } catch (error) {
     if (serial !== listRequestSerial) return
     sftpError.value = error instanceof Error ? error.message : t('sftp.readDirFailed')
@@ -365,9 +444,15 @@ export async function refreshSftpDirectory(targetPath?: string): Promise<void> {
 watch(
   () => [sftpDrawerOpen.value, activeSftpContext.value?.sessionId, activeSftpContext.value?.state] as const,
   ([open, sessionId, state]) => {
+    if (listedSessionId && listedSessionId !== sessionId) {
+      listedSessionId = undefined
+      sftpEntries.value = []
+      sftpCurrentPath.value = '~'
+      sftpFilter.value = ''
+    }
     if (!open || !sessionId || state !== 'running') return
     const saved = loadedSessions.get(sessionId)
-    if (!saved || sftpCurrentPath.value !== saved || sftpEntries.value.length === 0) {
+    if (listedSessionId !== sessionId || !saved || sftpCurrentPath.value !== saved) {
       void refreshSftpDirectory(saved)
     }
   },
@@ -375,19 +460,23 @@ watch(
 )
 
 watch(
-  () => sftpTargetPaneToken.value,
-  (token) => {
-    if (!token) return
-    if (!allSshPanes.value.some((pane) => pane.token === token)) {
+  () => [sftpTargetPaneToken.value, allSshPanes.value] as const,
+  ([token, panes]) => {
+    if (token && !panes.some((pane) => pane.token === token)) {
       sftpTargetPaneToken.value = ''
+    }
+    const activeIds = new Set<string>()
+    for (const pane of panes) {
+      if (pane.sessionId) activeIds.add(pane.sessionId)
+    }
+    if (sftpStandalone.value?.sessionId) activeIds.add(sftpStandalone.value.sessionId)
+    for (const sid of loadedSessions.keys()) {
+      if (!activeIds.has(sid)) loadedSessions.delete(sid)
     }
   }
 )
 
-function askConflict(
-  name: string,
-  direction: SftpTransferDirection
-): Promise<{ decision: SftpConflictDecision; applyAll: boolean }> {
+function askConflict(name: string, direction: SftpTransferDirection): Promise<UploadConflictChoice> {
   return new Promise((resolve) => {
     sftpConflictPrompt.value = {
       name,
@@ -401,13 +490,14 @@ function askConflict(
 }
 
 function pumpTransfers(): void {
-  const running = sftpTransfers.value.filter((item) => item.status === 'running').length
-  if (running >= MAX_CONCURRENT_TRANSFERS) return
-  const slots = MAX_CONCURRENT_TRANSFERS - running
+  const maxConcurrent = Math.max(1, Math.min(8, protocolSettings.value.files.maxConcurrentTransfers || 3))
+  if (runningJobCount >= maxConcurrent) return
+  const slots = maxConcurrent - runningJobCount
   const queued = sftpTransfers.value.filter((item) => item.status === 'queued').slice(0, slots)
   for (const item of queued) {
     const job = pendingJobs.get(item.id)
     if (!job) continue
+    runningJobCount++
     item.status = 'running'
     item.updatedAt = Date.now()
     const op =
@@ -429,14 +519,13 @@ function pumpTransfers(): void {
     void op
       .then((result) => {
         const idx = sftpTransfers.value.findIndex((t) => t.id === item.id)
-        if (idx >= 0) sftpTransfers.value[idx] = result
+        if (idx >= 0 && sftpTransfers.value[idx]!.status !== 'cancelled') sftpTransfers.value[idx] = result
         pendingJobs.delete(item.id)
-        if (
-          job.direction === 'upload' &&
-          activeSftpContext.value?.sessionId === job.sessionId &&
-          parentRemotePosixPath(result.remotePath) === sftpCurrentPath.value
-        ) {
-          void refreshSftpDirectory(sftpCurrentPath.value)
+        if (job.direction === 'upload') {
+          const parentDir = parentRemotePosixPath(result.remotePath)
+          if (parentDir === sftpCurrentPath.value) {
+            scheduleUploadRefresh(job.sessionId, parentDir)
+          }
         }
       })
       .catch((error) => {
@@ -453,6 +542,8 @@ function pumpTransfers(): void {
         pendingJobs.delete(item.id)
       })
       .finally(() => {
+        runningJobCount--
+        sftpTransfers.value = trimTransferHistory(sftpTransfers.value)
         pumpTransfers()
       })
   }
@@ -463,42 +554,48 @@ export async function uploadLocalPathsToCurrentDir(localPaths: string[]): Promis
   if (!ctx?.sessionId || ctx.state !== 'running' || !localPaths.length) return
   const sessionId = ctx.sessionId
   const baseRemoteDir = sftpCurrentPath.value
+  const knownRootPaths = new Set(sftpEntries.value.map((entry) => entry.path))
   const manifest = await window.orbit.sftp.expandLocalUploads(localPaths)
   if (manifest.skippedSymlinks > 0) {
     notify(t('sftp.skippedLocalSymlinks', { count: manifest.skippedSymlinks }))
   }
+  const uploads = await planUploads(
+    manifest.files,
+    baseRemoteDir,
+    protocolSettings.value.files.defaultConflict,
+    async (file, path) => {
+      if (knownRootPaths.has(path)) return true
+      if (listedSessionId === sessionId && !file.relativePath.includes('/')) return false
+      const result = await window.orbit.sftp.stat(sessionId, path).catch(() => ({ exists: false }))
+      return result.exists
+    },
+    (file) => askConflict(file.relativePath, 'upload')
+  )
+  const sessionIsOpen = () =>
+    (sftpStandalone.value?.sessionId === sessionId && sftpStandalone.value.state === 'running') ||
+    allSshPanes.value.some((pane) => pane.sessionId === sessionId && pane.state === 'running')
+  if (!uploads || !sessionIsOpen()) return
+
   for (const relDir of manifest.dirs) {
     await window.orbit.sftp.mkdir(sessionId, joinRemotePosixPath(baseRemoteDir, relDir))
   }
-  let rememberedDecision: SftpConflictDecision | undefined
-  let queuedCount = 0
-  for (const file of manifest.files) {
-    const remotePath = joinRemotePosixPath(baseRemoteDir, file.relativePath)
-    let decision: SftpConflictDecision = rememberedDecision ?? 'overwrite'
-    if (!rememberedDecision) {
-      const check = await window.orbit.sftp.stat(sessionId, remotePath).catch(() => ({ exists: false }))
-      if (check.exists) {
-        const answer = await askConflict(file.relativePath, 'upload')
-        decision = answer.decision
-        if (answer.applyAll) rememberedDecision = answer.decision
-      }
-    }
-    if (decision === 'skip') continue
+  if (!sessionIsOpen()) return
+  for (const file of uploads) {
     const transferId = crypto.randomUUID()
     pendingJobs.set(transferId, {
       sessionId,
       direction: 'upload',
       localPath: file.localPath,
-      remotePath,
-      conflict: decision
+      remotePath: file.remotePath,
+      conflict: file.conflict
     })
-    sftpTransfers.value.unshift({
+    pushTransferItem({
       id: transferId,
       sessionId,
       direction: 'upload',
       name: file.name,
       localPath: file.localPath,
-      remotePath,
+      remotePath: file.remotePath,
       totalBytes: file.size,
       transferredBytes: 0,
       speedBps: 0,
@@ -506,12 +603,10 @@ export async function uploadLocalPathsToCurrentDir(localPaths: string[]): Promis
       startedAt: Date.now(),
       updatedAt: Date.now()
     })
-    queuedCount++
   }
-  if (queuedCount > 0) {
-    pumpTransfers()
-  } else if (manifest.dirs.length > 0) {
-    await refreshSftpDirectory(baseRemoteDir)
+  pumpTransfers()
+  if (manifest.dirs.length > 0) {
+    scheduleUploadRefresh(sessionId, baseRemoteDir)
   }
 }
 
@@ -532,7 +627,7 @@ export async function downloadRemoteEntries(entries: SftpEntry[]): Promise<void>
       remotePath: single.path,
       conflict: 'overwrite'
     })
-    sftpTransfers.value.unshift({
+    pushTransferItem({
       id: transferId,
       sessionId,
       direction: 'download',
@@ -553,6 +648,8 @@ export async function downloadRemoteEntries(entries: SftpEntry[]): Promise<void>
   const destDir = await window.orbit.sftp.pickDownloadDir()
   if (!destDir) return
   const cleanBase = destDir.replace(/[\\/]+$/, '')
+  const configuredConflict = protocolSettings.value.files.defaultConflict
+  const downloadConflict: SftpConflictDecision = configuredConflict === 'ask' ? 'rename' : configuredConflict
   let skippedSymlinks = 0
 
   for (const entry of entries) {
@@ -568,9 +665,9 @@ export async function downloadRemoteEntries(entries: SftpEntry[]): Promise<void>
           direction: 'download',
           localPath,
           remotePath: file.remotePath,
-          conflict: 'rename'
+          conflict: downloadConflict
         })
-        sftpTransfers.value.unshift({
+        pushTransferItem({
           id: transferId,
           sessionId,
           direction: 'download',
@@ -593,9 +690,9 @@ export async function downloadRemoteEntries(entries: SftpEntry[]): Promise<void>
         direction: 'download',
         localPath,
         remotePath: entry.path,
-        conflict: 'rename'
+        conflict: downloadConflict
       })
-      sftpTransfers.value.unshift({
+      pushTransferItem({
         id: transferId,
         sessionId,
         direction: 'download',
@@ -628,6 +725,7 @@ export async function cancelSftpTransfer(item: SftpTransferItem): Promise<void> 
         error: t('sftp.queueCancelled'),
         updatedAt: Date.now()
       }
+      sftpTransfers.value = trimTransferHistory(sftpTransfers.value)
     }
     return
   }
@@ -647,12 +745,12 @@ export function retrySftpTransfer(item: SftpTransferItem): void {
     remotePath: item.remotePath,
     conflict: 'overwrite'
   })
-  sftpTransfers.value = [
+  sftpTransfers.value = trimTransferHistory([
     {
       ...item,
       id: newId,
       sessionId,
-      status: 'queued',
+      status: 'queued' as const,
       transferredBytes: 0,
       speedBps: 0,
       error: undefined,
@@ -660,7 +758,7 @@ export function retrySftpTransfer(item: SftpTransferItem): void {
       updatedAt: Date.now()
     },
     ...sftpTransfers.value.filter((t) => t.id !== item.id)
-  ]
+  ])
   pumpTransfers()
 }
 

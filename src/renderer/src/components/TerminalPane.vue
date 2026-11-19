@@ -436,21 +436,31 @@ async function mountAndConnect() {
 
   let connectingHandle: TerminalHandle | undefined
   try {
-    const created = await createTerminal(props.token, targetSurface, updateState, screenReader.value, {
-      themeId: terminalTheme.value,
-      fontFamily: resolveTerminalFontFamily(terminalFontId.value, terminalCustomFont.value),
-      fontSize: props.fontSize,
-      fontWeight: terminalFontWeight.value,
-      fontWeightBold: terminalFontWeightBold.value,
-      lineHeight: lineHeight.value,
-      letterSpacing: terminalLetterSpacing.value,
-      minimumContrastRatio: terminalMinimumContrast.value,
-      ligatures: terminalLigatures.value,
-      customColorsEnabled: terminalCustomColorsEnabled.value,
-      customColors: { ...terminalCustomColors.value },
-      cursorStyle: cursorStyle.value,
-      cursorBlink: cursorBlink.value
-    })
+    const created = await createTerminal(
+      props.token,
+      targetSurface,
+      updateState,
+      screenReader.value,
+      {
+        themeId: terminalTheme.value,
+        fontFamily: resolveTerminalFontFamily(terminalFontId.value, terminalCustomFont.value),
+        fontSize: props.fontSize,
+        fontWeight: terminalFontWeight.value,
+        fontWeightBold: terminalFontWeightBold.value,
+        lineHeight: lineHeight.value,
+        letterSpacing: terminalLetterSpacing.value,
+        minimumContrastRatio: terminalMinimumContrast.value,
+        ligatures: terminalLigatures.value,
+        customColorsEnabled: terminalCustomColorsEnabled.value,
+        customColors: { ...terminalCustomColors.value },
+        cursorStyle: cursorStyle.value,
+        cursorBlink: cursorBlink.value
+      },
+      {
+        presented: props.visible,
+        holdGpu: props.kind === 'ssh' && hudMounted.value
+      }
+    )
     if (unmounted || seq !== mountSeq || surface.value !== targetSurface) {
       if (isPaneTokenMounted(props.token)) {
         created.detachHost(targetSurface)
@@ -460,6 +470,8 @@ async function mountAndConnect() {
       return
     }
     handle = created
+    handle.setPresented(props.visible)
+    handle.setGpuHeld(props.kind === 'ssh' && hudMounted.value)
     connectingHandle = created
     const alreadyConnected = handle.isConnected()
     if (alreadyConnected) {
@@ -570,9 +582,9 @@ onMounted(async () => {
 watch(
   () => props.visible,
   async (visible) => {
+    handle?.setPresented(visible)
     if (visible) {
       await nextTick()
-      handle?.refresh()
       handle?.terminal.focus()
       if (handle) activeTerminalDimensions.value = handle.getDimensions()
     } else {
@@ -580,6 +592,10 @@ watch(
     }
   }
 )
+
+watch(hudMounted, (mounted) => {
+  handle?.setGpuHeld(props.kind === 'ssh' && mounted)
+})
 
 watch(
   () => props.fontSize,

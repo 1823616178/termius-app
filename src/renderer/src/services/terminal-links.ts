@@ -17,6 +17,11 @@ export interface DetectedTerminalLink {
 }
 
 const MAX_WRAPPED_WINDOW_CHARS = 2048
+const LINK_HINT = /https?:\/\/|www\.|localhost|\d{1,3}\.\d{1,3}/i
+
+export function textMayContainTerminalLink(text: string): boolean {
+  return LINK_HINT.test(text)
+}
 
 const URL_DISALLOWED_TAIL = '.,;:!?\'"'
 const BOUNDARY_BEFORE_BARE_LINK = /[A-Za-z0-9._/@:-]/
@@ -378,8 +383,17 @@ export function createTerminalLinkIntegration(
 
   const provider: ILinkProvider = {
     provideLinks(bufferLineNumber, callback) {
+      const line = terminal.buffer.active.getLine(bufferLineNumber - 1)
+      if (!line) {
+        callback(undefined)
+        return
+      }
+      if (!line.isWrapped && !textMayContainTerminalLink(line.translateToString(true))) {
+        callback(undefined)
+        return
+      }
       const win = collectWrappedLineWindow(bufferLineNumber, terminal)
-      if (!win) {
+      if (!win || !textMayContainTerminalLink(win.text)) {
         callback(undefined)
         return
       }

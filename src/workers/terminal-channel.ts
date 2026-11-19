@@ -32,10 +32,14 @@ export function terminalChannel(
   const watchdogIntervalMs = options.watchdogIntervalMs ?? 5000
   const flow = new OutputWindow()
   let paused = false
+  let visible = true
   let closed = false
   let ending = false
+  let finalState: Extract<TerminalEvent, { type: 'state' }> | undefined
   let pendingChunks: Buffer[] = []
   let pendingBytes = 0
+  const held: Buffer[] = []
+  let heldBytes = 0
   let lastFlushAt = -Infinity
   let flushTimer: NodeJS.Timeout | undefined
   let inputBytes = 0
@@ -44,7 +48,12 @@ export function terminalChannel(
   let endingAt = 0
 
   const send = (event: TerminalEvent) => {
-    if (!closed) port.postMessage(event)
+    if (closed) return
+    try {
+      port.postMessage(event)
+    } catch {
+      close()
+    }
   }
 
   const clearPending = () => {
@@ -60,10 +69,53 @@ export function terminalChannel(
     if (closed) return
     closed = true
     clearPending()
+    held.length = 0
+    heldBytes = 0
     clearInterval(watchdog)
     adapter.close()
     port.close()
     onClose()
+  }
+
+  const buffered = () => flow.bytes + heldBytes + pendingBytes
+
+  const updateBackpressure = () => {
+    if (closed) return
+    if (!paused && buffered() >= flow.highWater) {
+      paused = true
+      stalledAt = Date.now()
+      adapter.pause()
+    } else if (paused && buffered() <= flow.lowWater) {
+      paused = false
+      stalledAt = 0
+      adapter.resume()
+    }
+  }
+
+  const postChunk = (chunk: Buffer) => {
+    const sequence = flow.push(chunk.length)
+    send({ type: 'data', sequence, data: new Uint8Array(chunk) })
+  }
+
+  const drainHeld = () => {
+    while (visible && held.length && flow.bytes < 2 * CHUNK_BYTES) {
+      const chunk = held.shift()!
+      heldBytes -= chunk.length
+      postChunk(chunk)
+    }
+    if (finalState && !heldBytes && !pendingBytes) {
+      send(finalState)
+      finalState = undefined
+    }
+  }
+
+  const stopOverflow = () => {
+    send({
+      type: 'state',
+      state: 'error',
+      message: '输出超过 16 MiB 缓冲上限，已停止会话；输出可能不完整。'
+    })
+    close()
   }
 
   const flush = () => {
@@ -71,33 +123,28 @@ export function terminalChannel(
       clearTimeout(flushTimer)
       flushTimer = undefined
     }
-    if (closed || pendingBytes === 0) return
-    lastFlushAt = performance.now()
-    const bytes = pendingChunks.length === 1 ? pendingChunks[0]! : Buffer.concat(pendingChunks, pendingBytes)
-    pendingChunks = []
-    pendingBytes = 0
-    try {
-      for (let offset = 0; offset < bytes.length; offset += CHUNK_BYTES) {
+    if (closed) return
+    if (pendingBytes) {
+      lastFlushAt = performance.now()
+      const bytes =
+        pendingChunks.length === 1 ? pendingChunks[0]! : Buffer.concat(pendingChunks, pendingBytes)
+      pendingChunks = []
+      pendingBytes = 0
+      for (let offset = 0; !closed && offset < bytes.length; offset += CHUNK_BYTES) {
         const chunk = bytes.subarray(offset, offset + CHUNK_BYTES)
-        const sequence = flow.push(chunk.length)
-        send({ type: 'data', sequence, data: new Uint8Array(chunk) })
+        if (visible && !held.length) postChunk(chunk)
+        else {
+          held.push(chunk)
+          heldBytes += chunk.length
+        }
       }
-      if (!paused && flow.shouldPause) {
-        paused = true
-        stalledAt = Date.now()
-        adapter.pause()
-      }
-    } catch {
-      send({
-        type: 'state',
-        state: 'error',
-        message: '输出超过 16 MiB 缓冲上限，已停止会话；输出可能不完整。'
-      })
-      close()
     }
+    drainHeld()
+    updateBackpressure()
   }
 
   const watchdog = setInterval(() => {
+    if (!visible) return
     const now = Date.now()
     if (paused && stalledAt && now - stalledAt > stallTimeoutMs) {
       send({
@@ -133,19 +180,23 @@ export function terminalChannel(
         adapter.resize(message.cols, message.rows)
       } else if (message.type === 'close') {
         close()
+      } else if (message.type === 'presentation') {
+        if (visible !== message.visible) {
+          visible = message.visible
+          if (visible && paused) stalledAt = Date.now()
+          if (visible && ending) endingAt = Date.now()
+          if (visible) flush()
+        }
       } else if (flow.ack(message.sequence)) {
         const now = Date.now()
         if (paused) stalledAt = now
         if (ending) endingAt = now
-        if (ending && flow.bytes === 0) {
+        drainHeld()
+        if (ending && buffered() === 0) {
           close()
           return
         }
-        if (paused && flow.shouldResume) {
-          paused = false
-          stalledAt = 0
-          adapter.resume()
-        }
+        updateBackpressure()
       }
     } catch {
       send({ type: 'state', state: 'error', message: '终端通道已不可用，请新建会话。' })
@@ -162,26 +213,32 @@ export function terminalChannel(
     close,
     finish(event: Extract<TerminalEvent, { type: 'state' }>) {
       if (closed || ending) return
+      ending = true
+      finalState = event
       flush()
       if (closed) return
-      ending = true
-      send(event)
-      if (flow.bytes === 0) close()
+      if (buffered() === 0) close()
       else endingAt = Date.now()
     },
     output(data: Buffer | string) {
       if (closed || ending) return
       const bytes = typeof data === 'string' ? Buffer.from(data, 'utf8') : data
       if (bytes.length === 0) return
+      if (bytes.length > flow.limit - buffered()) {
+        stopOverflow()
+        return
+      }
       pendingChunks.push(bytes)
       pendingBytes += bytes.length
       // Show the first output after an idle period immediately. Keep batching
       // bursts while the renderer is busy or the previous send was recent.
       const idle = !flushTimer && flow.bytes === 0 && performance.now() - lastFlushAt >= coalesceMs
-      if (idle || pendingBytes >= CHUNK_BYTES || coalesceMs <= 0) {
+      if ((visible && idle) || pendingBytes >= CHUNK_BYTES || coalesceMs <= 0) {
         flush()
-      } else if (!flushTimer) {
+      } else if (visible && !flushTimer) {
         flushTimer = setTimeout(flush, coalesceMs)
+      } else if (!visible) {
+        updateBackpressure()
       }
     }
   }

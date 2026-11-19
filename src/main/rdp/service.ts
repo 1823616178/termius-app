@@ -39,7 +39,7 @@ export function resolveRdpLaunchConfig(params: {
   settings: RdpSettings
   options: RdpProfileOptions
   launchModeOverride?: RdpLaunchMode
-  probe: RdpEnvironmentProbe
+  probe?: RdpEnvironmentProbe
 }): RdpResolvedConfigSummary {
   const { settings, options, launchModeOverride, probe } = params
   const requestedMode: RdpLaunchMode =
@@ -52,16 +52,16 @@ export function resolveRdpLaunchConfig(params: {
   let fallbackFromExternal = false
   let fallbackReason: string | undefined
 
-  if (requestedMode === 'external' && !probe.schemeAAvailable) {
+  if (requestedMode === 'external' && !probe?.schemeAAvailable) {
     if (settings.autoFallbackToEmbedded) {
       effectiveMode = 'embedded'
       fallbackFromExternal = true
       fallbackReason =
-        probe.schemeAMissingReason ?? '当前系统未检测到可用的原生 RDP 客户端，已自动回退至内嵌画布'
+        probe?.schemeAMissingReason ?? '当前系统未检测到可用的原生 RDP 客户端，已自动回退至内嵌画布'
     } else {
-      const hint = probe.schemeAInstallHint ? `\n建议安装命令：${probe.schemeAInstallHint}` : ''
+      const hint = probe?.schemeAInstallHint ? `\n建议安装命令：${probe.schemeAInstallHint}` : ''
       throw new Error(
-        `${probe.schemeAMissingReason ?? '未检测到系统原生 RDP 客户端'}${hint}\n可在设置中启用“系统缺失时自动回退至方案 B（内嵌画布）”或手动切换至方案 B。`
+        `${probe?.schemeAMissingReason ?? '未检测到系统原生 RDP 客户端'}${hint}\n可在设置中启用“系统缺失时自动回退至方案 B（内嵌画布）”或手动切换至方案 B。`
       )
     }
   }
@@ -128,6 +128,15 @@ export class RdpService {
 
   getProxyPort(): number | null {
     return this.proxy.getPort()
+  }
+
+  getActiveSessionCount(ownerWindowId?: number): number {
+    let count = 0
+    for (const rec of this.sessions.values()) {
+      if (ownerWindowId !== undefined && rec.ownerWindowId !== ownerWindowId) continue
+      if (rec.info.status === 'starting' || rec.info.status === 'active') count++
+    }
+    return count
   }
 
   invalidateProbeCache(): void {
@@ -260,7 +269,6 @@ export class RdpService {
   async connect(ownerWindowId: number, rawSource: RdpConnectSource): Promise<RdpSessionInfo> {
     const source = rdpConnectSourceSchema.parse(rawSource)
     const settings = await this.getSettings()
-    const probe = await this.probe(true)
 
     let title: string
     let host: string
@@ -295,6 +303,18 @@ export class RdpService {
       options = source.options
     }
 
+    const requestedMode: RdpLaunchMode =
+      source.launchModeOverride ??
+      (options.launchMode === 'external' || options.launchMode === 'embedded'
+        ? options.launchMode
+        : settings.preferredMode)
+
+    let probe = requestedMode === 'external' ? await this.probe(false) : undefined
+    if (probe && !probe.schemeAAvailable) {
+      // Re-probe only when external client is requested and currently marked unavailable (e.g. just installed).
+      probe = await this.probe(true)
+    }
+
     const resolved = resolveRdpLaunchConfig({
       settings,
       options,
@@ -306,6 +326,7 @@ export class RdpService {
     const createdAt = new Date().toISOString()
 
     if (resolved.effectiveMode === 'external') {
+      if (!probe?.schemeABinaryPath) throw new Error('未检测到系统原生 RDP 客户端')
       if (resolved.certPolicy !== 'warn-allow') {
         const preflight = await preflightRdpTlsCertificate({
           host,
@@ -357,7 +378,7 @@ export class RdpService {
         const managed = await launchExternalRdpSession({
           sessionId,
           platform: probe.platform,
-          binaryPath: probe.schemeABinaryPath!,
+          binaryPath: probe.schemeABinaryPath,
           host,
           port,
           username,
@@ -429,6 +450,14 @@ export class RdpService {
     return info
   }
 
+  setDisplayVisible(ownerWindowId: number, sessionId: string, visible: boolean): void {
+    const record = this.sessions.get(sessionId)
+    if (record?.ownerWindowId === ownerWindowId && record.info.mode === 'embedded') {
+      if (record.info.status === 'starting') record.info.status = 'active'
+      this.proxy.setDisplayVisible(sessionId, visible)
+    }
+  }
+
   async disconnect(ownerWindowId: number, sessionId: string): Promise<void> {
     const rec = this.sessions.get(sessionId)
     if (!rec || rec.ownerWindowId !== ownerWindowId) return
@@ -449,6 +478,7 @@ export class RdpService {
     const owned = [...this.sessions.values()].filter((item) => item.ownerWindowId === ownerWindowId)
     for (const item of owned) {
       this.sessions.delete(item.sessionId)
+      this.proxy.closeSession(item.sessionId)
       await item.external?.stop().catch(() => {})
     }
     for (const [promptId, pending] of this.certPrompts) {

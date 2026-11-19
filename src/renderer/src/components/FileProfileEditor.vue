@@ -40,14 +40,13 @@ const protocol = ref<EditorProtocol>(props.profile?.protocol ?? 'ftp')
 const name = ref(props.profile?.name ?? '')
 const host = ref(props.profile?.host ?? '')
 const port = ref<number>(
-  props.profile?.port ??
-    (props.profile ? FILE_DEFAULT_PORTS[props.profile.protocol] : protocolSettings.value.ssh.defaultPort)
+  props.profile?.port ?? (props.profile ? FILE_DEFAULT_PORTS[props.profile.protocol] : FILE_DEFAULT_PORTS.ftp)
 )
 const username = ref(props.profile?.username ?? '')
 const initialPath = ref(props.profile?.initialPath ?? '')
 const notes = ref(props.profile?.notes ?? '')
 const favorite = ref(props.profile?.favorite ?? false)
-const saveSecrets = ref(false)
+const saveSecrets = ref(Boolean(props.profile?.hasSecrets))
 const clearSecrets = ref(false)
 
 // SSH fields when protocol === 'sftp'
@@ -249,12 +248,8 @@ function submitFile(mode: 'save' | 'save-connect' | 'adhoc') {
   }
 
   if (protocol.value === 'sftp') {
-    if (sshAuth.value === 'password' && secrets.password && !saveSecrets.value) {
-      errors.value.secrets = props.encryptionAvailable
-        ? t('hostEditor.needSavePasswordCheck')
-        : isLinux.value
-          ? t('hostEditor.cannotSaveLinux')
-          : t('hostEditor.cannotSaveWin')
+    if (sshAuth.value === 'password' && secrets.password && saveSecrets.value && !props.encryptionAvailable) {
+      errors.value.secrets = isLinux.value ? t('hostEditor.cannotSaveLinux') : t('hostEditor.cannotSaveWin')
       return
     }
     const candidate: HostInput = {
@@ -273,7 +268,7 @@ function submitFile(mode: 'save' | 'save-connect' | 'adhoc') {
       notes: notes.value,
       favorite: favorite.value,
       ...(secrets.password ? { password: secrets.password } : {}),
-      savePassword: saveSecrets.value,
+      savePassword: saveSecrets.value && Boolean(secrets.password),
       clearPassword: false
     }
     const res = hostInputSchema.safeParse(candidate)

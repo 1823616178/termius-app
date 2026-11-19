@@ -3,6 +3,7 @@ import { promisify } from 'node:util'
 import { describe, expect, it } from 'vitest'
 import {
   MAX_SYNC_DOCUMENT_BYTES,
+  MAX_SYNC_V2_DOCUMENT_BYTES,
   SYNC_A2_ITERATIONS,
   SYNC_A2_MEMORY_KIB,
   SYNC_A2_PARALLELISM,
@@ -10,6 +11,7 @@ import {
   SYNC_AAD_DOMAIN_DOCUMENT,
   SYNC_RECOVERY_PREFIX,
   SYNC_SCHEMA_VERSION,
+  type SyncDocumentProtocolsV2,
   type SyncDocumentV1
 } from '../../src/shared/sync'
 import { argon2idSync } from '../../src/workers/data-crypto/argon2id'
@@ -18,8 +20,10 @@ import {
   aesGcmEncrypt,
   buildAad,
   createVaultMaterial,
+  decryptNamespaceDocument,
   decryptSyncDocument,
   deriveRecoveryKek,
+  encryptNamespaceDocument,
   encryptSyncDocument,
   generateRecoveryKey,
   parseRecoveryKeySecret,
@@ -222,5 +226,78 @@ describe('Sync E2EE cryptography', () => {
   it('generates valid unique SPM1 recovery keys', () => {
     const key = generateRecoveryKey()
     expect(parseRecoveryKeySecret(key).length).toBe(32)
+  })
+
+  it('encrypts v2 namespace documents with namespace-bound AAD, configurable size limit and keeps core v1 AAD untouched', async () => {
+    const vaultId = crypto.randomUUID()
+    const created = await createVaultMaterial(1, 'Vault-Password-123')
+    const protocolsDoc: SyncDocumentProtocolsV2 = {
+      schemaVersion: 2,
+      updatedAt: '2026-11-19T00:00:00.000Z',
+      preferences: { syncFileCredentials: true, syncRdpCredentials: true },
+      fileProfiles: [],
+      rdpProfiles: [
+        {
+          id: crypto.randomUUID(),
+          name: 'Win-Box',
+          host: '10.9.9.9',
+          port: 3389,
+          domain: '',
+          username: 'admin',
+          notes: '',
+          favorite: false,
+          options: {},
+          secrets: { password: 'RdpTopSecret!' }
+        }
+      ],
+      knownRdpHosts: []
+    }
+    const env = encryptNamespaceDocument(created.vaultKey, vaultId, 'protocols', 1, protocolsDoc)
+    expect(env.schemaVersion).toBe(2)
+    expect(env.ciphertext).not.toContain('RdpTopSecret!')
+
+    const dec = decryptNamespaceDocument(created.vaultKey, vaultId, 'protocols', env)
+    expect(dec.readOnlySchema).toBe(false)
+    expect(
+      (dec.rawDocument.rdpProfiles as Array<{ secrets: { password: string } }>)[0]!.secrets.password
+    ).toBe('RdpTopSecret!')
+
+    // Namespace is bound into AAD: a protocols ciphertext must not open as settings
+    expect(() => decryptNamespaceDocument(created.vaultKey, vaultId, 'settings', env)).toThrow('解密失败')
+    // v2 AAD differs from v1 core AAD domain
+    expect(() => decryptSyncDocument(created.vaultKey, vaultId, env)).toThrow('解密失败')
+
+    // Newer-than-supported namespace schema is flagged read-only
+    const futureEnv = encryptNamespaceDocument(created.vaultKey, vaultId, 'protocols', 1, {
+      ...protocolsDoc,
+      schemaVersion: 7
+    } as unknown as SyncDocumentProtocolsV2)
+    expect(decryptNamespaceDocument(created.vaultKey, vaultId, 'protocols', futureEnv).readOnlySchema).toBe(
+      true
+    )
+
+    // 'core' delegates to the frozen v1 path byte-compatibly
+    const coreDoc: SyncDocumentV1 = {
+      schemaVersion: SYNC_SCHEMA_VERSION,
+      updatedAt: '2026-11-19T00:00:00.000Z',
+      preferences: { syncPasswords: false, syncPrivateKeys: false },
+      servers: [],
+      tunnels: [],
+      groups: []
+    }
+    const coreEnv = encryptNamespaceDocument(created.vaultKey, vaultId, 'core', 1, coreDoc)
+    expect(decryptSyncDocument(created.vaultKey, vaultId, coreEnv).schemaVersion).toBe(1)
+
+    // maxDocumentBytes from server capabilities is honored (clamped to >= 2 MiB)
+    const big: SyncDocumentProtocolsV2 = {
+      ...protocolsDoc,
+      notes_blob: 'A'.repeat(MAX_SYNC_DOCUMENT_BYTES + 4096)
+    }
+    expect(() =>
+      encryptNamespaceDocument(created.vaultKey, vaultId, 'protocols', 1, big, MAX_SYNC_DOCUMENT_BYTES)
+    ).toThrow('2.00 MiB')
+    expect(() =>
+      encryptNamespaceDocument(created.vaultKey, vaultId, 'protocols', 1, big, MAX_SYNC_V2_DOCUMENT_BYTES)
+    ).not.toThrow()
   })
 })

@@ -34,6 +34,7 @@ import type {
   SyncGroup,
   SyncGroupInput,
   SyncLoginInput,
+  SyncNamespace,
   SyncPreferencesResult,
   SyncPreferencesUpdate,
   SyncRegisterInput,
@@ -268,6 +269,7 @@ export const terminalInputSchema = z.discriminatedUnion('type', [
     rows: z.number().int().min(1).max(300)
   }),
   z.object({ type: z.literal('ack'), sequence: z.number().int().positive() }),
+  z.object({ type: z.literal('presentation'), visible: z.boolean() }),
   z.object({ type: z.literal('close') })
 ])
 export type TerminalEvent =
@@ -399,6 +401,10 @@ export interface SyncDataUpdate {
   hosts: Host[]
   groups: SyncGroup[]
   tunnels: SyncTunnel[]
+  fileProfiles?: FileProfile[]
+  rdpProfiles?: RdpProfile[]
+  knownRdpHosts?: KnownRdpHostEntry[]
+  protocolSettings?: AllProtocolSettings
 }
 export interface Bridge {
   bootstrap(): Promise<Bootstrap>
@@ -433,8 +439,8 @@ export interface Bridge {
     updatePreferences(input: SyncPreferencesUpdate): Promise<SyncPreferencesResult>
     listDevices(): Promise<SyncDevice[]>
     revokeDevice(deviceId: string): Promise<SyncDevice[]>
-    listRevisions(): Promise<SyncRevisionInfo[]>
-    restoreRevision(revision: string): Promise<SyncStatusSnapshot>
+    listRevisions(namespace?: SyncNamespace): Promise<SyncRevisionInfo[]>
+    restoreRevision(revision: string, namespace?: SyncNamespace): Promise<SyncStatusSnapshot>
     onStatusChanged(callback: (status: SyncStatusSnapshot) => void): () => void
     onDataChanged(callback: (data: SyncDataUpdate) => void): () => void
   }
@@ -458,6 +464,7 @@ export interface Bridge {
     restoreFromTray(): void
     isMaximized(): Promise<boolean>
     onMaximized(callback: (maximized: boolean) => void): () => void
+    onPresence(callback: (present: boolean) => void): () => void
   }
   tray: {
     getState(): Promise<TrayState>
@@ -555,6 +562,7 @@ export interface Bridge {
     listKnownHosts(): Promise<KnownRdpHostEntry[]>
     removeKnownHost(id: string): Promise<KnownRdpHostEntry[]>
     connect(source: RdpConnectSource): Promise<RdpSessionInfo>
+    setDisplayVisible(sessionId: string, visible: boolean): Promise<void>
     disconnect(sessionId: string): Promise<void>
     decideCert(promptId: string, accept: boolean): Promise<void>
     onCertPrompt(callback: (request: RdpCertPromptRequest) => void): () => void

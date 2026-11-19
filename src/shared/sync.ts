@@ -1,10 +1,22 @@
 import { z } from 'zod'
 import { idSchema } from './contracts'
+import type { FileProfileOptions, FileProtocol, FileSecretsInput, FilesSettings, SshSettings } from './files'
 import { isHttpsOrLoopbackUrl, isLoopbackHostname } from './network'
+import type { RdpProfileOptions, RdpSettings } from './rdp'
 
 export const SYNC_SCHEMA_VERSION = 1
+export const SYNC_NAMESPACE_SCHEMA_VERSION = 2
+export const SYNC_NAMESPACES = ['core', 'protocols', 'settings'] as const
+export type SyncNamespace = (typeof SYNC_NAMESPACES)[number]
+export const syncNamespaceSchema = z.enum(SYNC_NAMESPACES)
+
 export const MAX_SYNC_DOCUMENT_BYTES = 2 * 1024 * 1024
+export const MAX_SYNC_V2_DOCUMENT_BYTES = 8 * 1024 * 1024
+export const MAX_SYNC_ALLOWED_DOCUMENT_BYTES = 16 * 1024 * 1024
 export const MAX_SYNC_HOSTS = 5000
+export const MAX_SYNC_FILE_PROFILES = 5000
+export const MAX_SYNC_RDP_PROFILES = 5000
+export const MAX_SYNC_KNOWN_RDP_HOSTS = 5000
 export const MAX_PRIVATE_KEY_BYTES = 256 * 1024
 
 export const SYNC_AES_ALGORITHM = 'AES-256-GCM'
@@ -19,6 +31,7 @@ export const SYNC_GCM_TAG_BYTES = 16
 export const SYNC_RECOVERY_PREFIX = 'SPM1'
 
 export const SYNC_AAD_DOMAIN_DOCUMENT = 'ssh-port-mapper/sync-document/v1'
+export const SYNC_AAD_DOMAIN_DOCUMENT_V2 = 'ssh-port-mapper/sync-document/v2'
 export const SYNC_AAD_DOMAIN_PASSWORD_WRAP = 'ssh-port-mapper/vault-key/password/v1'
 export const SYNC_AAD_DOMAIN_RECOVERY_WRAP = 'ssh-port-mapper/vault-key/recovery/v1'
 export const SYNC_HKDF_RECOVERY_INFO = 'ssh-port-mapper/recovery-kek/v1'
@@ -194,6 +207,9 @@ export const syncVaultRecoverInputSchema = z
 export const syncPreferencesUpdateSchema = z
   .object({
     syncPasswords: z.boolean().optional(),
+    syncFileCredentials: z.boolean().optional(),
+    syncRdpCredentials: z.boolean().optional(),
+    syncProtocolSettings: z.boolean().optional(),
     masterPassword: z.preprocess(blankToUndefined, z.string().min(1).max(1024).optional()),
     currentAccountPassword: z.preprocess(blankToUndefined, z.string().min(1).max(1024).optional()),
     autoSync: z.boolean().optional(),
@@ -372,6 +388,137 @@ export interface SyncDocumentV1 {
   [key: string]: unknown
 }
 
+export interface WireFileProfile {
+  id: string
+  name: string
+  protocol: FileProtocol
+  host: string
+  port: number
+  username: string
+  initialPath: string
+  notes: string
+  favorite: boolean
+  options: FileProfileOptions
+  secrets?: FileSecretsInput
+  updatedAt?: string
+  [key: string]: unknown
+}
+
+export interface WireRdpProfileSecrets {
+  password?: string
+  [key: string]: unknown
+}
+
+export interface WireRdpProfile {
+  id: string
+  name: string
+  host: string
+  port: number
+  domain: string
+  username: string
+  linkedHostId?: string | null
+  notes: string
+  favorite: boolean
+  options: RdpProfileOptions
+  secrets?: WireRdpProfileSecrets
+  updatedAt?: string
+  [key: string]: unknown
+}
+
+export interface WireKnownRdpHost {
+  id: string
+  host: string
+  port: number
+  fingerprint: string
+  subject: string
+  issuer: string
+  validFrom: string
+  validTo: string
+  acceptedAt: string
+  [key: string]: unknown
+}
+
+export interface WireProtocolsPreferences {
+  syncFileCredentials: boolean
+  syncRdpCredentials: boolean
+  [key: string]: unknown
+}
+
+export interface SyncDocumentProtocolsV2 {
+  schemaVersion: 2
+  updatedAt: string
+  preferences: WireProtocolsPreferences
+  fileProfiles: WireFileProfile[]
+  rdpProfiles: WireRdpProfile[]
+  knownRdpHosts: WireKnownRdpHost[]
+  [key: string]: unknown
+}
+
+/** Machine-local OS binary / shared drive paths are intentionally excluded from cross-device settings sync. */
+export type SyncedRdpSettings = Omit<RdpSettings, 'externalClientPath' | 'sharedDrivePath'>
+
+export interface WireSettingsPreferences {
+  syncProtocolSettings: boolean
+  [key: string]: unknown
+}
+
+export interface SyncDocumentSettingsV2 {
+  schemaVersion: 2
+  updatedAt: string
+  preferences: WireSettingsPreferences
+  protocolSettings: {
+    ssh: SshSettings
+    files: FilesSettings
+    rdp: SyncedRdpSettings
+  }
+  [key: string]: unknown
+}
+
+export type SyncNamespaceDocument = SyncDocumentV1 | SyncDocumentProtocolsV2 | SyncDocumentSettingsV2
+
+export interface SyncServerCapabilities {
+  probed: boolean
+  legacyV1Only: boolean
+  maxSchemaVersion: number
+  supportedNamespaces: SyncNamespace[]
+  maxDocumentBytes: number
+  supportsBatchVaultRotate: boolean
+}
+
+export const DEFAULT_LEGACY_SERVER_CAPABILITIES: SyncServerCapabilities = {
+  probed: false,
+  legacyV1Only: true,
+  maxSchemaVersion: SYNC_SCHEMA_VERSION,
+  supportedNamespaces: ['core'],
+  maxDocumentBytes: MAX_SYNC_DOCUMENT_BYTES,
+  supportsBatchVaultRotate: false
+}
+
+export interface SyncNamespaceState {
+  namespace: SyncNamespace
+  lastRevision: string | null
+  lastSyncAt: string | null
+  pendingChanges: boolean
+  readOnlyRemoteSchema: boolean
+  remoteSchemaVersion?: number
+}
+
+export const syncListRevisionsInputSchema = z.union([
+  z.undefined(),
+  syncNamespaceSchema,
+  z.object({ namespace: syncNamespaceSchema.optional() }).strict()
+])
+
+export const syncRestoreRevisionInputSchema = z.union([
+  z.string().regex(/^\d+$/, '无效版本号').max(32),
+  z
+    .object({
+      revision: z.string().regex(/^\d+$/, '无效版本号').max(32),
+      namespace: syncNamespaceSchema.optional()
+    })
+    .strict()
+])
+
 export interface SyncGroup {
   id: string
   name: string
@@ -414,6 +561,7 @@ export interface SyncDevice {
 }
 
 export interface SyncRevisionInfo {
+  namespace?: SyncNamespace
   revision: string
   schemaVersion: number
   keyVersion: number
@@ -424,9 +572,20 @@ export interface SyncRevisionInfo {
   createdByDeviceName?: string | null
 }
 
+export type SyncConflictEntityType =
+  | 'server'
+  | 'tunnel'
+  | 'group'
+  | 'preferences'
+  | 'fileProfile'
+  | 'rdpProfile'
+  | 'knownRdpHost'
+  | 'protocolSettings'
+
 export interface SyncConflict {
   id: string
-  entityType: 'server' | 'tunnel' | 'group' | 'preferences'
+  namespace?: SyncNamespace
+  entityType: SyncConflictEntityType
   entityId: string
   entityName: string
   field: string
@@ -471,6 +630,9 @@ export interface SyncStatusSnapshot {
   deviceName: string
   syncPasswords: boolean
   syncPrivateKeys: boolean
+  syncFileCredentials: boolean
+  syncRdpCredentials: boolean
+  syncProtocolSettings: boolean
   lastRevision: string | null
   lastSyncAt: string | null
   pendingChanges: boolean
@@ -479,6 +641,8 @@ export interface SyncStatusSnapshot {
   lastError: string | null
   conflicts: SyncConflict[]
   capabilities: SyncCapabilities
+  serverCapabilities: SyncServerCapabilities
+  namespaces: Record<SyncNamespace, SyncNamespaceState>
 }
 
 export interface SyncVaultCreateResult {

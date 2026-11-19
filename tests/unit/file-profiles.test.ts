@@ -232,17 +232,17 @@ describe('Repository v4: file profiles and protocol settings', () => {
     }
   })
 
-  it('migrates a v3 database to v5 with backup and keeps existing rows', () => {
+  it('migrates a v3 database to v6 with backup and keeps existing rows', () => {
     const dir = makeTempDir()
     const dbPath = join(dir, 'v3.db')
     const first = new Repository(dbPath)
     first.save({ name: 'Keep-Me', address: '10.0.0.1', port: 22, username: 'root' })
     first.close()
 
-    // Downgrade the marker and drop the v4 & v5 tables to mimic a real v3 file.
+    // Downgrade the marker and drop the v4, v5 & v6 tables to mimic a real v3 file.
     const raw = new Database(dbPath)
     raw.exec(
-      'DROP TABLE rdp_profiles; DROP TABLE known_rdp_hosts; DROP TABLE file_profiles; DROP TABLE protocol_settings; PRAGMA user_version = 3;'
+      'DROP TABLE sync_namespaces; DROP TABLE rdp_profiles; DROP TABLE known_rdp_hosts; DROP TABLE file_profiles; DROP TABLE protocol_settings; PRAGMA user_version = 3;'
     )
     raw.close()
 
@@ -252,6 +252,7 @@ describe('Repository v4: file profiles and protocol settings', () => {
       expect(repo.list().map((h) => h.name)).toEqual(['Keep-Me'])
       expect(repo.fileProfilesList()).toEqual([])
       expect(repo.rdpProfilesList()).toEqual([])
+      expect(repo.syncNamespacesList()).toEqual([])
       expect(repo.protocolSettingsAll().files).toEqual(DEFAULT_FILES_SETTINGS)
       expect(repo.protocolSettingsAll().rdp).toEqual(DEFAULT_RDP_SETTINGS)
     } finally {
@@ -259,7 +260,7 @@ describe('Repository v4: file profiles and protocol settings', () => {
     }
     const verify = new Database(dbPath, { readonly: true })
     try {
-      expect(verify.pragma('user_version', { simple: true })).toBe(5)
+      expect(verify.pragma('user_version', { simple: true })).toBe(6)
     } finally {
       verify.close()
     }

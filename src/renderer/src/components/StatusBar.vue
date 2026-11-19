@@ -96,7 +96,7 @@ const syncLabel = computed(() => {
       :title="t('status.versionTitle')"
       @click="openUpdateSettings"
     >
-      v{{ bootstrap?.versions.app ?? '1.2.0'
+      v{{ bootstrap?.versions.app ?? '1.3.0'
       }}{{
         hasVisibleUpdate && updateState.latest
           ? ` · ${t('status.upgradeAvailable', { version: updateState.latest.version })}`

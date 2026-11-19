@@ -1,9 +1,17 @@
 import { app, safeStorage } from 'electron'
 import { randomUUID } from 'node:crypto'
+import { AUTO_SYNC_RESUME_MS, resolveAutoSyncDelay } from './sync-schedule'
 import { hostname } from 'node:os'
 import type { Host, SyncDataUpdate } from '../shared/contracts'
+import type { AllProtocolSettings, FileProfile, FileSecretsInput } from '../shared/files'
+import type { KnownRdpHostEntry, RdpProfile } from '../shared/rdp'
 import {
+  DEFAULT_LEGACY_SERVER_CAPABILITIES,
+  MAX_SYNC_ALLOWED_DOCUMENT_BYTES,
+  MAX_SYNC_DOCUMENT_BYTES,
   SYNC_KEY_CAPABILITY_MESSAGE,
+  SYNC_NAMESPACES,
+  SYNC_NAMESPACE_SCHEMA_VERSION,
   SYNC_SCHEMA_VERSION,
   syncLoginInputSchema,
   syncPreferencesUpdateSchema,
@@ -19,10 +27,13 @@ import {
   type SyncDocumentEnvelope,
   type SyncGroup,
   type SyncLoginInput,
+  type SyncNamespace,
+  type SyncNamespaceState,
   type SyncPreferencesResult,
   type SyncPreferencesUpdate,
   type SyncRegisterInput,
   type SyncRevisionInfo,
+  type SyncServerCapabilities,
   type SyncStatePhase,
   type SyncStatusSnapshot,
   type SyncTunnel,
@@ -33,10 +44,18 @@ import {
   type VaultMetadataWire
 } from '../shared/sync'
 import type { DataClient } from './data-client'
-import type { SyncAccountRecord, SyncEvaluateOutput } from '../workers/data-crypto/database'
+import type {
+  SyncAccountRecord,
+  SyncEvaluateOutput,
+  SyncEvaluateProtocolsOutput,
+  SyncEvaluateSettingsOutput,
+  SyncNamespaceRecord
+} from '../workers/data-crypto/database'
 
 const REQUEST_TIMEOUT_MS = 12_000
-const AUTO_SYNC_DEBOUNCE_MS = 3_000
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
+}
 const MAX_RETRY_429 = 2
 const MAX_CONFLICT_RACE_RETRIES = 5
 
@@ -90,6 +109,8 @@ interface PendingConflictContext {
 
 export class SyncService {
   private account: SyncAccountRecord | undefined
+  private namespaceRecords: Partial<Record<SyncNamespace, SyncNamespaceRecord>> = {}
+  private serverCapabilities: SyncServerCapabilities = { ...DEFAULT_LEGACY_SERVER_CAPABILITIES }
   private accessToken: string | null = null
   private refreshToken: string | null = null
   private vaultMetadata: VaultMetadataWire | null = null
@@ -98,12 +119,18 @@ export class SyncService {
   private offline = false
   private lastError: string | null = null
   private pendingConflict: PendingConflictContext | null = null
+  private pendingNamespaceConflicts: Partial<Record<SyncNamespace, SyncConflict[]>> = {}
   private refreshPromise: Promise<void> | null = null
   private syncQueue: Promise<unknown> = Promise.resolve()
+  private autoSyncRequest?: { immediate: boolean }
   private autoSyncTimer: NodeJS.Timeout | undefined
   private rerunRequested = false
   private localMutationEpoch = 0
   private disposed = false
+  private uiBackgrounded = false
+  private syncDeferredByBackground = false
+  private syncDeferredImmediate = false
+  private autoSyncNotBefore = 0
 
   constructor(
     private readonly repository: DataClient,
@@ -114,11 +141,38 @@ export class SyncService {
 
   async initFromDb(): Promise<void> {
     this.account = await this.repository.call<SyncAccountRecord | undefined>('syncAccountGet')
+    await this.refreshNamespaceRecords()
     let unlocked = this.account?.vaultId ? await this.repository.call<boolean>('vaultHasUnlockedKey') : false
     if (!unlocked && this.account?.vaultId && this.account.encryptedVaultKey) {
       unlocked = await this.tryRestoreVaultKeyFromDisk()
     }
     this.vaultUnlocked = unlocked
+  }
+
+  private async refreshNamespaceRecords(): Promise<void> {
+    const list = await this.repository.call<SyncNamespaceRecord[]>('syncNamespacesList')
+    const next: Partial<Record<SyncNamespace, SyncNamespaceRecord>> = {}
+    for (const item of list) {
+      next[item.namespace] = item
+    }
+    this.namespaceRecords = next
+  }
+
+  private supportsNamespace(namespace: SyncNamespace): boolean {
+    return this.serverCapabilities.supportedNamespaces.includes(namespace)
+  }
+
+  private getAllPendingConflicts(): SyncConflict[] {
+    return [
+      ...(this.pendingConflict?.conflicts ?? []),
+      ...(this.pendingNamespaceConflicts.protocols ?? []),
+      ...(this.pendingNamespaceConflicts.settings ?? [])
+    ]
+  }
+
+  private clearAllPendingConflicts(): void {
+    this.pendingConflict = null
+    this.pendingNamespaceConflicts = {}
   }
 
   async resumeSession(): Promise<void> {
@@ -368,7 +422,7 @@ export class SyncService {
         })
       }
       this.vaultUnlocked = false
-      this.pendingConflict = null
+      this.clearAllPendingConflicts()
       this.lastError = null
       const status = this.buildStatus()
       this.emitStatus(status)
@@ -381,7 +435,7 @@ export class SyncService {
       this.clearAutoSyncTimer()
       this.requireSignedIn()
       if (!this.vaultUnlocked) throw new Error('保管库未解锁，请先输入主密码解锁')
-      if (this.pendingConflict && this.pendingConflict.conflicts.length > 0) {
+      if (this.getAllPendingConflicts().length > 0) {
         throw new Error('存在待处理的同步冲突，请先选择保留本地或远端版本')
       }
       await this.performSyncCycle()
@@ -412,63 +466,194 @@ export class SyncService {
       if (!this.account) await this.initFromDb()
       if (!this.account) throw new Error('请先登录同步账号')
 
+      const prevSyncPasswords = this.account.syncPasswords
+      const prevSyncFileCredentials = this.account.syncFileCredentials
+      const prevSyncRdpCredentials = this.account.syncRdpCredentials
+      const prevSyncProtocolSettings = this.account.syncProtocolSettings
+
+      const nextSyncPasswords = input.syncPasswords ?? prevSyncPasswords
+      const nextSyncFileCredentials = input.syncFileCredentials ?? prevSyncFileCredentials
+      const nextSyncRdpCredentials = input.syncRdpCredentials ?? prevSyncRdpCredentials
+      const nextSyncProtocolSettings = input.syncProtocolSettings ?? prevSyncProtocolSettings
+
+      const protocolsSupported = this.supportsNamespace('protocols')
+      const settingsSupported = this.supportsNamespace('settings')
+      const disablingCorePasswords = input.syncPasswords === false && prevSyncPasswords
+      const disablingFileCredentials =
+        input.syncFileCredentials === false && prevSyncFileCredentials && protocolsSupported
+      const disablingRdpCredentials =
+        input.syncRdpCredentials === false && prevSyncRdpCredentials && protocolsSupported
+      const requiresVaultKeyRotation =
+        disablingCorePasswords || disablingFileCredentials || disablingRdpCredentials
+
       let rotatedRecoveryKey: string | undefined
 
-      // Turning off password sync triggers real Vault Key Rotation + clean stripped re-upload
-      if (input.syncPasswords === false && this.account.syncPasswords) {
+      // Turning off any synced credential class triggers real Vault Key Rotation + stripped re-upload
+      if (requiresVaultKeyRotation) {
         this.requireSignedIn()
-        if (!this.vaultUnlocked) throw new Error('关闭密码加密同步并轮换密钥前，请先解锁保管库')
+        if (!this.vaultUnlocked) throw new Error('关闭凭据加密同步并轮换密钥前，请先解锁保管库')
         if (!input.masterPassword) {
-          throw new Error('关闭密码同步需要触发保管库密钥轮换，请输入保管库主密码以加密新密钥。')
+          throw new Error('关闭凭据同步需要触发保管库密钥轮换，请输入保管库主密码以加密新密钥。')
         }
         if (!input.currentAccountPassword) {
-          throw new Error('关闭密码同步需要向服务端验证账号身份，请输入当前账号登录密码。')
+          throw new Error('关闭凭据同步需要向服务端验证账号身份，请输入当前账号登录密码。')
         }
         const nextKeyVersion = (this.account.keyVersion ?? 1) + 1
         const plaintextPasswords = await this.decryptLocalHostPasswords()
-        let prep: Awaited<ReturnType<SyncService['callPrepareRotate']>> | undefined
-        try {
-          prep = await this.callPrepareRotate(nextKeyVersion, input.masterPassword, false, plaintextPasswords)
-        } finally {
-          wipePasswordMap(plaintextPasswords)
-        }
-        try {
-          const currentHead = await this.fetchRemoteDocument(this.account.serverUrl)
-          const baseRevision = currentHead?.revision ?? this.account.lastRevision ?? '0'
-          const rotateRes = await this.requestJson<{
-            id: string
-            keyVersion: number
-            revision: string | number
-            updatedAt: string
-          }>(this.account.serverUrl, '/api/v1/vault/rotate', {
-            method: 'POST',
-            headers: {
-              'Idempotency-Key': randomUUID(),
-              'If-Match': formatRevisionIfMatch(baseRevision)
-            },
-            withAuth: true,
-            body: {
-              currentPassword: input.currentAccountPassword,
-              keyEnvelope: prep.keyEnvelope,
-              document: prep.reencryptedEnvelope
+        const plaintextFileSecrets = protocolsSupported ? await this.decryptLocalFileSecrets() : {}
+        const plaintextRdpPasswords = protocolsSupported ? await this.decryptLocalRdpPasswords() : {}
+
+        if (this.serverCapabilities.supportsBatchVaultRotate && protocolsSupported) {
+          const includeNamespaces: SyncNamespace[] = ['core', 'protocols']
+          if (settingsSupported && nextSyncProtocolSettings) includeNamespaces.push('settings')
+
+          let prep:
+            | {
+                recoveryKey: string
+                keyEnvelope: VaultMetadataWire
+                envelopes: Partial<Record<SyncNamespace, SyncDocumentEnvelope>>
+                nextBaseDocs: Partial<Record<SyncNamespace, string>>
+              }
+            | undefined
+          try {
+            prep = await this.repository.call('syncPrepareBatchRotate', {
+              newKeyVersion: nextKeyVersion,
+              masterPassword: input.masterPassword,
+              syncPasswords: nextSyncPasswords,
+              syncFileCredentials: nextSyncFileCredentials,
+              syncRdpCredentials: nextSyncRdpCredentials,
+              syncProtocolSettings: nextSyncProtocolSettings,
+              includeNamespaces,
+              maxDocumentBytes: this.serverCapabilities.maxDocumentBytes,
+              plaintextPasswords,
+              plaintextFileSecrets,
+              plaintextRdpPasswords
+            })
+          } finally {
+            wipePasswordMap(plaintextPasswords)
+            wipeFileSecretMap(plaintextFileSecrets)
+            wipePasswordMap(plaintextRdpPasswords)
+          }
+
+          try {
+            const baseRevisions: Partial<Record<SyncNamespace, string>> = {}
+            for (const ns of includeNamespaces) {
+              const head = await this.fetchRemoteNamespaceDocument(this.account.serverUrl, ns)
+              baseRevisions[ns] =
+                head?.revision ??
+                (ns === 'core' ? this.account.lastRevision : this.namespaceRecords[ns]?.lastRevision) ??
+                '0'
             }
-          })
-          const baseCipher = await this.encryptBaseDoc(prep.nextBaseDocJson)
-          const revStr = String(rotateRes.revision)
-          await this.repository.call('syncCommitRotate', {
-            keyVersion: rotateRes.keyVersion ?? nextKeyVersion,
-            syncPasswords: false,
-            revision: revStr,
-            etag: formatRevisionIfMatch(revStr),
-            baseDocCipher: baseCipher
-          })
-          this.vaultMetadata = await this.tryFetchVaultMetadata(this.account.serverUrl)
-          this.account = await this.repository.call<SyncAccountRecord>('syncAccountGet')
-          await this.persistUnlockedVaultKey()
-          rotatedRecoveryKey = prep.recoveryKey
-        } catch (error) {
-          await this.repository.call('syncCancelRotate').catch(() => {})
-          throw error
+            const rotateRes = await this.requestJson<{
+              id: string
+              keyVersion: number
+              revision: string | number
+              revisions?: Partial<Record<SyncNamespace, string | number>>
+              updatedAt: string
+            }>(this.account.serverUrl, '/api/v1/vault/rotate', {
+              method: 'POST',
+              headers: {
+                'Idempotency-Key': randomUUID(),
+                'If-Match': formatRevisionIfMatch(baseRevisions.core ?? '0')
+              },
+              withAuth: true,
+              body: {
+                currentPassword: input.currentAccountPassword,
+                keyEnvelope: prep!.keyEnvelope,
+                document: prep!.envelopes.core,
+                documents: prep!.envelopes,
+                baseRevisions
+              }
+            })
+            const coreRevStr = String(rotateRes.revisions?.core ?? rotateRes.revision)
+            const coreBaseCipher = await this.encryptBaseDoc(prep!.nextBaseDocs.core ?? '')
+            const committedNamespaces: Partial<
+              Record<
+                'protocols' | 'settings',
+                { revision: string; etag: string | null; baseDocCipher: Uint8Array | null }
+              >
+            > = {}
+            for (const ns of ['protocols', 'settings'] as const) {
+              if (!includeNamespaces.includes(ns)) continue
+              const nsRev = String(rotateRes.revisions?.[ns] ?? rotateRes.revision)
+              committedNamespaces[ns] = {
+                revision: nsRev,
+                etag: formatRevisionIfMatch(nsRev),
+                baseDocCipher: await this.encryptBaseDoc(prep!.nextBaseDocs[ns] ?? '')
+              }
+            }
+            await this.repository.call('syncCommitBatchRotate', {
+              keyVersion: rotateRes.keyVersion ?? nextKeyVersion,
+              syncPasswords: nextSyncPasswords,
+              syncFileCredentials: nextSyncFileCredentials,
+              syncRdpCredentials: nextSyncRdpCredentials,
+              coreRevision: coreRevStr,
+              coreEtag: formatRevisionIfMatch(coreRevStr),
+              coreBaseDocCipher: coreBaseCipher,
+              namespaces: committedNamespaces
+            })
+            this.vaultMetadata = await this.tryFetchVaultMetadata(this.account.serverUrl)
+            this.account = await this.repository.call<SyncAccountRecord>('syncAccountGet')
+            await this.refreshNamespaceRecords()
+            await this.persistUnlockedVaultKey()
+            rotatedRecoveryKey = prep!.recoveryKey
+          } catch (error) {
+            await this.repository.call('syncCancelRotate').catch(() => {})
+            throw error
+          }
+        } else {
+          // Legacy v1 single-document vault rotate path (100% v1 wire-compatible)
+          let prep: Awaited<ReturnType<SyncService['callPrepareRotate']>> | undefined
+          try {
+            prep = await this.callPrepareRotate(
+              nextKeyVersion,
+              input.masterPassword,
+              nextSyncPasswords,
+              plaintextPasswords
+            )
+          } finally {
+            wipePasswordMap(plaintextPasswords)
+            wipeFileSecretMap(plaintextFileSecrets)
+            wipePasswordMap(plaintextRdpPasswords)
+          }
+          try {
+            const currentHead = await this.fetchRemoteDocument(this.account.serverUrl)
+            const baseRevision = currentHead?.revision ?? this.account.lastRevision ?? '0'
+            const rotateRes = await this.requestJson<{
+              id: string
+              keyVersion: number
+              revision: string | number
+              updatedAt: string
+            }>(this.account.serverUrl, '/api/v1/vault/rotate', {
+              method: 'POST',
+              headers: {
+                'Idempotency-Key': randomUUID(),
+                'If-Match': formatRevisionIfMatch(baseRevision)
+              },
+              withAuth: true,
+              body: {
+                currentPassword: input.currentAccountPassword,
+                keyEnvelope: prep.keyEnvelope,
+                document: prep.reencryptedEnvelope
+              }
+            })
+            const baseCipher = await this.encryptBaseDoc(prep.nextBaseDocJson)
+            const revStr = String(rotateRes.revision)
+            await this.repository.call('syncCommitRotate', {
+              keyVersion: rotateRes.keyVersion ?? nextKeyVersion,
+              syncPasswords: nextSyncPasswords,
+              revision: revStr,
+              etag: formatRevisionIfMatch(revStr),
+              baseDocCipher: baseCipher
+            })
+            this.vaultMetadata = await this.tryFetchVaultMetadata(this.account.serverUrl)
+            this.account = await this.repository.call<SyncAccountRecord>('syncAccountGet')
+            await this.persistUnlockedVaultKey()
+            rotatedRecoveryKey = prep.recoveryKey
+          } catch (error) {
+            await this.repository.call('syncCancelRotate').catch(() => {})
+            throw error
+          }
         }
       }
 
@@ -484,6 +669,12 @@ export class SyncService {
         }
       }
 
+      const enablingCorePasswords = input.syncPasswords === true && !prevSyncPasswords
+      const enablingFileOrRdpCreds =
+        (input.syncFileCredentials === true && !prevSyncFileCredentials) ||
+        (input.syncRdpCredentials === true && !prevSyncRdpCredentials)
+      const enablingProtocolSettings = input.syncProtocolSettings === true && !prevSyncProtocolSettings
+
       this.account = await this.repository.call<SyncAccountRecord>('syncAccountUpsert', {
         serverUrl: input.serverUrl ?? this.account.serverUrl,
         allowInsecureHttp:
@@ -498,13 +689,33 @@ export class SyncService {
         encryptedRefreshToken: nextEncryptedToken,
         deviceId: this.account.deviceId,
         deviceName: this.account.deviceName,
-        syncPasswords: input.syncPasswords !== undefined ? input.syncPasswords : this.account.syncPasswords,
-        pendingChanges:
-          input.syncPasswords === true && !this.account.syncPasswords ? true : this.account.pendingChanges
+        syncPasswords: nextSyncPasswords,
+        syncFileCredentials: nextSyncFileCredentials,
+        syncRdpCredentials: nextSyncRdpCredentials,
+        syncProtocolSettings: nextSyncProtocolSettings,
+        pendingChanges: enablingCorePasswords ? true : this.account.pendingChanges
       })
 
+      if (enablingFileOrRdpCreds) {
+        await this.repository.call('syncNamespaceMarkPending', 'protocols')
+      }
+      if (enablingProtocolSettings) {
+        await this.repository.call('syncNamespaceMarkPending', 'settings')
+      }
+      await this.refreshNamespaceRecords()
+
+      const hasAnyPending =
+        this.account.pendingChanges ||
+        (protocolsSupported && Boolean(this.namespaceRecords.protocols?.pendingChanges)) ||
+        (settingsSupported &&
+          this.account.syncProtocolSettings &&
+          Boolean(this.namespaceRecords.settings?.pendingChanges))
+
       if (
-        (input.syncPasswords === true || (input.writeMode === 'realtime' && this.account.pendingChanges)) &&
+        (enablingCorePasswords ||
+          (enablingFileOrRdpCreds && protocolsSupported) ||
+          (enablingProtocolSettings && settingsSupported) ||
+          (input.writeMode === 'realtime' && hasAnyPending)) &&
         this.vaultUnlocked &&
         this.accessToken
       ) {
@@ -540,8 +751,11 @@ export class SyncService {
     return this.listDevices()
   }
 
-  async listRevisions(): Promise<SyncRevisionInfo[]> {
+  async listRevisions(namespace: SyncNamespace = 'core'): Promise<SyncRevisionInfo[]> {
     this.requireSignedIn()
+    if (namespace !== 'core' && !this.supportsNamespace(namespace)) {
+      return []
+    }
     interface RawRevisionItem {
       revision: string | number
       schemaVersion: number
@@ -551,17 +765,21 @@ export class SyncService {
       createdAt: string
       createdByDevice?: { id?: string; name?: string } | string | null
     }
-    const res = await this.requestJson<{ items?: RawRevisionItem[] }>(
-      this.account!.serverUrl,
-      '/api/v1/sync/revisions',
-      { method: 'GET', withAuth: true }
-    )
+    const endpoint =
+      namespace === 'core'
+        ? '/api/v1/sync/revisions'
+        : `/api/v1/sync/documents/${encodeURIComponent(namespace)}/revisions`
+    const res = await this.requestJson<{ items?: RawRevisionItem[] }>(this.account!.serverUrl, endpoint, {
+      method: 'GET',
+      withAuth: true
+    })
     const list = Array.isArray(res?.items) ? res.items : []
     return list.map((item) => {
       const dev = item.createdByDevice
       const devId = typeof dev === 'string' ? dev : (dev?.id ?? null)
       const devName = typeof dev === 'string' ? dev : (dev?.name ?? dev?.id ?? null)
       return {
+        namespace,
         revision: String(item.revision),
         schemaVersion: item.schemaVersion,
         keyVersion: item.keyVersion,
@@ -574,13 +792,88 @@ export class SyncService {
     })
   }
 
-  async restoreRevision(revision: string): Promise<SyncStatusSnapshot> {
+  async restoreRevision(revision: string, namespace: SyncNamespace = 'core'): Promise<SyncStatusSnapshot> {
     return this.runExclusive(async () => {
       this.requireSignedIn()
       if (!this.vaultUnlocked) throw new Error('保管库未解锁')
       if (!/^\d+$/.test(revision)) throw new Error('无效的历史版本号')
 
       const serverUrl = this.account!.serverUrl
+      if (namespace !== 'core') {
+        if (!this.supportsNamespace(namespace)) {
+          throw new Error(`当前同步服务器不支持命名空间 ${namespace} 的历史版本恢复`)
+        }
+        const head = await this.fetchRemoteNamespaceDocument(serverUrl, namespace)
+        const baseRevision = head?.revision ?? this.namespaceRecords[namespace]?.lastRevision ?? '0'
+        await this.requestJson<{
+          revision: string | number
+          restoredFromRevision: string
+          updatedAt: string
+        }>(
+          serverUrl,
+          `/api/v1/sync/documents/${encodeURIComponent(namespace)}/revisions/${encodeURIComponent(revision)}/restore`,
+          {
+            method: 'POST',
+            headers: {
+              'Idempotency-Key': randomUUID(),
+              'If-Match': formatRevisionIfMatch(baseRevision)
+            },
+            body: {},
+            withAuth: true
+          }
+        )
+        const restoredRemote = await this.fetchRemoteNamespaceDocument(serverUrl, namespace)
+        if (!restoredRemote) {
+          throw new Error('历史版本恢复后拉取远端文档失败')
+        }
+        if (namespace === 'protocols') {
+          const plaintextFileSecrets = await this.decryptLocalFileSecrets()
+          const plaintextRdpPasswords = await this.decryptLocalRdpPasswords()
+          let evaluated: SyncEvaluateProtocolsOutput
+          try {
+            evaluated = await this.repository.call<SyncEvaluateProtocolsOutput>(
+              'syncEvaluateNamespaceRevisionRestore',
+              {
+                namespace: 'protocols',
+                plaintextFileSecrets,
+                plaintextRdpPasswords,
+                revisionEnvelope: restoredRemote.envelope
+              }
+            )
+          } finally {
+            wipeFileSecretMap(plaintextFileSecrets)
+            wipePasswordMap(plaintextRdpPasswords)
+          }
+          const committed = await this.commitProtocolsEvaluationToLocal(
+            evaluated,
+            restoredRemote.revision,
+            restoredRemote.etag
+          )
+          if (committed) await this.emitUnifiedDataUpdate({ protocols: committed })
+          delete this.pendingNamespaceConflicts.protocols
+        } else {
+          const evaluated = await this.repository.call<SyncEvaluateSettingsOutput>(
+            'syncEvaluateNamespaceRevisionRestore',
+            {
+              namespace: 'settings',
+              revisionEnvelope: restoredRemote.envelope
+            }
+          )
+          const committed = await this.commitSettingsEvaluationToLocal(
+            evaluated,
+            restoredRemote.revision,
+            restoredRemote.etag
+          )
+          if (committed) await this.emitUnifiedDataUpdate({ settings: committed })
+          delete this.pendingNamespaceConflicts.settings
+        }
+        await this.refreshNamespaceRecords()
+        this.lastError = null
+        const status = this.buildStatus()
+        this.emitStatus(status)
+        return status
+      }
+
       const head = await this.fetchRemoteDocument(serverUrl)
       const baseRevision = head?.revision ?? this.account?.lastRevision ?? '0'
       await this.requestJson<{ revision: string | number; restoredFromRevision: string; updatedAt: string }>(
@@ -613,7 +906,12 @@ export class SyncService {
         wipePasswordMap(plaintextPasswords)
       }
 
-      await this.commitEvaluationToLocal(evaluated, restoredRemote.revision, restoredRemote.etag)
+      const committed = await this.commitEvaluationToLocal(
+        evaluated,
+        restoredRemote.revision,
+        restoredRemote.etag
+      )
+      if (committed) await this.emitUnifiedDataUpdate({ core: committed })
       this.pendingConflict = null
       this.lastError = null
       const status = this.buildStatus()
@@ -627,38 +925,73 @@ export class SyncService {
     this.localMutationEpoch += 1
   }
 
+  setUiBackgrounded(backgrounded: boolean): void {
+    if (this.disposed || this.uiBackgrounded === backgrounded) return
+    this.uiBackgrounded = backgrounded
+    if (backgrounded) {
+      if (this.autoSyncRequest) {
+        this.syncDeferredByBackground = true
+        this.syncDeferredImmediate ||= this.autoSyncRequest.immediate
+        this.clearAutoSyncTimer()
+      }
+      return
+    }
+    this.autoSyncNotBefore = performance.now() + AUTO_SYNC_RESUME_MS
+    if (!this.syncDeferredByBackground) return
+    const immediate = this.syncDeferredImmediate
+    this.syncDeferredByBackground = false
+    this.syncDeferredImmediate = false
+    this.enqueueAutoSync(immediate)
+  }
+
   scheduleAutoSync(immediate = false): void {
     if (this.disposed) return
     if (immediate) this.localMutationEpoch += 1
-    void this.initFromDbIfNeeded().then(async () => {
-      this.account = await this.repository.call<SyncAccountRecord | undefined>('syncAccountGet')
-      if (!this.account || !this.accessToken || !this.vaultUnlocked) {
-        if (this.account) this.emitStatus(this.buildStatus())
-        return
-      }
-      if (this.account.writeMode === 'local-only') {
-        this.emitStatus(this.buildStatus())
-        return
-      }
-      if (!this.account.autoSync && !immediate) {
-        this.emitStatus(this.buildStatus())
-        return
-      }
-      if (this.account.readOnlyRemoteSchema || (this.pendingConflict?.conflicts.length ?? 0) > 0) return
-      this.clearAutoSyncTimer()
-      const delay = immediate ? 120 : AUTO_SYNC_DEBOUNCE_MS
-      this.autoSyncTimer = setTimeout(() => {
-        this.autoSyncTimer = undefined
-        if (this.syncing) {
-          this.rerunRequested = true
-          return
-        }
-        void this.syncNow().catch((err) => {
-          this.onDiagnostic?.(`autoSync failed: ${err instanceof Error ? err.message : String(err)}`)
-        })
-      }, delay)
+    this.enqueueAutoSync(immediate)
+  }
+
+  private enqueueAutoSync(immediate: boolean): void {
+    if (this.disposed) return
+    if (this.uiBackgrounded) {
+      this.syncDeferredByBackground = true
+      if (immediate) this.syncDeferredImmediate = true
+      return
+    }
+    const request = { immediate: immediate || Boolean(this.autoSyncRequest?.immediate) }
+    this.clearAutoSyncTimer()
+    this.autoSyncRequest = request
+    const delay = resolveAutoSyncDelay(request.immediate, this.autoSyncNotBefore - performance.now())
+    this.autoSyncTimer = setTimeout(() => {
+      this.autoSyncTimer = undefined
+      void this.runExclusive(() => this.runScheduledSync(request)).catch((err) => {
+        if (this.autoSyncRequest === request) this.autoSyncRequest = undefined
+        this.onDiagnostic?.(`autoSync failed: ${err instanceof Error ? err.message : String(err)}`)
+      })
+    }, delay)
+  }
+
+  private async runScheduledSync(request: { immediate: boolean }): Promise<void> {
+    if (this.autoSyncRequest !== request) return
+    await this.initFromDbIfNeeded()
+    const account = await this.repository.call<SyncAccountRecord | undefined>('syncAccountGet')
+    if (this.autoSyncRequest !== request) return
+    this.account = account
+    await this.refreshNamespaceRecords()
+    if (this.autoSyncRequest !== request) return
+    this.autoSyncRequest = undefined
+    if (!account) return
+    if (
+      !this.accessToken ||
+      !this.vaultUnlocked ||
+      account.writeMode === 'local-only' ||
+      (!account.autoSync && !request.immediate)
+    ) {
       this.emitStatus(this.buildStatus())
-    })
+      return
+    }
+    if (account.readOnlyRemoteSchema || this.getAllPendingConflicts().length) return
+    await this.performSyncCycle()
+    this.emitStatus(this.buildStatus())
   }
 
   dispose(): void {
@@ -673,6 +1006,7 @@ export class SyncService {
   }
 
   private clearAutoSyncTimer(): void {
+    this.autoSyncRequest = undefined
     if (this.autoSyncTimer) {
       clearTimeout(this.autoSyncTimer)
       this.autoSyncTimer = undefined
@@ -710,7 +1044,7 @@ export class SyncService {
       existing.email.toLowerCase() === input.email.toLowerCase()
 
     const fallbackDeviceName = input.deviceName || existing?.deviceName || hostname() || 'Orbit Desktop'
-    const appVersion = typeof app?.getVersion === 'function' ? app.getVersion() : '1.2.0'
+    const appVersion = typeof app?.getVersion === 'function' ? app.getVersion() : '1.3.0'
 
     if (input.keepSignedIn && !(await isSystemEncryptionAvailable())) {
       throw new Error(unavailableEncryptionMessage('无法启用保持登录状态'))
@@ -771,10 +1105,13 @@ export class SyncService {
       keyVersion: sameAccount ? existing.keyVersion : 1,
       syncPasswords: sameAccount ? existing.syncPasswords : false,
       syncPrivateKeys: false,
+      syncFileCredentials: sameAccount ? existing.syncFileCredentials : false,
+      syncRdpCredentials: sameAccount ? existing.syncRdpCredentials : false,
+      syncProtocolSettings: sameAccount ? existing.syncProtocolSettings : true,
       resetSyncCursor: !sameAccount
     })
 
-    this.pendingConflict = null
+    this.clearAllPendingConflicts()
     this.offline = false
     this.lastError = null
     await this.fetchMeAndVaultStatus()
@@ -789,8 +1126,10 @@ export class SyncService {
     const me = await this.requestJson<{
       user?: { id?: string; email?: string }
       deviceId?: string
+      capabilities?: Record<string, unknown>
     }>(this.account.serverUrl, '/api/v1/me', { method: 'GET', withAuth: true })
 
+    this.serverCapabilities = await this.probeServerCapabilities(this.account.serverUrl, me.capabilities)
     this.vaultMetadata = await this.tryFetchVaultMetadata(this.account.serverUrl)
     const nextEmail = me.user?.email ?? this.account.email
     const nextDeviceId = me.deviceId || this.account.deviceId
@@ -834,11 +1173,43 @@ export class SyncService {
         resetSyncCursor: Boolean(this.account.vaultId)
       })
     }
+    await this.refreshNamespaceRecords()
     let unlocked = this.account.vaultId ? await this.repository.call<boolean>('vaultHasUnlockedKey') : false
     if (!unlocked && this.account.vaultId && this.account.encryptedVaultKey) {
       unlocked = await this.tryRestoreVaultKeyFromDisk()
     }
     this.vaultUnlocked = unlocked
+  }
+
+  private async probeServerCapabilities(
+    serverUrl: string,
+    inlineCapabilities?: Record<string, unknown>
+  ): Promise<SyncServerCapabilities> {
+    if (inlineCapabilities && typeof inlineCapabilities === 'object' && !Array.isArray(inlineCapabilities)) {
+      return normalizeServerCapabilities(inlineCapabilities)
+    }
+    try {
+      const remote = await this.requestJson<Record<string, unknown>>(serverUrl, '/api/v1/capabilities', {
+        method: 'GET',
+        withAuth: true
+      })
+      if (remote && typeof remote === 'object' && !Array.isArray(remote)) {
+        return normalizeServerCapabilities(remote)
+      }
+      return { ...DEFAULT_LEGACY_SERVER_CAPABILITIES, probed: true }
+    } catch (error) {
+      if (
+        error instanceof SyncHttpError &&
+        (error.status === 404 || error.status === 405 || error.status === 501)
+      ) {
+        return { ...DEFAULT_LEGACY_SERVER_CAPABILITIES, probed: true }
+      }
+      // If `/api/v1/me` just succeeded, gracefully degrade to legacy v1 instead of failing login/resume
+      this.onDiagnostic?.(
+        `capabilities probe fallback to legacy v1: ${error instanceof Error ? error.message : String(error)}`
+      )
+      return { ...DEFAULT_LEGACY_SERVER_CAPABILITIES, probed: true }
+    }
   }
 
   private async persistUnlockedVaultKey(): Promise<void> {
@@ -902,125 +1273,29 @@ export class SyncService {
 
     try {
       const serverUrl = this.account!.serverUrl
-      for (let attempt = 0; attempt < MAX_CONFLICT_RACE_RETRIES; attempt++) {
-        const remote = await this.fetchRemoteDocument(serverUrl)
-        if (remote && remote.envelope.keyVersion !== this.account?.keyVersion) {
-          // Remote vault key version rotated on another device -> force re-unlock with updated vault metadata
-          this.vaultMetadata = await this.tryFetchVaultMetadata(serverUrl)
-          if (this.vaultMetadata && this.vaultMetadata.keyVersion > (this.account?.keyVersion ?? 0)) {
-            await this.repository.call('vaultLock')
-            this.vaultUnlocked = false
-            this.account = await this.repository.call<SyncAccountRecord>('syncAccountUpsert', {
-              serverUrl: this.account!.serverUrl,
-              email: this.account!.email,
-              rememberEmail: this.account!.rememberEmail,
-              keepSignedIn: this.account!.keepSignedIn,
-              autoSync: this.account!.autoSync,
-              deviceId: this.account!.deviceId,
-              deviceName: this.account!.deviceName,
-              vaultId: this.vaultMetadata.id ?? this.account!.vaultId,
-              keyVersion: this.vaultMetadata.keyVersion
-            })
-            throw new Error(
-              `检测到保管库密钥已轮换至 v${this.vaultMetadata.keyVersion}，请重新使用主密码解锁以同步最新文档。`
-            )
-          }
-        }
+      const coreCommitted = await this.syncCoreNamespace(serverUrl, resolutions)
+      let protocolsCommitted: {
+        fileProfiles: FileProfile[]
+        rdpProfiles: RdpProfile[]
+        knownRdpHosts: KnownRdpHostEntry[]
+      } | null = null
+      let settingsCommitted: { protocolSettings: AllProtocolSettings } | null = null
 
-        const snapshotEpoch = this.localMutationEpoch
-        const baseDocJson = await this.decryptBaseDocIfPresent()
-        const plaintextPasswords = await this.decryptLocalHostPasswords()
-        let evaluated: SyncEvaluateOutput
-        try {
-          evaluated = await this.repository.call<SyncEvaluateOutput>('syncEvaluateRemoteAndMerge', {
-            plaintextPasswords,
-            baseDocJson,
-            remoteEnvelope: remote?.envelope ?? null,
-            resolutions
-          })
-        } finally {
-          wipePasswordMap(plaintextPasswords)
-        }
-
-        if (evaluated.readOnlySchema) {
-          this.account = await this.repository.call<SyncAccountRecord>('syncAccountGet')
-          this.lastError = `远端同步文档版本 v${evaluated.remoteSchemaVersion} 高于当前支持版本 v${SYNC_SCHEMA_VERSION}，已进入只读保护模式以防覆盖数据。`
-          this.pendingConflict = null
-          return
-        }
-
-        if (evaluated.conflicts.length > 0) {
-          this.pendingConflict = {
-            remoteEnvelope: remote?.envelope ?? null,
-            remoteRevision: remote?.revision ?? null,
-            remoteEtag: remote?.etag ?? null,
-            conflicts: evaluated.conflicts
-          }
-          return
-        }
-
-        let targetRevision = remote?.revision ?? null
-        let targetEtag = remote?.etag ?? null
-        if (evaluated.needsUpload) {
-          if (!evaluated.uploadEnvelope) throw new Error('生成同步加密信封失败')
-          try {
-            const putRes = await this.putRemoteDocument(serverUrl, {
-              baseRevision: remote?.revision ?? null,
-              etag: remote?.etag ?? null,
-              envelope: evaluated.uploadEnvelope,
-              idempotencyKey: randomUUID()
-            })
-            targetRevision = putRes.revision
-            targetEtag = putRes.etag
-          } catch (error) {
-            if (error instanceof SyncHttpError && error.status === 409) {
-              if (error.code === 'VAULT_KEY_VERSION_MISMATCH') {
-                this.vaultMetadata = await this.tryFetchVaultMetadata(serverUrl)
-                await this.repository.call('vaultLock')
-                this.vaultUnlocked = false
-                if (this.vaultMetadata) {
-                  this.account = await this.repository.call<SyncAccountRecord>('syncAccountUpsert', {
-                    serverUrl: this.account!.serverUrl,
-                    email: this.account!.email,
-                    rememberEmail: this.account!.rememberEmail,
-                    keepSignedIn: this.account!.keepSignedIn,
-                    autoSync: this.account!.autoSync,
-                    deviceId: this.account!.deviceId,
-                    deviceName: this.account!.deviceName,
-                    vaultId: this.vaultMetadata.id ?? this.account!.vaultId,
-                    keyVersion: this.vaultMetadata.keyVersion
-                  })
-                }
-                throw new Error('检测到保管库密钥已在其他设备轮换，请重新使用主密码解锁以同步最新文档。')
-              }
-              continue
-            }
-            throw error
-          }
-        }
-
-        if (this.localMutationEpoch !== snapshotEpoch) {
-          await this.recordUploadedCheckpointIfNeeded(evaluated, targetRevision, targetEtag)
-          continue
-        }
-        const committedOk = await this.commitEvaluationToLocal(
-          evaluated,
-          targetRevision,
-          targetEtag,
-          snapshotEpoch
-        )
-        if (!committedOk) {
-          await this.recordUploadedCheckpointIfNeeded(evaluated, targetRevision, targetEtag)
-          continue
-        }
-        this.pendingConflict = null
-        return
+      if (this.vaultUnlocked && this.supportsNamespace('protocols')) {
+        protocolsCommitted = await this.syncProtocolsNamespace(serverUrl, resolutions)
       }
-      if (this.autoSyncTimer) {
-        this.rerunRequested = true
-        return
+      if (this.vaultUnlocked && this.supportsNamespace('settings') && this.account?.syncProtocolSettings) {
+        settingsCommitted = await this.syncSettingsNamespace(serverUrl, resolutions)
       }
-      throw new Error('远端文档并发更新频繁，请稍后重试。')
+
+      await this.refreshNamespaceRecords()
+      if (coreCommitted || protocolsCommitted || settingsCommitted) {
+        await this.emitUnifiedDataUpdate({
+          core: coreCommitted ?? undefined,
+          protocols: protocolsCommitted ?? undefined,
+          settings: settingsCommitted ?? undefined
+        })
+      }
     } catch (error) {
       if (error instanceof SyncNetworkError) {
         this.offline = true
@@ -1033,15 +1308,379 @@ export class SyncService {
     }
   }
 
+  private async handleRemoteKeyVersionMismatch(serverUrl: string): Promise<void> {
+    this.vaultMetadata = await this.tryFetchVaultMetadata(serverUrl)
+    await this.repository.call('vaultLock')
+    this.vaultUnlocked = false
+    if (this.vaultMetadata) {
+      this.account = await this.repository.call<SyncAccountRecord>('syncAccountUpsert', {
+        serverUrl: this.account!.serverUrl,
+        email: this.account!.email,
+        rememberEmail: this.account!.rememberEmail,
+        keepSignedIn: this.account!.keepSignedIn,
+        autoSync: this.account!.autoSync,
+        deviceId: this.account!.deviceId,
+        deviceName: this.account!.deviceName,
+        vaultId: this.vaultMetadata.id ?? this.account!.vaultId,
+        keyVersion: this.vaultMetadata.keyVersion
+      })
+    }
+    throw new Error(
+      this.vaultMetadata
+        ? `检测到保管库密钥已轮换至 v${this.vaultMetadata.keyVersion}，请重新使用主密码解锁以同步最新文档。`
+        : '检测到保管库密钥已在其他设备轮换，请重新使用主密码解锁以同步最新文档。'
+    )
+  }
+
+  private async syncCoreNamespace(
+    serverUrl: string,
+    resolutions?: Record<string, 'local' | 'remote'>
+  ): Promise<{ hosts: Host[]; groups: SyncGroup[]; tunnels: SyncTunnel[] } | null> {
+    for (let attempt = 0; attempt < MAX_CONFLICT_RACE_RETRIES; attempt++) {
+      const remote = await this.fetchRemoteDocument(serverUrl)
+      if (remote && remote.envelope.keyVersion !== this.account?.keyVersion) {
+        this.vaultMetadata = await this.tryFetchVaultMetadata(serverUrl)
+        if (this.vaultMetadata && this.vaultMetadata.keyVersion > (this.account?.keyVersion ?? 0)) {
+          await this.handleRemoteKeyVersionMismatch(serverUrl)
+        }
+      }
+
+      const snapshotEpoch = this.localMutationEpoch
+      const baseDocJson = await this.decryptBaseDocIfPresent()
+      const plaintextPasswords = await this.decryptLocalHostPasswords()
+      let evaluated: SyncEvaluateOutput
+      try {
+        evaluated = await this.repository.call<SyncEvaluateOutput>('syncEvaluateRemoteAndMerge', {
+          plaintextPasswords,
+          baseDocJson,
+          remoteEnvelope: remote?.envelope ?? null,
+          resolutions
+        })
+      } finally {
+        wipePasswordMap(plaintextPasswords)
+      }
+
+      if (evaluated.readOnlySchema) {
+        this.account = await this.repository.call<SyncAccountRecord>('syncAccountGet')
+        this.lastError = `远端同步文档版本 v${evaluated.remoteSchemaVersion} 高于当前支持版本 v${SYNC_SCHEMA_VERSION}，已进入只读保护模式以防覆盖数据。`
+        this.pendingConflict = null
+        return null
+      }
+
+      if (evaluated.conflicts.length > 0) {
+        this.pendingConflict = {
+          remoteEnvelope: remote?.envelope ?? null,
+          remoteRevision: remote?.revision ?? null,
+          remoteEtag: remote?.etag ?? null,
+          conflicts: evaluated.conflicts
+        }
+        return null
+      }
+
+      let targetRevision = remote?.revision ?? null
+      let targetEtag = remote?.etag ?? null
+      if (evaluated.needsUpload) {
+        if (!evaluated.uploadEnvelope) throw new Error('生成同步加密信封失败')
+        try {
+          const putRes = await this.putRemoteDocument(serverUrl, {
+            baseRevision: remote?.revision ?? null,
+            etag: remote?.etag ?? null,
+            envelope: evaluated.uploadEnvelope,
+            idempotencyKey: randomUUID()
+          })
+          targetRevision = putRes.revision
+          targetEtag = putRes.etag
+        } catch (error) {
+          if (error instanceof SyncHttpError && error.status === 409) {
+            if (error.code === 'VAULT_KEY_VERSION_MISMATCH') {
+              await this.handleRemoteKeyVersionMismatch(serverUrl)
+            }
+            continue
+          }
+          throw error
+        }
+      }
+
+      if (this.localMutationEpoch !== snapshotEpoch) {
+        await this.recordUploadedCheckpointIfNeeded(evaluated, targetRevision, targetEtag)
+        continue
+      }
+      const committed = await this.commitEvaluationToLocal(
+        evaluated,
+        targetRevision,
+        targetEtag,
+        snapshotEpoch
+      )
+      if (!committed) {
+        await this.recordUploadedCheckpointIfNeeded(evaluated, targetRevision, targetEtag)
+        continue
+      }
+      this.pendingConflict = null
+      return committed
+    }
+    if (this.autoSyncTimer) {
+      this.rerunRequested = true
+      return null
+    }
+    throw new Error('远端文档并发更新频繁，请稍后重试。')
+  }
+
+  private async syncProtocolsNamespace(
+    serverUrl: string,
+    resolutions?: Record<string, 'local' | 'remote'>
+  ): Promise<{
+    fileProfiles: FileProfile[]
+    rdpProfiles: RdpProfile[]
+    knownRdpHosts: KnownRdpHostEntry[]
+  } | null> {
+    for (let attempt = 0; attempt < MAX_CONFLICT_RACE_RETRIES; attempt++) {
+      const remote = await this.fetchRemoteNamespaceDocument(serverUrl, 'protocols')
+      if (remote && remote.envelope.keyVersion !== this.account?.keyVersion) {
+        this.vaultMetadata = await this.tryFetchVaultMetadata(serverUrl)
+        if (this.vaultMetadata && this.vaultMetadata.keyVersion > (this.account?.keyVersion ?? 0)) {
+          await this.handleRemoteKeyVersionMismatch(serverUrl)
+        }
+      }
+
+      const snapshotEpoch = this.localMutationEpoch
+      await this.refreshNamespaceRecords()
+      const baseDocJson = await this.decryptCipherIfPresent(this.namespaceRecords.protocols?.baseDocCipher)
+      const plaintextFileSecrets = await this.decryptLocalFileSecrets()
+      const plaintextRdpPasswords = await this.decryptLocalRdpPasswords()
+      let evaluated: SyncEvaluateProtocolsOutput
+      try {
+        evaluated = await this.repository.call<SyncEvaluateProtocolsOutput>('syncEvaluateProtocolsAndMerge', {
+          plaintextFileSecrets,
+          plaintextRdpPasswords,
+          baseDocJson,
+          remoteEnvelope: remote?.envelope ?? null,
+          resolutions,
+          maxDocumentBytes: this.serverCapabilities.maxDocumentBytes
+        })
+      } finally {
+        wipeFileSecretMap(plaintextFileSecrets)
+        wipePasswordMap(plaintextRdpPasswords)
+      }
+
+      if (evaluated.readOnlySchema) {
+        await this.refreshNamespaceRecords()
+        this.lastError = `远端 protocols 同步文档版本 v${evaluated.remoteSchemaVersion} 高于当前支持版本 v${SYNC_NAMESPACE_SCHEMA_VERSION}，该命名空间已进入只读保护模式。`
+        delete this.pendingNamespaceConflicts.protocols
+        return null
+      }
+
+      if (evaluated.conflicts.length > 0) {
+        this.pendingNamespaceConflicts.protocols = evaluated.conflicts
+        return null
+      }
+
+      let targetRevision = remote?.revision ?? null
+      let targetEtag = remote?.etag ?? null
+      if (evaluated.needsUpload) {
+        if (!evaluated.uploadEnvelope) throw new Error('生成 protocols 同步加密信封失败')
+        try {
+          const putRes = await this.putRemoteNamespaceDocument(serverUrl, 'protocols', {
+            baseRevision: remote?.revision ?? null,
+            etag: remote?.etag ?? null,
+            envelope: evaluated.uploadEnvelope,
+            idempotencyKey: randomUUID()
+          })
+          targetRevision = putRes.revision
+          targetEtag = putRes.etag
+        } catch (error) {
+          if (error instanceof SyncHttpError && error.status === 409) {
+            if (error.code === 'VAULT_KEY_VERSION_MISMATCH') {
+              await this.handleRemoteKeyVersionMismatch(serverUrl)
+            }
+            continue
+          }
+          throw error
+        }
+      }
+
+      if (this.localMutationEpoch !== snapshotEpoch) {
+        if (evaluated.needsUpload) {
+          await this.repository.call('syncRecordNamespaceUploadedCheckpoint', {
+            namespace: 'protocols',
+            revision: targetRevision,
+            etag: targetEtag,
+            baseDocCipher: await this.encryptBaseDoc(evaluated.mergedBaseJson ?? ''),
+            docExtra: evaluated.docExtra
+          })
+        }
+        continue
+      }
+
+      const committed = await this.commitProtocolsEvaluationToLocal(
+        evaluated,
+        targetRevision,
+        targetEtag,
+        snapshotEpoch
+      )
+      if (!committed) {
+        if (evaluated.needsUpload) {
+          await this.repository.call('syncRecordNamespaceUploadedCheckpoint', {
+            namespace: 'protocols',
+            revision: targetRevision,
+            etag: targetEtag,
+            baseDocCipher: await this.encryptBaseDoc(evaluated.mergedBaseJson ?? ''),
+            docExtra: evaluated.docExtra
+          })
+        }
+        continue
+      }
+      delete this.pendingNamespaceConflicts.protocols
+      return committed
+    }
+    if (this.autoSyncTimer) {
+      this.rerunRequested = true
+      return null
+    }
+    throw new Error('远端 protocols 文档并发更新频繁，请稍后重试。')
+  }
+
+  private async syncSettingsNamespace(
+    serverUrl: string,
+    resolutions?: Record<string, 'local' | 'remote'>
+  ): Promise<{ protocolSettings: AllProtocolSettings } | null> {
+    for (let attempt = 0; attempt < MAX_CONFLICT_RACE_RETRIES; attempt++) {
+      const remote = await this.fetchRemoteNamespaceDocument(serverUrl, 'settings')
+      if (remote && remote.envelope.keyVersion !== this.account?.keyVersion) {
+        this.vaultMetadata = await this.tryFetchVaultMetadata(serverUrl)
+        if (this.vaultMetadata && this.vaultMetadata.keyVersion > (this.account?.keyVersion ?? 0)) {
+          await this.handleRemoteKeyVersionMismatch(serverUrl)
+        }
+      }
+
+      const snapshotEpoch = this.localMutationEpoch
+      await this.refreshNamespaceRecords()
+      const baseDocJson = await this.decryptCipherIfPresent(this.namespaceRecords.settings?.baseDocCipher)
+      const evaluated = await this.repository.call<SyncEvaluateSettingsOutput>(
+        'syncEvaluateSettingsAndMerge',
+        {
+          baseDocJson,
+          remoteEnvelope: remote?.envelope ?? null,
+          resolutions,
+          maxDocumentBytes: this.serverCapabilities.maxDocumentBytes
+        }
+      )
+
+      if (evaluated.readOnlySchema) {
+        await this.refreshNamespaceRecords()
+        this.lastError = `远端 settings 同步文档版本 v${evaluated.remoteSchemaVersion} 高于当前支持版本 v${SYNC_NAMESPACE_SCHEMA_VERSION}，该命名空间已进入只读保护模式。`
+        delete this.pendingNamespaceConflicts.settings
+        return null
+      }
+
+      if (evaluated.conflicts.length > 0) {
+        this.pendingNamespaceConflicts.settings = evaluated.conflicts
+        return null
+      }
+
+      let targetRevision = remote?.revision ?? null
+      let targetEtag = remote?.etag ?? null
+      if (evaluated.needsUpload) {
+        if (!evaluated.uploadEnvelope) throw new Error('生成 settings 同步加密信封失败')
+        try {
+          const putRes = await this.putRemoteNamespaceDocument(serverUrl, 'settings', {
+            baseRevision: remote?.revision ?? null,
+            etag: remote?.etag ?? null,
+            envelope: evaluated.uploadEnvelope,
+            idempotencyKey: randomUUID()
+          })
+          targetRevision = putRes.revision
+          targetEtag = putRes.etag
+        } catch (error) {
+          if (error instanceof SyncHttpError && error.status === 409) {
+            if (error.code === 'VAULT_KEY_VERSION_MISMATCH') {
+              await this.handleRemoteKeyVersionMismatch(serverUrl)
+            }
+            continue
+          }
+          throw error
+        }
+      }
+
+      if (this.localMutationEpoch !== snapshotEpoch) {
+        if (evaluated.needsUpload) {
+          await this.repository.call('syncRecordNamespaceUploadedCheckpoint', {
+            namespace: 'settings',
+            revision: targetRevision,
+            etag: targetEtag,
+            baseDocCipher: await this.encryptBaseDoc(evaluated.mergedBaseJson ?? ''),
+            docExtra: evaluated.docExtra
+          })
+        }
+        continue
+      }
+
+      const committed = await this.commitSettingsEvaluationToLocal(
+        evaluated,
+        targetRevision,
+        targetEtag,
+        snapshotEpoch
+      )
+      if (!committed) {
+        if (evaluated.needsUpload) {
+          await this.repository.call('syncRecordNamespaceUploadedCheckpoint', {
+            namespace: 'settings',
+            revision: targetRevision,
+            etag: targetEtag,
+            baseDocCipher: await this.encryptBaseDoc(evaluated.mergedBaseJson ?? ''),
+            docExtra: evaluated.docExtra
+          })
+        }
+        continue
+      }
+      delete this.pendingNamespaceConflicts.settings
+      return committed
+    }
+    if (this.autoSyncTimer) {
+      this.rerunRequested = true
+      return null
+    }
+    throw new Error('远端 settings 文档并发更新频繁，请稍后重试。')
+  }
+
+  private async emitUnifiedDataUpdate(parts: {
+    core?: { hosts: Host[]; groups: SyncGroup[]; tunnels: SyncTunnel[] }
+    protocols?: { fileProfiles: FileProfile[]; rdpProfiles: RdpProfile[]; knownRdpHosts: KnownRdpHostEntry[] }
+    settings?: { protocolSettings: AllProtocolSettings }
+  }): Promise<void> {
+    const core =
+      parts.core ??
+      ({
+        hosts: await this.repository.call<Host[]>('list'),
+        groups: await this.repository.call<SyncGroup[]>('groupsList'),
+        tunnels: await this.repository.call<SyncTunnel[]>('tunnelsList')
+      } as const)
+    const update: SyncDataUpdate = {
+      hosts: core.hosts,
+      groups: core.groups,
+      tunnels: core.tunnels,
+      ...(parts.protocols
+        ? {
+            fileProfiles: parts.protocols.fileProfiles,
+            rdpProfiles: parts.protocols.rdpProfiles,
+            knownRdpHosts: parts.protocols.knownRdpHosts
+          }
+        : {}),
+      ...(parts.settings ? { protocolSettings: parts.settings.protocolSettings } : {})
+    }
+    await yieldToEventLoop()
+    this.emitData(update)
+  }
+
   private async commitEvaluationToLocal(
     evaluated: SyncEvaluateOutput,
     revision: string | null,
     etag: string | null,
     snapshotEpoch?: number
-  ): Promise<boolean> {
+  ): Promise<{ hosts: Host[]; groups: SyncGroup[]; tunnels: SyncTunnel[] } | null> {
     const canEncrypt = await isSystemEncryptionAvailable()
     const encryptedHostSecrets: Record<string, Uint8Array | null> = {}
     for (const item of evaluated.hostSecretsToEncrypt) {
+      await yieldToEventLoop()
       if (item.password) {
         if (!canEncrypt) {
           throw new Error(unavailableEncryptionMessage('无法在本地保存同步的主机密码'))
@@ -1053,7 +1692,7 @@ export class SyncService {
     }
     const baseDocCipher = await this.encryptBaseDoc(evaluated.mergedBaseJson ?? '')
     if (snapshotEpoch !== undefined && this.localMutationEpoch !== snapshotEpoch) {
-      return false
+      return null
     }
     const committed = await this.repository.call<{
       hosts: Host[]
@@ -1073,8 +1712,97 @@ export class SyncService {
       docExtra: evaluated.docExtra
     })
     this.account = await this.repository.call<SyncAccountRecord>('syncAccountGet')
-    this.emitData(committed)
-    return true
+    return committed
+  }
+
+  private async commitProtocolsEvaluationToLocal(
+    evaluated: SyncEvaluateProtocolsOutput,
+    revision: string | null,
+    etag: string | null,
+    snapshotEpoch?: number
+  ): Promise<{
+    fileProfiles: FileProfile[]
+    rdpProfiles: RdpProfile[]
+    knownRdpHosts: KnownRdpHostEntry[]
+  } | null> {
+    const canEncrypt = await isSystemEncryptionAvailable()
+    const encryptedFileSecrets: Record<string, Uint8Array | null> = {}
+    for (const item of evaluated.fileSecretsToEncrypt) {
+      await yieldToEventLoop()
+      if (item.secrets && Object.keys(item.secrets).length > 0) {
+        if (!canEncrypt) {
+          throw new Error(unavailableEncryptionMessage('无法在本地保存同步的文件服务器凭据'))
+        }
+        encryptedFileSecrets[item.profileId] = await safeStorage.encryptStringAsync(
+          JSON.stringify(item.secrets)
+        )
+      } else {
+        encryptedFileSecrets[item.profileId] = null
+      }
+    }
+    const encryptedRdpSecrets: Record<string, Uint8Array | null> = {}
+    for (const item of evaluated.rdpSecretsToEncrypt) {
+      await yieldToEventLoop()
+      if (item.password) {
+        if (!canEncrypt) {
+          throw new Error(unavailableEncryptionMessage('无法在本地保存同步的 RDP 密码'))
+        }
+        encryptedRdpSecrets[item.profileId] = await safeStorage.encryptStringAsync(item.password)
+      } else {
+        encryptedRdpSecrets[item.profileId] = null
+      }
+    }
+    const baseDocCipher = await this.encryptBaseDoc(evaluated.mergedBaseJson ?? '')
+    if (snapshotEpoch !== undefined && this.localMutationEpoch !== snapshotEpoch) {
+      return null
+    }
+    const committed = await this.repository.call<{
+      fileProfiles: FileProfile[]
+      rdpProfiles: RdpProfile[]
+      knownRdpHosts: KnownRdpHostEntry[]
+    }>('syncCommitProtocolsApplied', {
+      localFileProfileUpdates: evaluated.localFileProfileUpdates,
+      encryptedFileSecrets,
+      deletedFileProfileIds: evaluated.deletedFileProfileIds,
+      localRdpProfileUpdates: evaluated.localRdpProfileUpdates,
+      encryptedRdpSecrets,
+      deletedRdpProfileIds: evaluated.deletedRdpProfileIds,
+      localKnownRdpHosts: evaluated.localKnownRdpHosts,
+      deletedKnownRdpHostIds: evaluated.deletedKnownRdpHostIds,
+      nextPreferences: evaluated.nextPreferences,
+      revision,
+      etag,
+      baseDocCipher,
+      docExtra: evaluated.docExtra
+    })
+    this.account = await this.repository.call<SyncAccountRecord>('syncAccountGet')
+    await this.refreshNamespaceRecords()
+    return committed
+  }
+
+  private async commitSettingsEvaluationToLocal(
+    evaluated: SyncEvaluateSettingsOutput,
+    revision: string | null,
+    etag: string | null,
+    snapshotEpoch?: number
+  ): Promise<{ protocolSettings: AllProtocolSettings } | null> {
+    if (!evaluated.nextProtocolSettings) return null
+    const baseDocCipher = await this.encryptBaseDoc(evaluated.mergedBaseJson ?? '')
+    if (snapshotEpoch !== undefined && this.localMutationEpoch !== snapshotEpoch) {
+      return null
+    }
+    const committed = await this.repository.call<{ protocolSettings: AllProtocolSettings }>(
+      'syncCommitSettingsApplied',
+      {
+        nextProtocolSettings: evaluated.nextProtocolSettings,
+        revision,
+        etag,
+        baseDocCipher,
+        docExtra: evaluated.docExtra
+      }
+    )
+    await this.refreshNamespaceRecords()
+    return committed
   }
 
   private async recordUploadedCheckpointIfNeeded(
@@ -1100,15 +1828,19 @@ export class SyncService {
     return safeStorage.encryptStringAsync(baseJson)
   }
 
-  private async decryptBaseDocIfPresent(): Promise<string | null> {
-    if (!this.account?.baseDocCipher) return null
+  private async decryptCipherIfPresent(cipher?: Uint8Array | null): Promise<string | null> {
+    if (!cipher) return null
     if (!(await isSystemEncryptionAvailable())) return null
     try {
-      const dec = await safeStorage.decryptStringAsync(Buffer.from(this.account.baseDocCipher))
+      const dec = await safeStorage.decryptStringAsync(Buffer.from(cipher))
       return dec.result
     } catch {
       return null
     }
+  }
+
+  private async decryptBaseDocIfPresent(): Promise<string | null> {
+    return this.decryptCipherIfPresent(this.account?.baseDocCipher)
   }
 
   private async decryptLocalHostPasswords(): Promise<Record<string, string>> {
@@ -1117,6 +1849,46 @@ export class SyncService {
     if (blobs.length === 0) return result
     if (!(await isSystemEncryptionAvailable())) return result
     for (const entry of blobs) {
+      await yieldToEventLoop()
+      try {
+        const dec = await safeStorage.decryptStringAsync(Buffer.from(entry.secret))
+        result[entry.id] = dec.result
+      } catch {
+        /* Skip unreadable OS credential */
+      }
+    }
+    return result
+  }
+
+  private async decryptLocalFileSecrets(): Promise<Record<string, FileSecretsInput>> {
+    const blobs =
+      await this.repository.call<Array<{ id: string; secret: Uint8Array }>>('syncListFileSecretBlobs')
+    const result: Record<string, FileSecretsInput> = {}
+    if (blobs.length === 0) return result
+    if (!(await isSystemEncryptionAvailable())) return result
+    for (const entry of blobs) {
+      await yieldToEventLoop()
+      try {
+        const dec = await safeStorage.decryptStringAsync(Buffer.from(entry.secret))
+        const parsed = JSON.parse(dec.result) as FileSecretsInput
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          result[entry.id] = parsed
+        }
+      } catch {
+        /* Skip unreadable OS credential */
+      }
+    }
+    return result
+  }
+
+  private async decryptLocalRdpPasswords(): Promise<Record<string, string>> {
+    const blobs =
+      await this.repository.call<Array<{ id: string; secret: Uint8Array }>>('syncListRdpSecretBlobs')
+    const result: Record<string, string> = {}
+    if (blobs.length === 0) return result
+    if (!(await isSystemEncryptionAvailable())) return result
+    for (const entry of blobs) {
+      await yieldToEventLoop()
       try {
         const dec = await safeStorage.decryptStringAsync(Buffer.from(entry.secret))
         result[entry.id] = dec.result
@@ -1132,12 +1904,26 @@ export class SyncService {
     etag: string | null
     envelope: SyncDocumentEnvelope
   } | null> {
+    return this.fetchRemoteNamespaceDocument(serverUrl, 'core')
+  }
+
+  private async fetchRemoteNamespaceDocument(
+    serverUrl: string,
+    namespace: SyncNamespace
+  ): Promise<{
+    revision: string
+    etag: string | null
+    envelope: SyncDocumentEnvelope
+  } | null> {
+    const path =
+      namespace === 'core'
+        ? '/api/v1/sync/document'
+        : `/api/v1/sync/documents/${encodeURIComponent(namespace)}`
     try {
-      const { data, etag } = await this.requestJsonWithMeta<SyncDocumentEnvelope | null>(
-        serverUrl,
-        '/api/v1/sync/document',
-        { method: 'GET', withAuth: true }
-      )
+      const { data, etag } = await this.requestJsonWithMeta<SyncDocumentEnvelope | null>(serverUrl, path, {
+        method: 'GET',
+        withAuth: true
+      })
       if (!data) return null
       const revision = String(data.revision ?? '0')
       return {
@@ -1178,13 +1964,30 @@ export class SyncService {
       idempotencyKey: string
     }
   ): Promise<{ revision: string; etag: string | null }> {
+    return this.putRemoteNamespaceDocument(serverUrl, 'core', payload)
+  }
+
+  private async putRemoteNamespaceDocument(
+    serverUrl: string,
+    namespace: SyncNamespace,
+    payload: {
+      baseRevision: string | null
+      etag: string | null
+      envelope: SyncDocumentEnvelope
+      idempotencyKey: string
+    }
+  ): Promise<{ revision: string; etag: string | null }> {
+    const path =
+      namespace === 'core'
+        ? '/api/v1/sync/document'
+        : `/api/v1/sync/documents/${encodeURIComponent(namespace)}`
     const ifMatch = payload.baseRevision
       ? formatRevisionIfMatch(payload.baseRevision)
       : formatRevisionIfMatch('0')
     const { data, etag } = await this.requestJsonWithMeta<{
       revision: string | number
       updatedAt: string
-    }>(serverUrl, '/api/v1/sync/document', {
+    }>(serverUrl, path, {
       method: 'PUT',
       headers: {
         'Idempotency-Key': payload.idempotencyKey,
@@ -1212,7 +2015,8 @@ export class SyncService {
     this.refreshToken = null
     this.vaultUnlocked = false
     this.vaultMetadata = null
-    this.pendingConflict = null
+    this.serverCapabilities = { ...DEFAULT_LEGACY_SERVER_CAPABILITIES }
+    this.clearAllPendingConflicts()
     this.account = await this.repository.call<SyncAccountRecord | undefined>('syncAccountClearAuth')
   }
 
@@ -1406,17 +2210,52 @@ export class SyncService {
     const acc = this.account
     const signedIn = Boolean(acc && this.accessToken)
     const vaultConfigured = Boolean(acc?.vaultId || this.vaultMetadata)
+    const allConflicts = this.getAllPendingConflicts()
+    const protoNs = this.namespaceRecords.protocols
+    const settingsNs = this.namespaceRecords.settings
+    const anyPending = Boolean(
+      acc?.pendingChanges ||
+        (this.supportsNamespace('protocols') && protoNs?.pendingChanges) ||
+        (this.supportsNamespace('settings') && acc?.syncProtocolSettings && settingsNs?.pendingChanges)
+    )
 
     let phase: SyncStatePhase = 'unconfigured'
     if (this.syncing) phase = 'syncing'
     else if (acc?.readOnlyRemoteSchema) phase = 'read-only-schema'
-    else if (this.pendingConflict && this.pendingConflict.conflicts.length > 0) phase = 'conflict'
+    else if (allConflicts.length > 0) phase = 'conflict'
     else if (this.offline) phase = 'offline'
     else if (!acc?.serverUrl) phase = 'unconfigured'
     else if (!signedIn) phase = 'signed-out'
     else if (!vaultConfigured || !this.vaultUnlocked) phase = 'vault-locked'
     else if (this.lastError) phase = 'error'
     else phase = 'synced'
+
+    const namespaces: Record<SyncNamespace, SyncNamespaceState> = {
+      core: {
+        namespace: 'core',
+        lastRevision: acc?.lastRevision ?? null,
+        lastSyncAt: acc?.lastSyncAt ?? null,
+        pendingChanges: acc?.pendingChanges ?? false,
+        readOnlyRemoteSchema: acc?.readOnlyRemoteSchema ?? false,
+        remoteSchemaVersion: acc?.remoteSchemaVersion
+      },
+      protocols: {
+        namespace: 'protocols',
+        lastRevision: protoNs?.lastRevision ?? null,
+        lastSyncAt: protoNs?.lastSyncAt ?? null,
+        pendingChanges: protoNs?.pendingChanges ?? false,
+        readOnlyRemoteSchema: protoNs?.readOnlyRemoteSchema ?? false,
+        remoteSchemaVersion: protoNs?.remoteSchemaVersion
+      },
+      settings: {
+        namespace: 'settings',
+        lastRevision: settingsNs?.lastRevision ?? null,
+        lastSyncAt: settingsNs?.lastSyncAt ?? null,
+        pendingChanges: settingsNs?.pendingChanges ?? false,
+        readOnlyRemoteSchema: settingsNs?.readOnlyRemoteSchema ?? false,
+        remoteSchemaVersion: settingsNs?.remoteSchemaVersion
+      }
+    }
 
     return {
       phase,
@@ -1436,19 +2275,65 @@ export class SyncService {
       deviceName: acc?.deviceName ?? hostname(),
       syncPasswords: acc?.syncPasswords ?? false,
       syncPrivateKeys: acc?.syncPrivateKeys ?? false,
+      syncFileCredentials: acc?.syncFileCredentials ?? false,
+      syncRdpCredentials: acc?.syncRdpCredentials ?? false,
+      syncProtocolSettings: acc?.syncProtocolSettings ?? true,
       lastRevision: acc?.lastRevision ?? null,
       lastSyncAt: acc?.lastSyncAt ?? null,
-      pendingChanges: acc?.pendingChanges ?? false,
+      pendingChanges: anyPending,
       readOnlyRemoteSchema: acc?.readOnlyRemoteSchema ?? false,
       remoteSchemaVersion: acc?.remoteSchemaVersion,
       lastError: this.lastError,
-      conflicts: this.pendingConflict?.conflicts ?? [],
+      conflicts: allConflicts,
       capabilities: {
         passwordSyncSupported: true,
         privateKeySyncSupported: false,
         keySyncReason: SYNC_KEY_CAPABILITY_MESSAGE
-      }
+      },
+      serverCapabilities: {
+        ...this.serverCapabilities,
+        supportedNamespaces: [...this.serverCapabilities.supportedNamespaces]
+      },
+      namespaces
     }
+  }
+}
+
+function normalizeServerCapabilities(raw: Record<string, unknown>): SyncServerCapabilities {
+  const validSet = new Set<string>(SYNC_NAMESPACES)
+  const rawList = Array.isArray(raw.supportedNamespaces)
+    ? raw.supportedNamespaces.filter(
+        (item): item is SyncNamespace => typeof item === 'string' && validSet.has(item)
+      )
+    : []
+  const supportedNamespaces: SyncNamespace[] = rawList.includes('core')
+    ? [...new Set(rawList)]
+    : ['core', ...new Set(rawList)]
+  const maxSchemaVersion =
+    typeof raw.maxSchemaVersion === 'number' &&
+    Number.isInteger(raw.maxSchemaVersion) &&
+    raw.maxSchemaVersion >= 1
+      ? raw.maxSchemaVersion
+      : supportedNamespaces.length > 1
+        ? SYNC_NAMESPACE_SCHEMA_VERSION
+        : SYNC_SCHEMA_VERSION
+  const rawMaxBytes =
+    typeof raw.maxDocumentBytes === 'number' && Number.isFinite(raw.maxDocumentBytes)
+      ? Math.trunc(raw.maxDocumentBytes)
+      : MAX_SYNC_DOCUMENT_BYTES
+  const maxDocumentBytes = Math.min(
+    Math.max(rawMaxBytes, MAX_SYNC_DOCUMENT_BYTES),
+    MAX_SYNC_ALLOWED_DOCUMENT_BYTES
+  )
+  const supportsBatchVaultRotate = Boolean(raw.supportsBatchVaultRotate)
+  const legacyV1Only = !supportedNamespaces.includes('protocols') && !supportedNamespaces.includes('settings')
+  return {
+    probed: true,
+    legacyV1Only,
+    maxSchemaVersion,
+    supportedNamespaces,
+    maxDocumentBytes,
+    supportsBatchVaultRotate
   }
 }
 
@@ -1480,6 +2365,19 @@ function formatRevisionIfMatch(revision: string | number): string {
 function wipePasswordMap(map: Record<string, string>): void {
   for (const key of Object.keys(map)) {
     map[key] = ''
+    delete map[key]
+  }
+}
+
+function wipeFileSecretMap(map: Record<string, FileSecretsInput>): void {
+  for (const key of Object.keys(map)) {
+    const entry = map[key]
+    if (entry) {
+      if (entry.password) entry.password = ''
+      if (entry.token) entry.token = ''
+      if (entry.secretAccessKey) entry.secretAccessKey = ''
+      if (entry.sessionToken) entry.sessionToken = ''
+    }
     delete map[key]
   }
 }

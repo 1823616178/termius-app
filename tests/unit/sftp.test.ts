@@ -1,4 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { randomBytes } from 'node:crypto'
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { Client } from 'ssh2'
+import { afterEach, describe, expect, it } from 'vitest'
+import { handleSftpRequest, type SftpSessionState } from '../../src/workers/connection/sftp-handler'
+import { startMockSftpSshServer } from '../helpers/mock-sftp-server'
 import {
   openSessionSchema,
   sftpChmodSchema,
@@ -249,5 +256,173 @@ describe('local dropped file URI parsing', () => {
         ].join('\r\n')
       )
     ).toEqual(['D:\\work\\demo.txt', 'D:\\work\\文档.md'])
+  })
+})
+
+describe('pipelined SFTP worker transfer engine', () => {
+  const cleanups: Array<() => Promise<void> | void> = []
+
+  afterEach(async () => {
+    while (cleanups.length > 0) {
+      await cleanups.pop()!()
+    }
+  })
+
+  async function openClientState(): Promise<{
+    server: Awaited<ReturnType<typeof startMockSftpSshServer>>
+    state: SftpSessionState
+    localDir: string
+  }> {
+    const server = await startMockSftpSshServer({ username: 'pipe-user', password: 'PipePass!1' })
+    cleanups.push(() => server.close())
+    const localDir = await mkdtemp(join(tmpdir(), 'orbit-sftp-pipe-'))
+    cleanups.push(() => rm(localDir, { recursive: true, force: true }))
+    const client = new Client()
+    await new Promise<void>((resolve, reject) => {
+      client.once('ready', () => resolve())
+      client.once('error', reject)
+      client.connect({
+        host: '127.0.0.1',
+        port: server.port,
+        username: server.username,
+        password: server.password
+      })
+    })
+    cleanups.push(() => {
+      client.end()
+    })
+    const state: SftpSessionState = { client, activeTransfers: new Map() }
+    return { server, state, localDir }
+  }
+
+  it('transfers multi-chunk binary files and 0-byte files losslessly with progress events', async () => {
+    const { server, state, localDir } = await openClientState()
+    const payload = randomBytes(260 * 1024 + 137) // > 8 chunks of 32 KiB
+    const srcFile = join(localDir, 'payload.bin')
+    const emptyFile = join(localDir, 'empty.dat')
+    const dlFile = join(localDir, 'downloaded.bin')
+    const dlEmpty = join(localDir, 'downloaded-empty.dat')
+    await writeFile(srcFile, payload)
+    await writeFile(emptyFile, Buffer.alloc(0))
+
+    const uploadEvents: string[] = []
+    await handleSftpRequest(
+      state,
+      {
+        type: 'sftp:request',
+        requestId: 'r1',
+        sessionId: 's1',
+        action: 'upload',
+        transferId: 't-up-1',
+        localPath: srcFile,
+        remotePath: '~/nested/payload.bin',
+        conflict: 'overwrite'
+      },
+      (evt) => uploadEvents.push(evt.status)
+    )
+    expect(uploadEvents).toContain('completed')
+    const uploadedOnServer = await readFile(join(server.homeDir, 'nested', 'payload.bin'))
+    expect(uploadedOnServer.equals(payload)).toBe(true)
+
+    const downloadEvents: string[] = []
+    await handleSftpRequest(
+      state,
+      {
+        type: 'sftp:request',
+        requestId: 'r2',
+        sessionId: 's1',
+        action: 'download',
+        transferId: 't-dl-1',
+        remotePath: '~/nested/payload.bin',
+        localPath: dlFile,
+        conflict: 'overwrite'
+      },
+      (evt) => downloadEvents.push(evt.status)
+    )
+    expect(downloadEvents).toContain('completed')
+    expect((await readFile(dlFile)).equals(payload)).toBe(true)
+
+    // 0-byte empty file upload & download
+    await handleSftpRequest(
+      state,
+      {
+        type: 'sftp:request',
+        requestId: 'r3',
+        sessionId: 's1',
+        action: 'upload',
+        transferId: 't-up-empty',
+        localPath: emptyFile,
+        remotePath: '~/empty.dat',
+        conflict: 'overwrite'
+      },
+      () => {}
+    )
+    await handleSftpRequest(
+      state,
+      {
+        type: 'sftp:request',
+        requestId: 'r4',
+        sessionId: 's1',
+        action: 'download',
+        transferId: 't-dl-empty',
+        remotePath: '~/empty.dat',
+        localPath: dlEmpty,
+        conflict: 'overwrite'
+      },
+      () => {}
+    )
+    expect((await readFile(dlEmpty)).length).toBe(0)
+  })
+
+  it('enforces speedLimitBps throttling and cleans up partial files when cancelled', async () => {
+    const { server, state, localDir } = await openClientState()
+    const payload = randomBytes(128 * 1024)
+    const srcFile = join(localDir, 'throttled.bin')
+    await writeFile(srcFile, payload)
+
+    // 1. Speed limit test: 128 KiB with initial bucket 64 KiB + 64 KiB/s -> remaining 64 KiB takes ~1s, fast-checked with 96 KiB/s (~333ms)
+    const started = Date.now()
+    await handleSftpRequest(
+      state,
+      {
+        type: 'sftp:request',
+        requestId: 'r-limit',
+        sessionId: 's1',
+        action: 'upload',
+        transferId: 't-limit',
+        localPath: srcFile,
+        remotePath: '~/throttled.bin',
+        conflict: 'overwrite',
+        speedLimitBps: 96 * 1024
+      },
+      () => {}
+    )
+    expect(Date.now() - started).toBeGreaterThanOrEqual(250)
+
+    // 2. Cancellation test: abort during throttled upload and ensure temp .orbit-part file is removed
+    const cancelPayload = randomBytes(256 * 1024)
+    const cancelSrc = join(localDir, 'cancel.bin')
+    await writeFile(cancelSrc, cancelPayload)
+    const uploadPromise = handleSftpRequest(
+      state,
+      {
+        type: 'sftp:request',
+        requestId: 'r-cancel',
+        sessionId: 's1',
+        action: 'upload',
+        transferId: 't-cancel',
+        localPath: cancelSrc,
+        remotePath: '~/cancel.bin',
+        conflict: 'overwrite',
+        speedLimitBps: 64 * 1024
+      },
+      () => {
+        state.activeTransfers.get('t-cancel')?.abort()
+      }
+    )
+    await expect(uploadPromise).rejects.toThrow(/取消/)
+    const serverFiles = await readdir(server.homeDir)
+    expect(serverFiles.some((f) => f.includes('.orbit-part'))).toBe(false)
+    expect(serverFiles).not.toContain('cancel.bin')
   })
 })

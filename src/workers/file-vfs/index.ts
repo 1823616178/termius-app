@@ -94,11 +94,18 @@ async function runTransfer(
     direction === 'upload' ? basename(payload.localPath) : remoteBaseName(payload.remotePath) || 'download'
 
   let lastAt = startedAt
+  let lastEmitAt = 0
   let lastBytes = 0
   let totalBytes = 0
   let speedBps = 0
 
-  const report = (transferred: number, total: number, status: SftpTransferStatus, error?: string): void => {
+  const report = (
+    transferred: number,
+    total: number,
+    status: SftpTransferStatus,
+    error?: string,
+    force = false
+  ): void => {
     const now = Date.now()
     const dt = (now - lastAt) / 1000
     if (dt >= 0.2 && transferred >= lastBytes) {
@@ -107,6 +114,10 @@ async function runTransfer(
       lastBytes = transferred
     }
     totalBytes = total
+    if (!force && status === 'running' && now - lastEmitAt < 120 && (total <= 0 || transferred < total)) {
+      return
+    }
+    lastEmitAt = now
     emitProgress({
       transferId: payload.transferId,
       sessionId,
@@ -123,7 +134,7 @@ async function runTransfer(
     })
   }
 
-  report(0, 0, 'running')
+  report(0, 0, 'running', undefined, true)
 
   try {
     const speedLimitBps = Math.max(0, Number(payload.speedLimitBps ?? 0) || 0)

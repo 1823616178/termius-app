@@ -15,6 +15,7 @@ import {
   launchExternalRdpSession
 } from '../../src/main/rdp/external-launcher'
 import { probeRdpEnvironment } from '../../src/main/rdp/probe'
+import { RdpDisplayControl } from '../../src/main/rdp/display-control'
 import { RdcPathProxyServer } from '../../src/main/rdp/rdcleanpath-proxy'
 import {
   buildX224NegotiationRequest,
@@ -97,6 +98,71 @@ describe('RDCleanPath ASN.1 DER codec', () => {
   })
 })
 
+describe('RDP suppress-output negotiation', () => {
+  // Enhanced-security MCS Data Request/Indication on a non-default global channel.
+  function frame(server: boolean, share: Buffer) {
+    const packet = Buffer.from('0300000002f08064000603ed7000', 'hex')
+    packet[7] = server ? 0x68 : 0x64
+    packet[13] = share.length
+    packet.writeUInt16BE(packet.length + share.length, 2)
+    share.writeUInt16LE(share.length)
+    return Buffer.concat([packet, share])
+  }
+
+  function activate(control: RdpDisplayControl, supported: boolean) {
+    const demand = Buffer.alloc(74)
+    demand.writeUInt16LE(0x11, 2)
+    demand.writeUInt32LE(0x203ea, 6)
+    demand.writeUInt16LE(60, 12)
+    demand.writeUInt16LE(2, 14)
+    demand.writeUInt16LE(1, 18) // General capability
+    demand.writeUInt16LE(24, 20)
+    demand[41] = Number(supported)
+    demand.writeUInt16LE(2, 42) // Bitmap capability
+    demand.writeUInt16LE(32, 44)
+    demand.writeUInt16LE(1280, 54)
+    demand.writeUInt16LE(720, 56)
+    const packet = frame(true, demand)
+    control.serverBytes(packet.subarray(0, 3))
+    control.serverBytes(packet.subarray(3))
+    const confirm = Buffer.alloc(20)
+    confirm.writeUInt16LE(0x13, 2)
+    control.clientBytes(frame(false, confirm))
+    const fontMap = Buffer.alloc(26)
+    fontMap.writeUInt16LE(0x17, 2)
+    fontMap[14] = 0x28
+    control.serverBytes(frame(true, fontMap))
+  }
+
+  it('uses negotiated IDs, waits for a packet boundary, and resumes the full desktop', () => {
+    const sent: Buffer[] = []
+    const control = new RdpDisplayControl((packet) => sent.push(packet))
+    control.clientBytes(Buffer.from('0300000702f080', 'hex'))
+    control.setVisible(false)
+    activate(control, true)
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.readUInt16BE(10)).toBe(1005)
+    expect(sent[0]!.readUInt16LE(18)).toBe(1007)
+    expect(sent[0]!.readUInt32LE(20)).toBe(0x203ea)
+    expect(sent[0]![28]).toBe(0x23)
+    expect(sent[0]!.subarray(32)).toEqual(Buffer.alloc(4))
+
+    control.clientBytes(Buffer.from([0, 8, 0]))
+    control.setVisible(true)
+    expect(sent).toHaveLength(1)
+    control.clientBytes(Buffer.alloc(5))
+    control.setVisible(true)
+    expect(sent).toHaveLength(2)
+    expect(sent[1]![32]).toBe(1)
+    expect(sent[1]!.readUInt16LE(40)).toBe(1279)
+    expect(sent[1]!.readUInt16LE(42)).toBe(719)
+
+    activate(control, false)
+    control.setVisible(false)
+    expect(sent).toHaveLength(2)
+  })
+})
+
 describe('Cross-platform RDP probe (Windows & Ubuntu X11 / Wayland)', () => {
   it('detects Windows mstsc.exe + cmdkey.exe and honors missing custom path strictly', async () => {
     const existing = new Set(['C:\\Windows\\System32\\mstsc.exe', 'C:\\Windows\\System32\\cmdkey.exe'])
@@ -172,7 +238,19 @@ describe('Scheme A external launcher builders & lifecycle cleanup', () => {
     })
     expect(rdpText).toContain('full address:s:10.0.0.5:3389')
     expect(rdpText).toContain('desktopwidth:i:1440')
+    expect(rdpText).toContain('authentication level:i:0')
+    expect(rdpText).toContain('enablecredsspsupport:i:1')
     expect(rdpText).not.toContain('SecretPw')
+
+    const strictTlsRdp = buildMstscRdpContent({
+      host: '10.0.0.5',
+      port: 3389,
+      username: 'alice',
+      domain: '',
+      resolved: { ...resolvedSummary, certPolicy: 'strict', securityLayer: 'tls' }
+    })
+    expect(strictTlsRdp).toContain('authentication level:i:2')
+    expect(strictTlsRdp).toContain('enablecredsspsupport:i:0')
 
     const args = buildFreeRdpArgs({
       host: '10.0.0.5',
@@ -180,11 +258,13 @@ describe('Scheme A external launcher builders & lifecycle cleanup', () => {
       username: 'alice',
       domain: 'CORP',
       hasPassword: true,
-      resolved: resolvedSummary
+      resolved: { ...resolvedSummary, enableAudio: true }
     })
     expect(args).toContain('/v:10.0.0.5:3389')
     expect(args).toContain('/from-stdin')
     expect(args).toContain('/dynamic-resolution')
+    expect(args).toContain('/sound')
+    expect(args).not.toContain('/sound:sys:alsa')
     expect(args.join(' ')).not.toContain('/p:')
   })
 
@@ -336,5 +416,68 @@ describe('Loopback RDCleanPath proxy & TLS TOFU preflight', () => {
     expect(errFrame[0]).toBe(0x30)
     expect(errFrame.includes(Buffer.from([0xa1]))).toBe(true)
     expect(mockRdp.receivedAppBytes()).toBe(beforeRejectBytes)
+  })
+
+  it('ignores duplicate handshake frames while handshaking and sweeps expired tokens', async () => {
+    const mockRdp = await startMockRdpTlsServer('rdp-reentrant.test')
+    cleanups.push(() => mockRdp.close())
+
+    let verifyCalls = 0
+    const proxy = new RdcPathProxyServer({
+      verifyCertificate: async () => {
+        verifyCalls += 1
+        await new Promise((r) => setTimeout(r, 80))
+        return true
+      }
+    })
+    cleanups.push(() => proxy.shutdown())
+    const proxyPort = await proxy.ensureStarted()
+
+    // Register an already-expired token, then a valid token -> expired token should be swept
+    proxy.registerToken('expired-token', {
+      sessionId: 'sess-expired',
+      ownerWindowId: 1,
+      host: '127.0.0.1',
+      port: mockRdp.port,
+      certPolicy: 'tofu',
+      connectTimeoutMs: 3000,
+      expiresAt: Date.now() - 1000
+    })
+    proxy.registerToken('valid-reentrant', {
+      sessionId: 'sess-reentrant',
+      ownerWindowId: 1,
+      host: '127.0.0.1',
+      port: mockRdp.port,
+      certPolicy: 'tofu',
+      connectTimeoutMs: 3000,
+      expiresAt: Date.now() + 30_000
+    })
+
+    const frame = buildDerTestRDCleanPathRequest({
+      destination: `127.0.0.1:${mockRdp.port}`,
+      proxyAuth: 'valid-reentrant',
+      x224: buildX224NegotiationRequest()
+    })
+
+    await new Promise<void>((resolve, reject) => {
+      const ws = new WebSocket(`ws://127.0.0.1:${proxyPort}/rdcleanpath`)
+      ws.on('open', () => {
+        // Send two handshake frames back-to-back before the first finishes verifying
+        ws.send(frame)
+        ws.send(frame)
+      })
+      ws.once('message', (data: Buffer) => {
+        try {
+          expect(data[0]).toBe(0x30)
+          ws.close()
+          resolve()
+        } catch (err) {
+          reject(err)
+        }
+      })
+      ws.on('error', reject)
+    })
+
+    expect(verifyCalls).toBe(1)
   })
 })

@@ -55,8 +55,11 @@ export function buildMstscRdpContent(params: {
     `session bpp:i:${params.resolved.colorDepth}`,
     `redirectclipboard:i:${params.resolved.enableClipboard ? 1 : 0}`,
     `audiomode:i:${params.resolved.enableAudio ? 0 : 2}`,
-    `authentication level:i:${params.resolved.certPolicy === 'strict' ? 2 : params.resolved.certPolicy === 'tofu' ? 2 : 0}`,
-    `negotiate security layer:i:${params.resolved.securityLayer === 'tls' ? 1 : 1}`,
+    // Orbit has already enforced TOFU / fingerprint verification before spawning mstsc.exe;
+    // authentication level 2 blocks self-signed certificates outright even when TOFU-trusted.
+    `authentication level:i:${params.resolved.certPolicy === 'strict' ? 2 : 0}`,
+    'negotiate security layer:i:1',
+    `enablecredsspsupport:i:${params.resolved.securityLayer === 'tls' ? 0 : 1}`,
     'prompt for credentials:i:1',
     'compression:i:1'
   ]
@@ -113,7 +116,7 @@ export function buildFreeRdpArgs(params: {
   else args.push('/network:modem', '-wallpaper', '-themes')
 
   args.push(params.resolved.enableClipboard ? '+clipboard' : '-clipboard')
-  if (params.resolved.enableAudio) args.push('/sound:sys:alsa')
+  if (params.resolved.enableAudio) args.push('/sound')
   if (params.resolved.driveRedirect !== 'none' && params.resolved.sharedDrivePath) {
     const modeSuffix = params.resolved.driveRedirect === 'readonly' ? ',ro' : ''
     args.push(`/drive:orbit-share,${params.resolved.sharedDrivePath}${modeSuffix}`)

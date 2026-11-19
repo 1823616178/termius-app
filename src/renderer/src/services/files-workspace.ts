@@ -23,8 +23,9 @@ import {
   type SftpTransferStatus
 } from '../../../shared/sftp'
 import { markHostUsed } from './host-recency'
-import { locale } from './i18n'
-import { protocolSettings } from '../stores/workbench'
+import { locale, t } from './i18n'
+import { planUploads, trimTransferHistory, type UploadConflictChoice } from './file-transfers'
+import { fileProfiles, hosts, notify, protocolSettings } from '../stores/workbench'
 
 export type FilesProtocolKind = 'sftp' | FileProtocol
 
@@ -66,7 +67,7 @@ export interface FilesConflictPrompt {
   direction: SftpTransferDirection
   name: string
   targetPath: string
-  resolve: (decision: SftpConflictDecision | 'cancel') => void
+  resolve: (choice: UploadConflictChoice) => void
 }
 
 const SFTP_CAPABILITIES: FileCapabilities = {
@@ -89,6 +90,8 @@ export const filesSecretPrompt = ref<FilesSecretPrompt | null>(null)
 export const filesConflictPrompt = ref<FilesConflictPrompt | null>(null)
 
 const loadedTabsPath = new Map<string, string>()
+const listRequestSerials = new Map<string, number>()
+const tabRefreshTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const sshPorts = new Map<string, MessagePort>()
 const activeTransferTabIds = new Map<string, string>()
 
@@ -113,6 +116,32 @@ let unsubSessionFailure: (() => void) | undefined
 
 export function syncHiddenDefaultFromSettings(): void {
   filesShowHidden.value = Boolean(protocolSettings.value.files.showHidden)
+}
+
+export function findSavedFileProfile(
+  list: FileProfile[],
+  id?: string,
+  name?: string
+): FileProfile | undefined {
+  if (id) {
+    const byId = list.find((p) => p.id === id)
+    if (byId) return byId
+  }
+  if (!name) return undefined
+  const matches = list.filter((p) => p.name === name)
+  if (matches.length <= 1) return matches[0]
+  return [...matches].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0]
+}
+
+export function findSavedSshHost(list: Host[], id?: string, name?: string): Host | undefined {
+  if (id) {
+    const byId = list.find((h) => h.id === id)
+    if (byId) return byId
+  }
+  if (!name) return undefined
+  const matches = list.filter((h) => h.name === name)
+  if (matches.length <= 1) return matches[0]
+  return [...matches].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0]
 }
 
 export const activeFileTab = computed(
@@ -145,6 +174,23 @@ function getTransferApi(protocol: FilesProtocolKind) {
   return protocol === 'sftp' ? window.orbit.sftp : window.orbit.files
 }
 
+function scheduleTabRefresh(tabId: string, expectedDir: string): void {
+  const tab = fileTabs.value.find((t) => t.id === tabId)
+  if (!tab || tab.currentPath !== expectedDir) return
+  const prev = tabRefreshTimers.get(tabId)
+  if (prev) clearTimeout(prev)
+  tabRefreshTimers.set(
+    tabId,
+    setTimeout(() => {
+      tabRefreshTimers.delete(tabId)
+      const latest = fileTabs.value.find((t) => t.id === tabId)
+      if (latest && latest.state === 'running' && latest.currentPath === expectedDir) {
+        void refreshFileDirectory(tabId, expectedDir)
+      }
+    }, 300)
+  )
+}
+
 function applyTransferProgress(event: {
   transferId: string
   sessionId: string
@@ -164,10 +210,13 @@ function applyTransferProgress(event: {
 
   const tabId = matchingTab?.id ?? activeTransferTabIds.get(event.transferId) ?? ''
   const protocol: FilesProtocolKind = matchingTab?.protocol ?? event.protocol ?? 'sftp'
+  if (event.status === 'completed' || event.status === 'failed' || event.status === 'cancelled') {
+    activeTransferTabIds.delete(event.transferId)
+  }
   const idx = fileTransfers.value.findIndex((t) => t.id === event.transferId)
   const now = Date.now()
   if (idx === -1) {
-    fileTransfers.value = [
+    fileTransfers.value = trimTransferHistory([
       {
         id: event.transferId,
         sessionId: event.sessionId,
@@ -186,10 +235,11 @@ function applyTransferProgress(event: {
         updatedAt: now
       },
       ...fileTransfers.value
-    ].slice(0, 200)
+    ])
     return
   }
   const existing = fileTransfers.value[idx]!
+  if (existing.status === 'cancelled') return
   const next: FileWorkspaceTransfer = {
     ...existing,
     localPath: event.localPath,
@@ -203,7 +253,7 @@ function applyTransferProgress(event: {
   }
   const list = [...fileTransfers.value]
   list[idx] = next
-  fileTransfers.value = list
+  fileTransfers.value = trimTransferHistory(list)
 }
 
 export function initFilesWorkspaceListeners(): void {
@@ -236,6 +286,8 @@ export function initFilesWorkspaceListeners(): void {
 }
 
 export function disposeFilesWorkspaceListeners(): void {
+  for (const timer of tabRefreshTimers.values()) clearTimeout(timer)
+  tabRefreshTimers.clear()
   unsubSftpProgress?.()
   unsubSftpProgress = undefined
   unsubFilesProgress?.()
@@ -252,12 +304,20 @@ export async function refreshFileDirectory(tabId?: string, targetPath?: string):
   const tab = fileTabs.value.find((t) => t.id === id)
   if (!tab || !tab.sessionId || tab.state !== 'running') return
 
+  const serial = (listRequestSerials.get(tab.id) ?? 0) + 1
+  listRequestSerials.set(tab.id, serial)
+  const previousPath = tab.currentPath
   const api = getTransferApi(tab.protocol)
   updateTab(tab.id, { loading: true, error: '' })
   try {
     const desiredPath = targetPath ?? (loadedTabsPath.get(tab.id) || (await api.home(tab.sessionId)))
     const res = await api.list(tab.sessionId, desiredPath)
+    if (listRequestSerials.get(tab.id) !== serial) return
+    if (!fileTabs.value.some((t) => t.id === tab.id)) return
     loadedTabsPath.set(tab.id, res.path)
+    if (tab.id === activeFileTabId.value && res.path !== previousPath) {
+      filesFilter.value = ''
+    }
     updateTab(tab.id, {
       currentPath: res.path,
       entries: res.entries,
@@ -265,6 +325,7 @@ export async function refreshFileDirectory(tabId?: string, targetPath?: string):
       error: ''
     })
   } catch (error) {
+    if (listRequestSerials.get(tab.id) !== serial) return
     updateTab(tab.id, {
       loading: false,
       error: error instanceof Error ? error.message : String(error)
@@ -287,10 +348,42 @@ export async function closeFileTab(tabId: string): Promise<void> {
   const tab = fileTabs.value.find((t) => t.id === tabId)
   if (!tab) return
 
-  // Cancel queued transfers for this tab
-  for (let i = pendingJobs.length - 1; i >= 0; i--) {
-    if (pendingJobs[i]!.tabId === tabId) pendingJobs.splice(i, 1)
+  const refreshTimer = tabRefreshTimers.get(tabId)
+  if (refreshTimer) {
+    clearTimeout(refreshTimer)
+    tabRefreshTimers.delete(tabId)
   }
+
+  // Cancel queued transfers for this tab AND update their visible queue state.
+  const cancelledIds = new Set<string>()
+  for (let i = pendingJobs.length - 1; i >= 0; i--) {
+    if (pendingJobs[i]!.tabId === tabId) {
+      cancelledIds.add(pendingJobs[i]!.id)
+      activeTransferTabIds.delete(pendingJobs[i]!.id)
+      pendingJobs.splice(i, 1)
+    }
+  }
+
+  const now = Date.now()
+  const cancelMsg = t('filesPage.statusCancelled')
+  let transferMutated = false
+  const nextTransfers = fileTransfers.value.map((item) => {
+    if (item.tabId !== tabId) return item
+    if (cancelledIds.has(item.id) || item.status === 'queued') {
+      activeTransferTabIds.delete(item.id)
+      transferMutated = true
+      return { ...item, status: 'cancelled' as const, speedBps: 0, error: cancelMsg, updatedAt: now }
+    }
+    if (item.status === 'running') {
+      const api = getTransferApi(item.protocol)
+      void api.cancelTransfer(item.sessionId, item.id).catch(() => {})
+      activeTransferTabIds.delete(item.id)
+      transferMutated = true
+      return { ...item, status: 'cancelled' as const, speedBps: 0, error: cancelMsg, updatedAt: now }
+    }
+    return item
+  })
+  if (transferMutated) fileTransfers.value = trimTransferHistory(nextTransfers)
 
   const port = sshPorts.get(tabId)
   if (port) {
@@ -311,9 +404,28 @@ export async function closeFileTab(tabId: string): Promise<void> {
     }
   }
   loadedTabsPath.delete(tabId)
+  listRequestSerials.delete(tabId)
   fileTabs.value = fileTabs.value.filter((t) => t.id !== tabId)
   if (activeFileTabId.value === tabId) {
     activeFileTabId.value = fileTabs.value[0]?.id ?? ''
+  }
+}
+
+export async function reconnectFileTab(tabId: string): Promise<void> {
+  const tab = fileTabs.value.find((t) => t.id === tabId)
+  if (!tab) return
+  if (tab.sourceKind === 'ssh-host' && tab.host) {
+    const latestHost = hosts.value.find((h) => h.id === tab.host!.id) ?? tab.host
+    await closeFileTab(tabId)
+    await openSftpHostTab(latestHost)
+    return
+  }
+  if (tab.sourceKind === 'file-profile' && tab.profileId) {
+    const latestProfile = fileProfiles.value.find((p) => p.id === tab.profileId)
+    if (latestProfile) {
+      await closeFileTab(tabId)
+      await openFileProfileTab(latestProfile)
+    }
   }
 }
 
@@ -383,7 +495,6 @@ export async function openSftpHostTab(host: Host, password?: string): Promise<vo
       rows: 24
     })
     const port = await delivered
-    // User might have closed the tab while opening
     if (!fileTabs.value.some((t) => t.id === tabId)) {
       try {
         port.postMessage({ type: 'close' })
@@ -580,11 +691,22 @@ export async function goParentDirectory(): Promise<void> {
   await refreshFileDirectory(tab.id, next)
 }
 
+export async function goHomeDirectory(): Promise<void> {
+  const tab = activeFileTab.value
+  if (!tab || !tab.sessionId || tab.state !== 'running') return
+  const api = getTransferApi(tab.protocol)
+  const home = await api.home(tab.sessionId)
+  await refreshFileDirectory(tab.id, home)
+}
+
 export async function createRemoteDirectory(name: string): Promise<void> {
   const tab = activeFileTab.value
   if (!tab || !tab.sessionId || tab.state !== 'running') return
   const clean = name.trim()
   if (!clean) return
+  if (clean.includes('/') || clean.includes('\\')) {
+    throw new Error(t('filesPage.invalidNameSlash'))
+  }
   const api = getTransferApi(tab.protocol)
   await api.mkdir(tab.sessionId, joinRemotePosixPath(tab.currentPath, clean))
   await refreshFileDirectory(tab.id, tab.currentPath)
@@ -595,6 +717,9 @@ export async function renameRemoteEntry(entry: SftpEntry, nextName: string): Pro
   if (!tab || !tab.sessionId || tab.state !== 'running') return
   const clean = nextName.trim()
   if (!clean || clean === entry.name) return
+  if (clean.includes('/') || clean.includes('\\')) {
+    throw new Error(t('filesPage.invalidNameSlash'))
+  }
   const api = getTransferApi(tab.protocol)
   const parent = parentRemotePosixPath(entry.path)
   await api.rename(tab.sessionId, entry.path, joinRemotePosixPath(parent, clean))
@@ -610,11 +735,17 @@ export async function chmodRemoteEntry(entry: SftpEntry, mode: number): Promise<
 }
 
 export async function deleteRemoteEntry(entry: SftpEntry): Promise<void> {
+  await deleteRemoteEntries([entry])
+}
+
+export async function deleteRemoteEntries(entries: SftpEntry[]): Promise<void> {
   const tab = activeFileTab.value
-  if (!tab || !tab.sessionId || tab.state !== 'running') return
+  if (!tab || !tab.sessionId || tab.state !== 'running' || !entries.length) return
   const api = getTransferApi(tab.protocol)
-  const recursive = entry.kind === 'directory' || entry.targetKind === 'directory'
-  await api.remove(tab.sessionId, entry.path, recursive)
+  for (const entry of entries) {
+    const recursive = entry.kind === 'directory' || entry.targetKind === 'directory'
+    await api.remove(tab.sessionId, entry.path, recursive)
+  }
   await refreshFileDirectory(tab.id, tab.currentPath)
 }
 
@@ -622,9 +753,7 @@ function askConflictDecision(
   direction: SftpTransferDirection,
   name: string,
   targetPath: string
-): Promise<SftpConflictDecision | 'cancel'> {
-  const configured = protocolSettings.value.files.defaultConflict
-  if (configured !== 'ask') return Promise.resolve(configured)
+): Promise<UploadConflictChoice> {
   return new Promise((resolve) => {
     filesConflictPrompt.value = {
       direction,
@@ -658,7 +787,7 @@ function enqueueTransfer(job: QueuedFileJob, totalBytes: number): void {
     startedAt: now,
     updatedAt: now
   }
-  fileTransfers.value = [entry, ...fileTransfers.value].slice(0, 200)
+  fileTransfers.value = trimTransferHistory([entry, ...fileTransfers.value])
   pendingJobs.push(job)
   pumpQueue()
 }
@@ -667,6 +796,8 @@ function pumpQueue(): void {
   const maxConcurrent = Math.max(1, Math.min(8, protocolSettings.value.files.maxConcurrentTransfers || 3))
   while (runningJobCount < maxConcurrent && pendingJobs.length > 0) {
     const job = pendingJobs.shift()!
+    const item = fileTransfers.value.find((transfer) => transfer.id === job.id)
+    if (item) item.status = 'running'
     runningJobCount++
     const api = getTransferApi(job.protocol)
     const call =
@@ -700,14 +831,15 @@ function pumpQueue(): void {
           speedBps: 0,
           status: item.status
         })
-        if (job.direction === 'upload' && activeFileTabId.value === job.tabId) {
-          void refreshFileDirectory(job.tabId)
+        if (job.direction === 'upload') {
+          const parentDir = parentRemotePosixPath(item.remotePath)
+          scheduleTabRefresh(job.tabId, parentDir)
         }
       })
       .catch((error) => {
         const msg = error instanceof Error ? error.message : String(error)
         const existing = fileTransfers.value.find((t) => t.id === job.id)
-        const aborted = /取消/.test(msg)
+        const aborted = /取消|cancel/i.test(msg)
         applyTransferProgress({
           transferId: job.id,
           sessionId: job.sessionId,
@@ -723,6 +855,7 @@ function pumpQueue(): void {
         })
       })
       .finally(() => {
+        activeTransferTabIds.delete(job.id)
         runningJobCount = Math.max(0, runningJobCount - 1)
         pumpQueue()
       })
@@ -734,26 +867,37 @@ export async function uploadLocalPathsToActiveTab(localPaths: string[]): Promise
   if (!tab || !tab.sessionId || tab.state !== 'running' || !localPaths.length) return
   const sessionId = tab.sessionId
   const api = getTransferApi(tab.protocol)
-  const manifest = await window.orbit.sftp.expandLocalUploads(localPaths)
   const baseDir = tab.currentPath
+  const knownRootPaths = new Set(tab.entries.map((entry) => entry.path))
+  const manifest = await window.orbit.sftp.expandLocalUploads(localPaths)
+  if (manifest.skippedSymlinks > 0) {
+    notify(t('sftp.skippedLocalSymlinks', { count: manifest.skippedSymlinks }))
+  }
+  const uploads = await planUploads(
+    manifest.files,
+    baseDir,
+    protocolSettings.value.files.defaultConflict,
+    async (file, path) => {
+      if (!file.relativePath.includes('/')) return knownRootPaths.has(path)
+      const result = await api.stat(sessionId, path).catch(() => ({ exists: false }))
+      return result.exists
+    },
+    (file, path) => askConflictDecision('upload', file.name, path)
+  )
+  const sessionIsOpen = () =>
+    fileTabs.value.some(
+      (item) => item.id === tab.id && item.sessionId === sessionId && item.state === 'running'
+    )
+  if (!uploads || !sessionIsOpen()) return
 
   if (tab.capabilities.realDirectories) {
     for (const relDir of manifest.dirs) {
       await api.mkdir(sessionId, joinRemotePosixPath(baseDir, relDir))
     }
   }
-  for (const file of manifest.files) {
-    const remotePath = joinRemotePosixPath(baseDir, file.relativePath)
-    let conflict: SftpConflictDecision =
-      protocolSettings.value.files.defaultConflict === 'ask'
-        ? 'overwrite'
-        : protocolSettings.value.files.defaultConflict
-    const st = await api.stat(sessionId, remotePath).catch(() => ({ exists: false }))
-    if (st.exists) {
-      const choice = await askConflictDecision('upload', file.name, remotePath)
-      if (choice === 'cancel') continue
-      conflict = choice
-    }
+
+  if (!sessionIsOpen()) return
+  for (const file of uploads) {
     enqueueTransfer(
       {
         id: crypto.randomUUID(),
@@ -762,11 +906,15 @@ export async function uploadLocalPathsToActiveTab(localPaths: string[]): Promise
         protocol: tab.protocol,
         direction: 'upload',
         localPath: file.localPath,
-        remotePath,
-        conflict
+        remotePath: file.remotePath,
+        conflict: file.conflict
       },
       file.size
     )
+  }
+
+  if (manifest.dirs.length > 0) {
+    scheduleTabRefresh(tab.id, baseDir)
   }
 }
 
@@ -776,7 +924,7 @@ export async function downloadEntriesFromActiveTab(entries: SftpEntry[]): Promis
   const sessionId = tab.sessionId
   const api = getTransferApi(tab.protocol)
 
-  if (entries.length === 1 && entries[0]!.kind !== 'directory') {
+  if (entries.length === 1 && entries[0]!.kind !== 'directory' && entries[0]!.targetKind !== 'directory') {
     const single = entries[0]!
     const targetFile = await window.orbit.sftp.pickDownloadFile(single.name)
     if (!targetFile) return
@@ -801,19 +949,22 @@ export async function downloadEntriesFromActiveTab(entries: SftpEntry[]): Promis
   const sep = destDir.includes('\\') ? '\\' : '/'
   const joinLocal = (root: string, rel: string) =>
     root.endsWith(sep) ? `${root}${rel.replaceAll('/', sep)}` : `${root}${sep}${rel.replaceAll('/', sep)}`
+  const decision: SftpConflictDecision =
+    protocolSettings.value.files.defaultConflict === 'ask'
+      ? 'rename'
+      : protocolSettings.value.files.defaultConflict
+  let skippedSymlinks = 0
 
   for (const entry of entries) {
+    const safeName = sanitizeDownloadFilename(entry.name)
     if (entry.kind === 'directory' || entry.targetKind === 'directory') {
       const manifest = await api.collectTree(sessionId, entry.path)
+      skippedSymlinks += manifest.skippedSymlinks
       for (const file of manifest.files) {
         const safeRel = file.relativePath
           .split('/')
           .map((seg) => sanitizeDownloadFilename(seg))
           .join('/')
-        const decision: SftpConflictDecision =
-          protocolSettings.value.files.defaultConflict === 'ask'
-            ? 'rename'
-            : protocolSettings.value.files.defaultConflict
         enqueueTransfer(
           {
             id: crypto.randomUUID(),
@@ -821,7 +972,7 @@ export async function downloadEntriesFromActiveTab(entries: SftpEntry[]): Promis
             sessionId,
             protocol: tab.protocol,
             direction: 'download',
-            localPath: joinLocal(destDir, safeRel),
+            localPath: joinLocal(destDir, `${safeName}/${safeRel}`),
             remotePath: file.remotePath,
             conflict: decision
           },
@@ -829,11 +980,6 @@ export async function downloadEntriesFromActiveTab(entries: SftpEntry[]): Promis
         )
       }
     } else {
-      const safeName = sanitizeDownloadFilename(entry.name)
-      const decision: SftpConflictDecision =
-        protocolSettings.value.files.defaultConflict === 'ask'
-          ? 'rename'
-          : protocolSettings.value.files.defaultConflict
       enqueueTransfer(
         {
           id: crypto.randomUUID(),
@@ -848,6 +994,9 @@ export async function downloadEntriesFromActiveTab(entries: SftpEntry[]): Promis
         entry.size
       )
     }
+  }
+  if (skippedSymlinks > 0) {
+    notify(t('sftp.skippedRemoteSymlinks', { count: skippedSymlinks }))
   }
 }
 
@@ -866,7 +1015,7 @@ export async function cancelFileTransfer(item: FileWorkspaceTransfer): Promise<v
       transferredBytes: item.transferredBytes,
       speedBps: 0,
       status: 'cancelled',
-      error: '已取消传输'
+      error: t('filesPage.statusCancelled')
     })
     return
   }
@@ -874,7 +1023,38 @@ export async function cancelFileTransfer(item: FileWorkspaceTransfer): Promise<v
   await api.cancelTransfer(item.sessionId, item.id).catch(() => {})
 }
 
+export function retryFileTransfer(item: FileWorkspaceTransfer): void {
+  const matchingTab =
+    fileTabs.value.find((t) => t.id === item.tabId && t.state === 'running' && t.sessionId) ??
+    activeFileTab.value
+  const sessionId =
+    matchingTab?.state === 'running' && matchingTab.sessionId && matchingTab.protocol === item.protocol
+      ? matchingTab.sessionId
+      : item.sessionId
+  const tabId = matchingTab?.id ?? item.tabId
+  const newId = crypto.randomUUID()
+  fileTransfers.value = fileTransfers.value.filter((t) => t.id !== item.id)
+  enqueueTransfer(
+    {
+      id: newId,
+      tabId,
+      sessionId,
+      protocol: item.protocol,
+      direction: item.direction,
+      localPath: item.localPath,
+      remotePath: item.remotePath,
+      conflict: 'overwrite'
+    },
+    item.totalBytes
+  )
+}
+
 export function clearFinishedFileTransfers(): void {
+  for (const item of fileTransfers.value) {
+    if (item.status !== 'queued' && item.status !== 'running') {
+      activeTransferTabIds.delete(item.id)
+    }
+  }
   fileTransfers.value = fileTransfers.value.filter(
     (item) => item.status === 'queued' || item.status === 'running'
   )

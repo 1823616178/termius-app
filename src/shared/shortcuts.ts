@@ -1,9 +1,15 @@
 export type AppShortcutAction = 'new-local-tab' | 'close-tab' | 'next-tab' | 'prev-tab' | 'focus-host-search'
 export type TerminalShortcutAction = 'copy' | 'paste' | 'search'
 
+export function isInsideRdpCapture(target: EventTarget | null): boolean {
+  if (typeof Element === 'undefined' || !(target instanceof Element)) return false
+  return Boolean(target.closest('iron-remote-desktop, [data-rdp-capture="true"]'))
+}
+
 export function matchAppShortcut(event: KeyboardEvent): AppShortcutAction | undefined {
   if (event.type !== 'keydown' || !event.ctrlKey || event.isComposing || event.altKey || event.metaKey)
     return undefined
+  if (isInsideRdpCapture(event.target)) return undefined
   if (event.shiftKey && event.code === 'KeyT') return 'new-local-tab'
   if (event.shiftKey && event.code === 'KeyW') return 'close-tab'
   if (event.code === 'Tab') return event.shiftKey ? 'prev-tab' : 'next-tab'

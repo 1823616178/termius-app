@@ -34,6 +34,8 @@ interface ActiveFileSession {
 
 interface PendingRpc {
   sessionId: string
+  ownerWindowId?: number
+  isTransfer?: boolean
   resolve: (value: unknown) => void
   reject: (reason: Error) => void
   timer?: NodeJS.Timeout
@@ -123,7 +125,22 @@ export class FilesService {
     return worker
   }
 
-  private callWorker<T>(sessionId: string, message: Record<string, unknown>, timeoutMs = 30_000): Promise<T> {
+  getActiveTransferCount(ownerWindowId?: number): number {
+    let count = 0
+    for (const req of this.pending.values()) {
+      if (!req.isTransfer) continue
+      if (ownerWindowId !== undefined && req.ownerWindowId !== ownerWindowId) continue
+      count++
+    }
+    return count
+  }
+
+  private callWorker<T>(
+    sessionId: string,
+    message: Record<string, unknown>,
+    timeoutMs = 30_000,
+    meta?: { ownerWindowId?: number; isTransfer?: boolean }
+  ): Promise<T> {
     const requestId = randomUUID()
     const worker = this.ensureWorker()
     return new Promise<T>((resolve, reject) => {
@@ -136,6 +153,8 @@ export class FilesService {
           : undefined
       this.pending.set(requestId, {
         sessionId,
+        ownerWindowId: meta?.ownerWindowId,
+        isTransfer: meta?.isTransfer,
         resolve: (val) => resolve(val as T),
         reject,
         timer
@@ -332,14 +351,18 @@ export class FilesService {
       throw new Error('文件会话未连接或已关闭')
     }
     let enrichedPayload = payload
-    if (action === 'upload' || action === 'download') {
+    const isTransfer = action === 'upload' || action === 'download'
+    if (isTransfer) {
       const settings = await this.getProtocolSettings().catch(() => ({
         files: DEFAULT_FILES_SETTINGS
       }))
       const speedLimitBps = Math.max(0, settings.files.speedLimitKBps) * 1024
       enrichedPayload = { ...payload, speedLimitBps }
     }
-    return this.callWorker<T>(sessionId, { type: 'files:request', action, ...enrichedPayload }, timeoutMs)
+    return this.callWorker<T>(sessionId, { type: 'files:request', action, ...enrichedPayload }, timeoutMs, {
+      ownerWindowId,
+      isTransfer
+    })
   }
 
   cancelTransfer(ownerWindowId: number, sessionId: string, transferId: string): void {

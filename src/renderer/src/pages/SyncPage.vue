@@ -12,12 +12,15 @@ import {
   AlertTriangle,
   FolderKanban,
   Network,
-  LogOut
+  LogOut,
+  HardDrive,
+  Layers
 } from '@lucide/vue'
 import {
   isInsecureHttpSyncUrl,
   type SyncConflictResolutionItem,
   type SyncDevice,
+  type SyncNamespace,
   type SyncRevisionInfo
 } from '../../../shared/sync'
 import SyncConflictSection from '../components/SyncConflictSection.vue'
@@ -25,9 +28,12 @@ import SyncManageSection from '../components/SyncManageSection.vue'
 import { locale, t } from '../services/i18n'
 import {
   bootstrap,
+  fileProfiles,
   hosts,
+  knownRdpHosts,
   notify,
   page,
+  rdpProfiles,
   setSyncWriteMode,
   syncGroups,
   syncStatus,
@@ -56,13 +62,33 @@ const recoveryKeyInput = ref('')
 const resetMasterPassword = ref('')
 const recoverAccountPassword = ref('')
 
-const rotateConfirmVisible = ref(false)
+const rotateTarget = ref<'ssh' | 'files' | 'rdp' | null>(null)
 const rotateMasterPassword = ref('')
 const rotateAccountPassword = ref('')
 
 const devices = ref<SyncDevice[]>([])
 const revisions = ref<SyncRevisionInfo[]>([])
+const selectedRevisionNamespace = ref<SyncNamespace>('core')
 const manageLoading = ref(false)
+
+const serverCapabilities = computed(
+  () =>
+    syncStatus.value?.serverCapabilities ?? {
+      probed: false,
+      legacyV1Only: true,
+      maxSchemaVersion: 1,
+      supportedNamespaces: ['core'] as SyncNamespace[],
+      maxDocumentBytes: 2 * 1024 * 1024,
+      supportsBatchVaultRotate: false
+    }
+)
+const supportsProtocolsNamespace = computed(() =>
+  serverCapabilities.value.supportedNamespaces.includes('protocols')
+)
+const supportsSettingsNamespace = computed(() =>
+  serverCapabilities.value.supportedNamespaces.includes('settings')
+)
+const maxDocMiB = computed(() => (serverCapabilities.value.maxDocumentBytes / (1024 * 1024)).toFixed(0))
 
 const phaseText = computed(() => {
   const phase = syncStatus.value?.phase
@@ -209,8 +235,9 @@ async function handleLogout() {
     syncStatus.value = await window.orbit.sync.logout()
     devices.value = []
     revisions.value = []
+    selectedRevisionNamespace.value = 'core'
     pendingRecoveryKey.value = ''
-    rotateConfirmVisible.value = false
+    rotateTarget.value = null
     notify(en ? 'Signed out (local encrypted config retained)' : '已退出登录，本机加密配置仍保留')
     await loadFormDefaults()
   })
@@ -267,7 +294,7 @@ async function handleLockVault() {
   const en = locale.value === 'en-US'
   await runAction(async () => {
     syncStatus.value = await window.orbit.sync.lockVault()
-    rotateConfirmVisible.value = false
+    rotateTarget.value = null
     notify(en ? 'Vault locked and memory keys cleared' : '已立即锁定保管库并清除内存密钥')
   })
 }
@@ -323,29 +350,95 @@ async function handleTogglePasswordSync() {
       )
     })
   } else {
-    rotateConfirmVisible.value = !rotateConfirmVisible.value
+    rotateTarget.value = rotateTarget.value === 'ssh' ? null : 'ssh'
   }
 }
 
-async function handleConfirmDisablePasswordSync() {
-  const en = locale.value === 'en-US'
+async function handleToggleFileCredsSync() {
+  if (!syncStatus.value) return
+  if (!syncStatus.value.syncFileCredentials) {
+    await runAction(async () => {
+      const res = await window.orbit.sync.updatePreferences({ syncFileCredentials: true })
+      syncStatus.value = res.status
+      notify(
+        locale.value === 'en-US' ? 'Enabled E2EE File Server credential sync' : '已开启文件服务器凭据加密同步'
+      )
+    })
+  } else if (!supportsProtocolsNamespace.value) {
+    await runAction(async () => {
+      const res = await window.orbit.sync.updatePreferences({ syncFileCredentials: false })
+      syncStatus.value = res.status
+    })
+  } else {
+    rotateTarget.value = rotateTarget.value === 'files' ? null : 'files'
+  }
+}
+
+async function handleToggleRdpCredsSync() {
+  if (!syncStatus.value) return
+  if (!syncStatus.value.syncRdpCredentials) {
+    await runAction(async () => {
+      const res = await window.orbit.sync.updatePreferences({ syncRdpCredentials: true })
+      syncStatus.value = res.status
+      notify(
+        locale.value === 'en-US' ? 'Enabled E2EE RDP password sync' : '已开启远程桌面（RDP）密码加密同步'
+      )
+    })
+  } else if (!supportsProtocolsNamespace.value) {
+    await runAction(async () => {
+      const res = await window.orbit.sync.updatePreferences({ syncRdpCredentials: false })
+      syncStatus.value = res.status
+    })
+  } else {
+    rotateTarget.value = rotateTarget.value === 'rdp' ? null : 'rdp'
+  }
+}
+
+async function handleToggleProtocolSettingsSync() {
+  if (!syncStatus.value) return
   await runAction(async () => {
     const res = await window.orbit.sync.updatePreferences({
-      syncPasswords: false,
-      masterPassword: rotateMasterPassword.value,
-      currentAccountPassword: rotateAccountPassword.value
+      syncProtocolSettings: !syncStatus.value!.syncProtocolSettings
     })
+    syncStatus.value = res.status
+  })
+}
+
+async function handleConfirmDisableCredentialSync() {
+  if (!rotateTarget.value) return
+  const en = locale.value === 'en-US'
+  const target = rotateTarget.value
+  await runAction(async () => {
+    const payload =
+      target === 'files'
+        ? {
+            syncFileCredentials: false,
+            masterPassword: rotateMasterPassword.value,
+            currentAccountPassword: rotateAccountPassword.value
+          }
+        : target === 'rdp'
+          ? {
+              syncRdpCredentials: false,
+              masterPassword: rotateMasterPassword.value,
+              currentAccountPassword: rotateAccountPassword.value
+            }
+          : {
+              syncPasswords: false,
+              masterPassword: rotateMasterPassword.value,
+              currentAccountPassword: rotateAccountPassword.value
+            }
+    const res = await window.orbit.sync.updatePreferences(payload)
     syncStatus.value = res.status
     rotateMasterPassword.value = ''
     rotateAccountPassword.value = ''
-    rotateConfirmVisible.value = false
+    rotateTarget.value = null
     if (res.rotatedRecoveryKey) {
       pendingRecoveryKey.value = res.rotatedRecoveryKey
     }
     notify(
       en
-        ? 'Disabled password sync, rotated vault key, and uploaded clean document'
-        : '已关闭密码同步、轮换保管库密钥并上传剥离密码后的文档'
+        ? 'Disabled credential sync, rotated vault key, and uploaded clean document'
+        : '已关闭凭据同步、轮换保管库密钥并上传剥离凭据后的文档'
     )
     await loadManageData()
   })
@@ -368,15 +461,24 @@ async function loadManageData() {
   if (!syncStatus.value?.signedIn) return
   manageLoading.value = true
   try {
+    const ns = serverCapabilities.value.supportedNamespaces.includes(selectedRevisionNamespace.value)
+      ? selectedRevisionNamespace.value
+      : 'core'
+    selectedRevisionNamespace.value = ns
     const [devList, revList] = await Promise.all([
       window.orbit.sync.listDevices().catch(() => []),
-      window.orbit.sync.listRevisions().catch(() => [])
+      window.orbit.sync.listRevisions(ns).catch(() => [])
     ])
     devices.value = devList
     revisions.value = revList
   } finally {
     manageLoading.value = false
   }
+}
+
+async function handleSelectRevisionNamespace(ns: SyncNamespace) {
+  selectedRevisionNamespace.value = ns
+  await loadManageData()
 }
 
 async function handleRevokeDevice(deviceId: string) {
@@ -386,13 +488,13 @@ async function handleRevokeDevice(deviceId: string) {
   })
 }
 
-async function handleRestoreRevision(revision: string) {
+async function handleRestoreRevision(revision: string, namespace: SyncNamespace = 'core') {
   await runAction(async () => {
-    syncStatus.value = await window.orbit.sync.restoreRevision(revision)
+    syncStatus.value = await window.orbit.sync.restoreRevision(revision, namespace)
     notify(
       locale.value === 'en-US'
-        ? `Restored revision from rev-${revision}`
-        : `已回滚并生成新同步版本（源自 rev-${revision}）`
+        ? `Restored ${namespace} revision from rev-${revision}`
+        : `已回滚 ${namespace} 并生成新同步版本（源自 rev-${revision}）`
     )
     await loadManageData()
   })
@@ -450,6 +552,42 @@ async function handleRestoreRevision(revision: string) {
       <span class="container_sync_alert_body_readonly-text">
         {{ t('sync.readonlyBanner', { version: syncStatus.remoteSchemaVersion ?? '' }) }}
       </span>
+    </div>
+
+    <div
+      v-if="syncStatus?.signedIn"
+      class="container_sync_servercap_body_banner"
+      data-testid="sync-capability-banner"
+      :data-mode="serverCapabilities.legacyV1Only ? 'legacy-v1' : 'multi-namespace'"
+      role="status"
+    >
+      <Layers :size="16" />
+      <div class="container_sync_servercap_body_copy">
+        <strong class="container_sync_servercap_body_title">
+          {{
+            serverCapabilities.legacyV1Only
+              ? t('sync.capBannerV1Title')
+              : t('sync.capBannerV2Title', {
+                  namespaces: serverCapabilities.supportedNamespaces.join(' · ')
+                })
+          }}
+        </strong>
+        <span class="container_sync_servercap_body_desc">
+          {{
+            serverCapabilities.legacyV1Only
+              ? t('sync.capBannerV1Desc')
+              : t('sync.capBannerV2Desc', {
+                  maxMiB: maxDocMiB,
+                  batch: serverCapabilities.supportsBatchVaultRotate
+                    ? t('sync.capBatchYes')
+                    : t('sync.capBatchNo'),
+                  coreRev: syncStatus.namespaces?.core?.lastRevision ?? '0',
+                  protoRev: syncStatus.namespaces?.protocols?.lastRevision ?? '0',
+                  settingsRev: syncStatus.namespaces?.settings?.lastRevision ?? '0'
+                })
+          }}
+        </span>
+      </div>
     </div>
 
     <div v-if="pendingRecoveryKey" class="container_sync_recovery_body_banner" role="status">
@@ -814,15 +952,51 @@ async function handleRestoreRevision(revision: string) {
             <input
               class="container_sync_vault_body_pwsync-check"
               type="checkbox"
-              :checked="syncStatus.syncPasswords && !rotateConfirmVisible"
+              :checked="syncStatus.syncPasswords && rotateTarget !== 'ssh'"
               :disabled="busy"
               @change="handleTogglePasswordSync"
             />
             {{ t('sync.pwSyncLabel') }}
           </label>
-          <div v-if="rotateConfirmVisible" class="container_sync_vault_body_rotate-box">
+          <label class="container_sync_vault_body_filecreds-label">
+            <input
+              class="container_sync_vault_body_filecreds-check"
+              type="checkbox"
+              :checked="syncStatus.syncFileCredentials && rotateTarget !== 'files'"
+              :disabled="busy"
+              @change="handleToggleFileCredsSync"
+            />
+            {{ t('sync.fileCredsSyncLabel') }}
+          </label>
+          <label class="container_sync_vault_body_rdpcreds-label">
+            <input
+              class="container_sync_vault_body_rdpcreds-check"
+              type="checkbox"
+              :checked="syncStatus.syncRdpCredentials && rotateTarget !== 'rdp'"
+              :disabled="busy"
+              @change="handleToggleRdpCredsSync"
+            />
+            {{ t('sync.rdpCredsSyncLabel') }}
+          </label>
+          <label class="container_sync_vault_body_protoset-label">
+            <input
+              class="container_sync_vault_body_protoset-check"
+              type="checkbox"
+              :checked="syncStatus.syncProtocolSettings"
+              :disabled="busy || (!supportsSettingsNamespace && !syncStatus.syncProtocolSettings)"
+              @change="handleToggleProtocolSettingsSync"
+            />
+            {{ t('sync.protoSettingsSyncLabel') }}
+          </label>
+          <div v-if="rotateTarget" class="container_sync_vault_body_rotate-box">
             <p class="container_sync_vault_body_rotate-hint">
-              {{ t('sync.rotateHint') }}
+              {{
+                rotateTarget === 'files'
+                  ? t('sync.rotateHintFile')
+                  : rotateTarget === 'rdp'
+                    ? t('sync.rotateHintRdp')
+                    : t('sync.rotateHint')
+              }}
             </p>
             <input
               v-model="rotateAccountPassword"
@@ -844,14 +1018,20 @@ async function handleRestoreRevision(revision: string) {
                 type="button"
                 data-primary
                 :disabled="busy || rotateAccountPassword.length < 1 || rotateMasterPassword.length < 8"
-                @click="handleConfirmDisablePasswordSync"
+                @click="handleConfirmDisableCredentialSync"
               >
-                {{ t('sync.rotateConfirm') }}
+                {{
+                  rotateTarget === 'files'
+                    ? t('sync.rotateConfirmFile')
+                    : rotateTarget === 'rdp'
+                      ? t('sync.rotateConfirmRdp')
+                      : t('sync.rotateConfirm')
+                }}
               </button>
               <button
                 class="container_sync_vault_body_rotate-cancel"
                 type="button"
-                @click="rotateConfirmVisible = false"
+                @click="rotateTarget = null"
               >
                 {{ t('actionDialog.cancel') }}
               </button>
@@ -887,6 +1067,8 @@ async function handleRestoreRevision(revision: string) {
       v-if="syncStatus?.signedIn"
       :devices="devices"
       :revisions="revisions"
+      :supported-namespaces="serverCapabilities.supportedNamespaces"
+      :selected-namespace="selectedRevisionNamespace"
       :loading="manageLoading"
       :busy="busy"
       :vault-unlocked="Boolean(syncStatus.vaultUnlocked)"
@@ -894,6 +1076,7 @@ async function handleRestoreRevision(revision: string) {
       @logout="handleLogout"
       @revoke-device="handleRevokeDevice"
       @restore-revision="handleRestoreRevision"
+      @select-namespace="handleSelectRevisionNamespace"
     />
 
     <section class="container_sync_entities_body_section">
@@ -935,6 +1118,32 @@ async function handleRestoreRevision(revision: string) {
             @click="page = 'tunnels'"
           >
             {{ t('sync.goTunnels') }}
+          </button>
+        </div>
+      </div>
+
+      <div class="container_sync_overview_card_protocols">
+        <div class="container_sync_protocols_header_base">
+          <HardDrive :size="17" />
+          <h3 class="container_sync_protocols_header_title">
+            {{ t('sync.overviewProtocolsTitle', { count: fileProfiles.length + rdpProfiles.length }) }}
+          </h3>
+        </div>
+        <p class="container_sync_protocols_body_hint">
+          {{
+            t('sync.overviewProtocolsDesc', {
+              files: fileProfiles.length,
+              rdp: rdpProfiles.length,
+              certs: knownRdpHosts.length
+            })
+          }}
+        </p>
+        <div class="container_sync_overview_proto_actions">
+          <button class="container_sync_overview_go_files" type="button" @click="page = 'files'">
+            {{ t('sync.goFiles') }}
+          </button>
+          <button class="container_sync_overview_go_remote" type="button" @click="page = 'remote'">
+            {{ t('sync.goRemote') }}
           </button>
         </div>
       </div>
@@ -1028,6 +1237,41 @@ async function handleRestoreRevision(revision: string) {
   background: rgba(251, 191, 36, 0.1);
   color: var(--color-warning);
 }
+.container_sync_servercap_body_banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 10px;
+  margin-bottom: 18px;
+  font-size: 13px;
+  border: 1px solid var(--color-border-control);
+  background: var(--surface-card-gradient);
+  &[data-mode='multi-namespace'] {
+    border-color: rgba(52, 211, 153, 0.45);
+    background: rgba(52, 211, 153, 0.08);
+    color: var(--color-success);
+  }
+  &[data-mode='legacy-v1'] {
+    border-color: rgba(251, 191, 36, 0.45);
+    background: rgba(251, 191, 36, 0.08);
+    color: var(--color-warning);
+  }
+}
+.container_sync_servercap_body_copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.container_sync_servercap_body_title {
+  font-size: 13px;
+  font-weight: 600;
+}
+.container_sync_servercap_body_desc {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
 .container_sync_recovery_body_banner {
   border: 1px solid var(--color-accent-primary-ring);
   background: linear-gradient(155deg, var(--color-accent-primary-soft), var(--color-surface-1));
@@ -1100,7 +1344,8 @@ async function handleRestoreRevision(revision: string) {
 .container_sync_account_header_base,
 .container_sync_vault_header_base,
 .container_sync_groups_header_base,
-.container_sync_tunnels_header_base {
+.container_sync_tunnels_header_base,
+.container_sync_protocols_header_base {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1110,7 +1355,8 @@ async function handleRestoreRevision(revision: string) {
 .container_sync_account_header_title,
 .container_sync_vault_header_title,
 .container_sync_groups_header_title,
-.container_sync_tunnels_header_title {
+.container_sync_tunnels_header_title,
+.container_sync_protocols_header_title {
   margin: 0;
   font-size: 15px;
   font-weight: 500;
@@ -1164,19 +1410,26 @@ async function handleRestoreRevision(revision: string) {
 .container_sync_account_body_keep-label,
 .container_sync_account_body_autosync-label,
 .container_sync_account_body_persist-label,
-.container_sync_vault_body_pwsync-label {
+.container_sync_vault_body_pwsync-label,
+.container_sync_vault_body_filecreds-label,
+.container_sync_vault_body_rdpcreds-label,
+.container_sync_vault_body_protoset-label {
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 13px;
   color: var(--color-text-secondary);
+  margin-bottom: 6px;
 }
 .container_sync_account_body_remember-check,
 .container_sync_account_body_keep-check,
 .container_sync_account_body_insecure-check,
 .container_sync_account_body_autosync-check,
 .container_sync_account_body_persist-check,
-.container_sync_vault_body_pwsync-check {
+.container_sync_vault_body_pwsync-check,
+.container_sync_vault_body_filecreds-check,
+.container_sync_vault_body_rdpcreds-check,
+.container_sync_vault_body_protoset-check {
   width: auto;
 }
 .container_sync_account_body_http-warn,
@@ -1244,7 +1497,8 @@ async function handleRestoreRevision(revision: string) {
 .container_sync_vault_body_placeholder,
 .container_sync_vault_body_hint,
 .container_sync_groups_body_hint,
-.container_sync_tunnels_body_hint {
+.container_sync_tunnels_body_hint,
+.container_sync_protocols_body_hint {
   margin: 0 0 12px;
   font-size: 12px;
   line-height: 1.6;
@@ -1364,7 +1618,8 @@ async function handleRestoreRevision(revision: string) {
   color: var(--color-text-muted);
 }
 .container_sync_overview_card_hosts,
-.container_sync_overview_card_tunnels {
+.container_sync_overview_card_tunnels,
+.container_sync_overview_card_protocols {
   border: 1px solid var(--color-border);
   border-radius: 12px;
   padding: 16px;
@@ -1374,7 +1629,8 @@ async function handleRestoreRevision(revision: string) {
   gap: 10px;
 }
 .container_sync_overview_nav_actions,
-.container_sync_overview_tunnel_actions {
+.container_sync_overview_tunnel_actions,
+.container_sync_overview_proto_actions {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;

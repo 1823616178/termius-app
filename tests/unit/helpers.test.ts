@@ -323,6 +323,30 @@ describe('shell discovery, redaction, SSH normalization, and UI helpers', () => 
     expect(matchTerminalShortcut(keyEvent({ ctrlKey: true, shiftKey: true, code: 'KeyV' }))).toBe('paste')
     expect(matchTerminalShortcut(keyEvent({ shiftKey: true, code: 'Insert' }))).toBe('paste')
     expect(matchTerminalShortcut(keyEvent({ ctrlKey: true, shiftKey: true, code: 'KeyF' }))).toBe('search')
+
+    // Ensure embedded RDP canvas captures Ctrl+K / Ctrl+Tab / Ctrl+Shift+W without app hijacking
+    const origElement = globalThis.Element
+    class FakeElement {
+      constructor(private readonly match: boolean) {}
+      closest(_sel: string) {
+        return this.match ? this : null
+      }
+    }
+    ;(globalThis as unknown as { Element: unknown }).Element = FakeElement
+    try {
+      const rdpTarget = new FakeElement(true) as unknown as EventTarget
+      const normalTarget = new FakeElement(false) as unknown as EventTarget
+      expect(matchAppShortcut(keyEvent({ ctrlKey: true, code: 'KeyK', target: rdpTarget }))).toBeUndefined()
+      expect(matchAppShortcut(keyEvent({ ctrlKey: true, code: 'Tab', target: rdpTarget }))).toBeUndefined()
+      expect(
+        matchAppShortcut(keyEvent({ ctrlKey: true, shiftKey: true, code: 'KeyW', target: rdpTarget }))
+      ).toBeUndefined()
+      expect(matchAppShortcut(keyEvent({ ctrlKey: true, code: 'KeyK', target: normalTarget }))).toBe(
+        'focus-host-search'
+      )
+    } finally {
+      ;(globalThis as unknown as { Element: unknown }).Element = origElement
+    }
   })
 
   it('resolves four-way split drop zones and merges/detaches tabs losslessly', () => {

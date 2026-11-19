@@ -44,6 +44,19 @@ let removeTrayStateChanged: (() => void) | undefined
 let removeTrayAction: (() => void) | undefined
 let removeUpdateStateChanged: (() => void) | undefined
 
+function listStamp(items: ReadonlyArray<{ id: string; updatedAt?: string | number }> | undefined): string {
+  if (!items) return ''
+  let stamp = String(items.length)
+  for (const item of items) stamp += `\n${item.id}\t${item.updatedAt ?? ''}`
+  return stamp
+}
+
+function assignStamped<T>(target: { value: T }, next: T, stamp: string, previous: { stamp: string }): void {
+  if (previous.stamp === stamp) return
+  previous.stamp = stamp
+  target.value = next
+}
+
 export async function initialize(): Promise<void> {
   initError.value = ''
   try {
@@ -93,10 +106,43 @@ export async function initialize(): Promise<void> {
       })
     }
     if (!removeSyncData) {
+      const seen = {
+        hosts: { stamp: listStamp(hosts.value) },
+        groups: { stamp: listStamp(syncGroups.value) },
+        tunnels: { stamp: listStamp(syncTunnels.value) },
+        files: { stamp: listStamp(fileProfiles.value) },
+        rdp: { stamp: listStamp(rdpProfiles.value) },
+        known: {
+          stamp: knownRdpHosts.value
+            .map((item) => `${item.id}\t${item.fingerprint}\t${item.acceptedAt}`)
+            .join('\n')
+        },
+        settings: { stamp: JSON.stringify(protocolSettings.value) }
+      }
       removeSyncData = window.orbit.sync.onDataChanged((data) => {
-        hosts.value = data.hosts
-        syncGroups.value = data.groups
-        syncTunnels.value = data.tunnels
+        assignStamped(hosts, data.hosts, listStamp(data.hosts), seen.hosts)
+        assignStamped(syncGroups, data.groups, listStamp(data.groups), seen.groups)
+        assignStamped(syncTunnels, data.tunnels, listStamp(data.tunnels), seen.tunnels)
+        if (data.fileProfiles !== undefined) {
+          assignStamped(fileProfiles, data.fileProfiles, listStamp(data.fileProfiles), seen.files)
+        }
+        if (data.rdpProfiles !== undefined) {
+          assignStamped(rdpProfiles, data.rdpProfiles, listStamp(data.rdpProfiles), seen.rdp)
+        }
+        if (data.knownRdpHosts !== undefined) {
+          const stamp = data.knownRdpHosts
+            .map((item) => `${item.id}\t${item.fingerprint}\t${item.acceptedAt}`)
+            .join('\n')
+          assignStamped(knownRdpHosts, data.knownRdpHosts, stamp, seen.known)
+        }
+        if (data.protocolSettings !== undefined) {
+          assignStamped(
+            protocolSettings,
+            data.protocolSettings,
+            JSON.stringify(data.protocolSettings),
+            seen.settings
+          )
+        }
       })
     }
     if (!removeTrayStateChanged) {

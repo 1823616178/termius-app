@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { normalizeProtocolSettings, protocolSettingsPatchSchema } from '../../src/shared/files'
 import {
   DEFAULT_RDP_SETTINGS,
@@ -6,7 +6,8 @@ import {
   rdpProfileInputSchema,
   type RdpEnvironmentProbe
 } from '../../src/shared/rdp'
-import { resolveRdpLaunchConfig } from '../../src/main/rdp/service'
+import type { DataClient } from '../../src/main/data-client'
+import { RdpService, resolveRdpLaunchConfig } from '../../src/main/rdp/service'
 
 const probeWithSchemeA: RdpEnvironmentProbe = {
   platform: 'win32',
@@ -76,6 +77,30 @@ describe('RDP profile schemas & settings normalization', () => {
 })
 
 describe('Scheme A preferred & Scheme B fallback resolution', () => {
+  it('starts explicit Scheme B sessions without probing for an external client', async () => {
+    const probeFn = vi.fn().mockResolvedValue(probeWithSchemeA)
+    const service = new RdpService({
+      data: { call: vi.fn().mockResolvedValue({ rdp: DEFAULT_RDP_SETTINGS }) } as unknown as DataClient,
+      encryptSecret: vi.fn(),
+      decryptSecret: vi.fn(),
+      emitSessionState: vi.fn(),
+      emitCertPrompt: vi.fn(),
+      probeFn
+    })
+    try {
+      const session = await service.connect(1, {
+        kind: 'adhoc',
+        host: '127.0.0.1',
+        launchModeOverride: 'embedded'
+      })
+      expect(session.mode).toBe('embedded')
+      expect(session.embeddedParams?.proxyAddress).toMatch(/^ws:\/\/127\.0\.0\.1:/)
+      expect(probeFn).not.toHaveBeenCalled()
+    } finally {
+      await service.shutdownAll()
+    }
+  })
+
   it('uses Scheme A by default when native client is available, and switches cleanly to Scheme B', () => {
     const schemeA = resolveRdpLaunchConfig({
       settings: DEFAULT_RDP_SETTINGS,

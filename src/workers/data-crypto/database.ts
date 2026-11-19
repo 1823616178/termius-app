@@ -11,6 +11,7 @@ import {
   type AllProtocolSettings,
   type FileProfile,
   type FileProfileInput,
+  type FileSecretsInput,
   type ProtocolNamespace,
   type ProtocolSettingsMap
 } from '../../shared/files'
@@ -26,16 +27,21 @@ import {
   type HostSyncExtras,
   type SyncConflict,
   type SyncDocumentEnvelope,
+  type SyncDocumentProtocolsV2,
+  type SyncDocumentSettingsV2,
   type SyncDocumentV1,
   type SyncGroup,
   type SyncGroupInput,
+  type SyncNamespace,
   type SyncTunnel,
   type SyncTunnelInput,
   type VaultMetadataWire
 } from '../../shared/sync'
 import {
   createVaultMaterial,
+  decryptNamespaceDocument,
   decryptSyncDocument,
+  encryptNamespaceDocument,
   encryptSyncDocument,
   recoverVaultWithKey,
   rotateVaultKeyMaterials,
@@ -47,8 +53,20 @@ import {
   type LocalMergedHost,
   type LocalSyncSource
 } from './sync-merge'
+import {
+  buildLocalProtocolsDocument,
+  buildLocalSettingsDocument,
+  normalizeRemoteProtocolsDocument,
+  normalizeRemoteSettingsDocument,
+  threeWayMergeProtocols,
+  threeWayMergeSettings,
+  type LocalMergedFileProfile,
+  type LocalMergedRdpProfile,
+  type LocalProtocolsSyncSource,
+  type LocalSettingsSyncSource
+} from './sync-merge-v2'
 
-const CURRENT_SCHEMA_VERSION = 5
+const CURRENT_SCHEMA_VERSION = 6
 
 const FILES_TABLES_SQL = `
   CREATE TABLE IF NOT EXISTS file_profiles (
@@ -87,6 +105,21 @@ const RDP_TABLES_SQL = `
   );
 `
 
+const SYNC_NAMESPACES_SQL = `
+  CREATE TABLE IF NOT EXISTS sync_namespaces (
+    namespace TEXT PRIMARY KEY,
+    last_revision TEXT,
+    last_etag TEXT,
+    last_sync_at TEXT,
+    base_doc_cipher BLOB,
+    pending_changes INTEGER NOT NULL DEFAULT 0,
+    read_only_remote_schema INTEGER NOT NULL DEFAULT 0,
+    remote_schema_version INTEGER,
+    doc_extra TEXT,
+    updated_at TEXT NOT NULL
+  );
+`
+
 const SYNC_TABLES_SQL = `
   CREATE TABLE IF NOT EXISTS sync_accounts (
     id TEXT PRIMARY KEY,
@@ -105,6 +138,9 @@ const SYNC_TABLES_SQL = `
     key_version INTEGER NOT NULL DEFAULT 1,
     sync_passwords INTEGER NOT NULL DEFAULT 0,
     sync_private_keys INTEGER NOT NULL DEFAULT 0,
+    sync_file_credentials INTEGER NOT NULL DEFAULT 0,
+    sync_rdp_credentials INTEGER NOT NULL DEFAULT 0,
+    sync_protocol_settings INTEGER NOT NULL DEFAULT 1,
     last_revision TEXT,
     last_etag TEXT,
     last_sync_at TEXT,
@@ -140,7 +176,21 @@ const SYNC_TABLES_SQL = `
     unknown_extra TEXT,
     account_scope TEXT NOT NULL DEFAULT 'local'
   );
+  ${SYNC_NAMESPACES_SQL}
 `
+
+export interface SyncNamespaceRecord {
+  namespace: SyncNamespace
+  lastRevision: string | null
+  lastEtag: string | null
+  lastSyncAt: string | null
+  baseDocCipher?: Uint8Array
+  pendingChanges: boolean
+  readOnlyRemoteSchema: boolean
+  remoteSchemaVersion?: number
+  docExtra?: Record<string, unknown>
+  updatedAt: string
+}
 
 export interface SyncAccountRecord {
   id: string
@@ -159,6 +209,9 @@ export interface SyncAccountRecord {
   keyVersion: number
   syncPasswords: boolean
   syncPrivateKeys: boolean
+  syncFileCredentials: boolean
+  syncRdpCredentials: boolean
+  syncProtocolSettings: boolean
   lastRevision: string | null
   lastEtag: string | null
   lastSyncAt: string | null
@@ -184,6 +237,37 @@ export interface SyncEvaluateOutput {
   localTunnels: Array<SyncTunnel & { unknownExtra?: Record<string, unknown> }>
   nextPreferences: { syncPasswords: boolean; syncPrivateKeys: boolean }
   remoteHostFingerprints: Array<{ address: string; port: number; fingerprint: string }>
+  docExtra?: Record<string, unknown>
+}
+
+export interface SyncEvaluateProtocolsOutput {
+  readOnlySchema: boolean
+  remoteSchemaVersion?: number
+  conflicts: SyncConflict[]
+  needsUpload: boolean
+  uploadEnvelope?: SyncDocumentEnvelope
+  mergedBaseJson?: string
+  fileSecretsToEncrypt: Array<{ profileId: string; secrets: FileSecretsInput | null }>
+  rdpSecretsToEncrypt: Array<{ profileId: string; password: string | null }>
+  localFileProfileUpdates: LocalMergedFileProfile[]
+  deletedFileProfileIds: string[]
+  localRdpProfileUpdates: LocalMergedRdpProfile[]
+  deletedRdpProfileIds: string[]
+  localKnownRdpHosts: KnownRdpHostEntry[]
+  deletedKnownRdpHostIds: string[]
+  nextPreferences: { syncFileCredentials: boolean; syncRdpCredentials: boolean }
+  docExtra?: Record<string, unknown>
+}
+
+export interface SyncEvaluateSettingsOutput {
+  readOnlySchema: boolean
+  remoteSchemaVersion?: number
+  conflicts: SyncConflict[]
+  needsUpload: boolean
+  uploadEnvelope?: SyncDocumentEnvelope
+  mergedBaseJson?: string
+  nextProtocolSettings?: AllProtocolSettings
+  nextPreferences: { syncProtocolSettings: boolean }
   docExtra?: Record<string, unknown>
 }
 
@@ -238,7 +322,7 @@ export class Repository {
           ${SYNC_TABLES_SQL}
           ${FILES_TABLES_SQL}
           ${RDP_TABLES_SQL}
-          PRAGMA user_version = 5;
+          PRAGMA user_version = 6;
         `)
       })()
       return
@@ -301,6 +385,20 @@ export class Repository {
           PRAGMA user_version = 5;
         `)
       })()
+      version = 5
+    }
+    if (version === 5) {
+      if (!backedUp && path !== ':memory:' && existsSync(path)) {
+        this.db.pragma('wal_checkpoint(TRUNCATE)')
+        copyFileSync(path, `${path}.bak-v5-${Date.now()}`)
+        backedUp = true
+      }
+      this.db.transaction(() => {
+        this.db.exec(`
+          ${SYNC_NAMESPACES_SQL}
+          PRAGMA user_version = 6;
+        `)
+      })()
     }
     this.ensureSyncColumns()
   }
@@ -315,6 +413,15 @@ export class Repository {
     }
     if (!cols.some((c) => c.name === 'allow_insecure_http')) {
       this.db.exec('ALTER TABLE sync_accounts ADD COLUMN allow_insecure_http INTEGER NOT NULL DEFAULT 0')
+    }
+    if (!cols.some((c) => c.name === 'sync_file_credentials')) {
+      this.db.exec('ALTER TABLE sync_accounts ADD COLUMN sync_file_credentials INTEGER NOT NULL DEFAULT 0')
+    }
+    if (!cols.some((c) => c.name === 'sync_rdp_credentials')) {
+      this.db.exec('ALTER TABLE sync_accounts ADD COLUMN sync_rdp_credentials INTEGER NOT NULL DEFAULT 0')
+    }
+    if (!cols.some((c) => c.name === 'sync_protocol_settings')) {
+      this.db.exec('ALTER TABLE sync_accounts ADD COLUMN sync_protocol_settings INTEGER NOT NULL DEFAULT 1')
     }
   }
 
@@ -343,6 +450,15 @@ export class Repository {
 
   private markSyncPending(): void {
     this.stmt("UPDATE sync_accounts SET pending_changes = 1 WHERE id = 'primary'").run()
+  }
+
+  private markNamespacePending(namespace: 'protocols' | 'settings'): void {
+    const now = new Date().toISOString()
+    this.stmt(
+      `INSERT INTO sync_namespaces (namespace, pending_changes, updated_at)
+       VALUES (?, 1, ?)
+       ON CONFLICT(namespace) DO UPDATE SET pending_changes = 1, updated_at = excluded.updated_at`
+    ).run(namespace, now)
   }
 
   save(raw: HostInput, encrypted?: Uint8Array): Host[] {
@@ -456,6 +572,7 @@ export class Repository {
           throw new Error('服务器名称已存在，请使用其他名称。')
         throw error
       }
+      this.markNamespacePending('protocols')
     })()
     return this.fileProfilesList()
   }
@@ -469,7 +586,10 @@ export class Repository {
   }
 
   fileProfileRemove(id: string): FileProfile[] {
-    this.stmt('DELETE FROM file_profiles WHERE id = ?').run(id)
+    this.db.transaction(() => {
+      this.stmt('DELETE FROM file_profiles WHERE id = ?').run(id)
+      this.markNamespacePending('protocols')
+    })()
     return this.fileProfilesList()
   }
 
@@ -535,6 +655,7 @@ export class Repository {
           throw new Error('远程桌面名称已存在，请使用其他名称。')
         throw error
       }
+      this.markNamespacePending('protocols')
     })()
     return this.rdpProfilesList()
   }
@@ -548,7 +669,10 @@ export class Repository {
   }
 
   rdpProfileRemove(id: string): RdpProfile[] {
-    this.stmt('DELETE FROM rdp_profiles WHERE id = ?').run(id)
+    this.db.transaction(() => {
+      this.stmt('DELETE FROM rdp_profiles WHERE id = ?').run(id)
+      this.markNamespacePending('protocols')
+    })()
     return this.rdpProfilesList()
   }
 
@@ -575,32 +699,38 @@ export class Repository {
   rdpKnownHostTrust(entry: Omit<KnownRdpHostEntry, 'id' | 'acceptedAt'>): KnownRdpHostEntry[] {
     const host = entry.host.trim()
     const id = `${host.toLowerCase()}:${entry.port}`
-    this.stmt(
-      `INSERT INTO known_rdp_hosts (id, host, port, fingerprint, subject, issuer, valid_from, valid_to, accepted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         fingerprint = excluded.fingerprint,
-         subject = excluded.subject,
-         issuer = excluded.issuer,
-         valid_from = excluded.valid_from,
-         valid_to = excluded.valid_to,
-         accepted_at = excluded.accepted_at`
-    ).run(
-      id,
-      host,
-      entry.port,
-      entry.fingerprint,
-      entry.subject,
-      entry.issuer,
-      entry.validFrom,
-      entry.validTo,
-      new Date().toISOString()
-    )
+    this.db.transaction(() => {
+      this.stmt(
+        `INSERT INTO known_rdp_hosts (id, host, port, fingerprint, subject, issuer, valid_from, valid_to, accepted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           fingerprint = excluded.fingerprint,
+           subject = excluded.subject,
+           issuer = excluded.issuer,
+           valid_from = excluded.valid_from,
+           valid_to = excluded.valid_to,
+           accepted_at = excluded.accepted_at`
+      ).run(
+        id,
+        host,
+        entry.port,
+        entry.fingerprint,
+        entry.subject,
+        entry.issuer,
+        entry.validFrom,
+        entry.validTo,
+        new Date().toISOString()
+      )
+      this.markNamespacePending('protocols')
+    })()
     return this.rdpKnownHostsList()
   }
 
   rdpKnownHostRemove(id: string): KnownRdpHostEntry[] {
-    this.stmt('DELETE FROM known_rdp_hosts WHERE id = ?').run(id)
+    this.db.transaction(() => {
+      this.stmt('DELETE FROM known_rdp_hosts WHERE id = ?').run(id)
+      this.markNamespacePending('protocols')
+    })()
     return this.rdpKnownHostsList()
   }
 
@@ -642,6 +772,7 @@ export class Repository {
         `INSERT INTO protocol_settings (namespace, document, updated_at) VALUES (?, ?, ?)
          ON CONFLICT(namespace) DO UPDATE SET document=excluded.document, updated_at=excluded.updated_at`
       ).run(namespace, JSON.stringify(next), new Date().toISOString())
+      this.markNamespacePending('settings')
     })()
     return this.protocolSettingsAll()
   }
@@ -863,6 +994,9 @@ export class Repository {
           key_version: number
           sync_passwords: number
           sync_private_keys: number
+          sync_file_credentials?: number | null
+          sync_rdp_credentials?: number | null
+          sync_protocol_settings?: number | null
           last_revision: string | null
           last_etag: string | null
           last_sync_at: string | null
@@ -892,6 +1026,9 @@ export class Repository {
       keyVersion: row.key_version,
       syncPasswords: Boolean(row.sync_passwords),
       syncPrivateKeys: Boolean(row.sync_private_keys),
+      syncFileCredentials: Boolean(row.sync_file_credentials),
+      syncRdpCredentials: Boolean(row.sync_rdp_credentials),
+      syncProtocolSettings: row.sync_protocol_settings !== 0,
       lastRevision: row.last_revision,
       lastEtag: row.last_etag,
       lastSyncAt: row.last_sync_at,
@@ -921,6 +1058,9 @@ export class Repository {
     keyVersion?: number
     syncPasswords?: boolean
     syncPrivateKeys?: boolean
+    syncFileCredentials?: boolean
+    syncRdpCredentials?: boolean
+    syncProtocolSettings?: boolean
     lastRevision?: string | null
     lastEtag?: string | null
     lastSyncAt?: string | null
@@ -964,82 +1104,100 @@ export class Repository {
           : null
     const updatedAt = new Date().toISOString()
 
-    this.stmt(
-      `INSERT INTO sync_accounts (
-         id, server_url, email, remember_email, keep_signed_in, auto_sync, write_mode, allow_insecure_http,
-         encrypted_refresh_token, encrypted_vault_key, device_id, device_name, vault_id, key_version,
-         sync_passwords, sync_private_keys, last_revision, last_etag, last_sync_at,
-         base_doc_cipher, pending_changes, read_only_remote_schema, remote_schema_version,
-         doc_extra, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET
-         server_url = excluded.server_url,
-         email = excluded.email,
-         remember_email = excluded.remember_email,
-         keep_signed_in = excluded.keep_signed_in,
-         auto_sync = excluded.auto_sync,
-         write_mode = excluded.write_mode,
-         allow_insecure_http = excluded.allow_insecure_http,
-         encrypted_refresh_token = excluded.encrypted_refresh_token,
-         encrypted_vault_key = excluded.encrypted_vault_key,
-         device_id = excluded.device_id,
-         device_name = excluded.device_name,
-         vault_id = excluded.vault_id,
-         key_version = excluded.key_version,
-         sync_passwords = excluded.sync_passwords,
-         sync_private_keys = excluded.sync_private_keys,
-         last_revision = excluded.last_revision,
-         last_etag = excluded.last_etag,
-         last_sync_at = excluded.last_sync_at,
-         base_doc_cipher = excluded.base_doc_cipher,
-         pending_changes = excluded.pending_changes,
-         read_only_remote_schema = excluded.read_only_remote_schema,
-         remote_schema_version = excluded.remote_schema_version,
-         doc_extra = excluded.doc_extra,
-         updated_at = excluded.updated_at`
-    ).run(
-      id,
-      patch.serverUrl,
-      patch.email,
-      patch.rememberEmail ? 1 : 0,
-      patch.keepSignedIn ? 1 : 0,
-      patch.autoSync ? 1 : 0,
-      nextWriteMode,
-      nextAllowInsecureHttp ? 1 : 0,
-      nextToken,
-      nextVaultKey,
-      patch.deviceId,
-      patch.deviceName,
-      patch.vaultId !== undefined ? patch.vaultId : (existing?.vaultId ?? null),
-      patch.keyVersion ?? existing?.keyVersion ?? 1,
-      (patch.syncPasswords ?? existing?.syncPasswords ?? false) ? 1 : 0,
-      (patch.syncPrivateKeys ?? existing?.syncPrivateKeys ?? false) ? 1 : 0,
-      resetCursor
-        ? null
-        : patch.lastRevision !== undefined
-          ? patch.lastRevision
-          : (existing?.lastRevision ?? null),
-      resetCursor ? null : patch.lastEtag !== undefined ? patch.lastEtag : (existing?.lastEtag ?? null),
-      resetCursor ? null : patch.lastSyncAt !== undefined ? patch.lastSyncAt : (existing?.lastSyncAt ?? null),
-      nextBase,
-      (patch.pendingChanges ?? existing?.pendingChanges ?? false) ? 1 : 0,
-      (resetCursor ? false : (patch.readOnlyRemoteSchema ?? existing?.readOnlyRemoteSchema ?? false)) ? 1 : 0,
-      resetCursor
-        ? null
-        : patch.remoteSchemaVersion !== undefined
-          ? patch.remoteSchemaVersion
-          : (existing?.remoteSchemaVersion ?? null),
-      resetCursor
-        ? null
-        : patch.docExtra !== undefined
-          ? patch.docExtra
-            ? JSON.stringify(patch.docExtra)
-            : null
-          : existing?.docExtra
-            ? JSON.stringify(existing.docExtra)
-            : null,
-      updatedAt
-    )
+    this.db.transaction(() => {
+      this.stmt(
+        `INSERT INTO sync_accounts (
+           id, server_url, email, remember_email, keep_signed_in, auto_sync, write_mode, allow_insecure_http,
+           encrypted_refresh_token, encrypted_vault_key, device_id, device_name, vault_id, key_version,
+           sync_passwords, sync_private_keys, sync_file_credentials, sync_rdp_credentials, sync_protocol_settings,
+           last_revision, last_etag, last_sync_at,
+           base_doc_cipher, pending_changes, read_only_remote_schema, remote_schema_version,
+           doc_extra, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           server_url = excluded.server_url,
+           email = excluded.email,
+           remember_email = excluded.remember_email,
+           keep_signed_in = excluded.keep_signed_in,
+           auto_sync = excluded.auto_sync,
+           write_mode = excluded.write_mode,
+           allow_insecure_http = excluded.allow_insecure_http,
+           encrypted_refresh_token = excluded.encrypted_refresh_token,
+           encrypted_vault_key = excluded.encrypted_vault_key,
+           device_id = excluded.device_id,
+           device_name = excluded.device_name,
+           vault_id = excluded.vault_id,
+           key_version = excluded.key_version,
+           sync_passwords = excluded.sync_passwords,
+           sync_private_keys = excluded.sync_private_keys,
+           sync_file_credentials = excluded.sync_file_credentials,
+           sync_rdp_credentials = excluded.sync_rdp_credentials,
+           sync_protocol_settings = excluded.sync_protocol_settings,
+           last_revision = excluded.last_revision,
+           last_etag = excluded.last_etag,
+           last_sync_at = excluded.last_sync_at,
+           base_doc_cipher = excluded.base_doc_cipher,
+           pending_changes = excluded.pending_changes,
+           read_only_remote_schema = excluded.read_only_remote_schema,
+           remote_schema_version = excluded.remote_schema_version,
+           doc_extra = excluded.doc_extra,
+           updated_at = excluded.updated_at`
+      ).run(
+        id,
+        patch.serverUrl,
+        patch.email,
+        patch.rememberEmail ? 1 : 0,
+        patch.keepSignedIn ? 1 : 0,
+        patch.autoSync ? 1 : 0,
+        nextWriteMode,
+        nextAllowInsecureHttp ? 1 : 0,
+        nextToken,
+        nextVaultKey,
+        patch.deviceId,
+        patch.deviceName,
+        patch.vaultId !== undefined ? patch.vaultId : (existing?.vaultId ?? null),
+        patch.keyVersion ?? existing?.keyVersion ?? 1,
+        (patch.syncPasswords ?? existing?.syncPasswords ?? false) ? 1 : 0,
+        (patch.syncPrivateKeys ?? existing?.syncPrivateKeys ?? false) ? 1 : 0,
+        (patch.syncFileCredentials ?? existing?.syncFileCredentials ?? false) ? 1 : 0,
+        (patch.syncRdpCredentials ?? existing?.syncRdpCredentials ?? false) ? 1 : 0,
+        (patch.syncProtocolSettings ?? existing?.syncProtocolSettings ?? true) ? 1 : 0,
+        resetCursor
+          ? null
+          : patch.lastRevision !== undefined
+            ? patch.lastRevision
+            : (existing?.lastRevision ?? null),
+        resetCursor ? null : patch.lastEtag !== undefined ? patch.lastEtag : (existing?.lastEtag ?? null),
+        resetCursor
+          ? null
+          : patch.lastSyncAt !== undefined
+            ? patch.lastSyncAt
+            : (existing?.lastSyncAt ?? null),
+        nextBase,
+        (patch.pendingChanges ?? existing?.pendingChanges ?? false) ? 1 : 0,
+        (resetCursor ? false : (patch.readOnlyRemoteSchema ?? existing?.readOnlyRemoteSchema ?? false))
+          ? 1
+          : 0,
+        resetCursor
+          ? null
+          : patch.remoteSchemaVersion !== undefined
+            ? patch.remoteSchemaVersion
+            : (existing?.remoteSchemaVersion ?? null),
+        resetCursor
+          ? null
+          : patch.docExtra !== undefined
+            ? patch.docExtra
+              ? JSON.stringify(patch.docExtra)
+              : null
+            : existing?.docExtra
+              ? JSON.stringify(existing.docExtra)
+              : null,
+        updatedAt
+      )
+      if (resetCursor) {
+        this.stmt('DELETE FROM sync_namespaces').run()
+      }
+    })()
     return this.syncAccountGet(id)!
   }
 
@@ -1637,6 +1795,849 @@ export class Repository {
       nowIso,
       accountId
     )
+  }
+
+  /* ---------------- multi-namespace sync (`protocols` & `settings`) ---------------- */
+
+  syncNamespacesList(): SyncNamespaceRecord[] {
+    const rows = this.stmt('SELECT * FROM sync_namespaces').all() as Array<{
+      namespace: string
+      last_revision: string | null
+      last_etag: string | null
+      last_sync_at: string | null
+      base_doc_cipher: Buffer | null
+      pending_changes: number
+      read_only_remote_schema: number
+      remote_schema_version: number | null
+      doc_extra: string | null
+      updated_at: string
+    }>
+    return rows.map((row) => ({
+      namespace: row.namespace as SyncNamespace,
+      lastRevision: row.last_revision,
+      lastEtag: row.last_etag,
+      lastSyncAt: row.last_sync_at,
+      baseDocCipher: row.base_doc_cipher ?? undefined,
+      pendingChanges: Boolean(row.pending_changes),
+      readOnlyRemoteSchema: Boolean(row.read_only_remote_schema),
+      remoteSchemaVersion: row.remote_schema_version ?? undefined,
+      docExtra: row.doc_extra ? (JSON.parse(row.doc_extra) as Record<string, unknown>) : undefined,
+      updatedAt: row.updated_at
+    }))
+  }
+
+  syncNamespaceGet(namespace: SyncNamespace): SyncNamespaceRecord | undefined {
+    return this.syncNamespacesList().find((item) => item.namespace === namespace)
+  }
+
+  syncNamespaceMarkPending(namespace: 'protocols' | 'settings'): void {
+    this.markNamespacePending(namespace)
+  }
+
+  syncListFileSecretBlobs(): Array<{ id: string; secret: Uint8Array }> {
+    return this.stmt('SELECT id, secret FROM file_profiles WHERE secret IS NOT NULL').all() as Array<{
+      id: string
+      secret: Buffer
+    }>
+  }
+
+  syncListRdpSecretBlobs(): Array<{ id: string; secret: Uint8Array }> {
+    return this.stmt('SELECT id, secret FROM rdp_profiles WHERE secret IS NOT NULL').all() as Array<{
+      id: string
+      secret: Buffer
+    }>
+  }
+
+  private buildLocalProtocolsSyncSource(
+    plaintextFileSecrets: Record<string, FileSecretsInput>,
+    plaintextRdpPasswords: Record<string, string>,
+    overridePreferences?: { syncFileCredentials: boolean; syncRdpCredentials: boolean },
+    accountId = 'primary'
+  ): LocalProtocolsSyncSource {
+    const account = this.syncAccountGet(accountId)
+    const ns = this.syncNamespaceGet('protocols')
+    return {
+      fileProfiles: this.fileProfilesList(),
+      plaintextFileSecrets,
+      rdpProfiles: this.rdpProfilesList(),
+      plaintextRdpPasswords,
+      knownRdpHosts: this.rdpKnownHostsList(),
+      preferences: overridePreferences ?? {
+        syncFileCredentials: account?.syncFileCredentials ?? false,
+        syncRdpCredentials: account?.syncRdpCredentials ?? false
+      },
+      docExtra: ns?.docExtra
+    }
+  }
+
+  private buildLocalSettingsSyncSource(
+    overridePreferences?: { syncProtocolSettings: boolean },
+    accountId = 'primary'
+  ): LocalSettingsSyncSource {
+    const account = this.syncAccountGet(accountId)
+    const ns = this.syncNamespaceGet('settings')
+    return {
+      protocolSettings: this.protocolSettingsAll(),
+      preferences: overridePreferences ?? {
+        syncProtocolSettings: account?.syncProtocolSettings ?? true
+      },
+      docExtra: ns?.docExtra
+    }
+  }
+
+  syncEvaluateProtocolsAndMerge(input: {
+    accountId?: string
+    plaintextFileSecrets: Record<string, FileSecretsInput>
+    plaintextRdpPasswords: Record<string, string>
+    baseDocJson?: string | null
+    remoteEnvelope?: SyncDocumentEnvelope | null
+    resolutions?: Record<string, 'local' | 'remote'>
+    maxDocumentBytes?: number
+  }): SyncEvaluateProtocolsOutput {
+    const accountId = input.accountId ?? 'primary'
+    const vaultKey = this.vaultKeys.get(accountId)
+    if (!vaultKey) throw new Error('保管库未解锁，请先输入主密码解锁')
+    const account = this.syncAccountGet(accountId)
+    if (!account?.vaultId) throw new Error('同步账号尚未绑定保管库')
+
+    let remoteDoc: SyncDocumentProtocolsV2 | null = null
+    if (input.remoteEnvelope) {
+      const decrypted = decryptNamespaceDocument(vaultKey, account.vaultId, 'protocols', input.remoteEnvelope)
+      if (decrypted.readOnlySchema) {
+        const now = new Date().toISOString()
+        this.stmt(
+          `INSERT INTO sync_namespaces (namespace, read_only_remote_schema, remote_schema_version, updated_at)
+           VALUES ('protocols', 1, ?, ?)
+           ON CONFLICT(namespace) DO UPDATE SET
+             read_only_remote_schema = 1,
+             remote_schema_version = excluded.remote_schema_version,
+             updated_at = excluded.updated_at`
+        ).run(decrypted.schemaVersion, now)
+        return {
+          readOnlySchema: true,
+          remoteSchemaVersion: decrypted.schemaVersion,
+          conflicts: [],
+          needsUpload: false,
+          fileSecretsToEncrypt: [],
+          rdpSecretsToEncrypt: [],
+          localFileProfileUpdates: [],
+          deletedFileProfileIds: [],
+          localRdpProfileUpdates: [],
+          deletedRdpProfileIds: [],
+          localKnownRdpHosts: [],
+          deletedKnownRdpHostIds: [],
+          nextPreferences: {
+            syncFileCredentials: account.syncFileCredentials,
+            syncRdpCredentials: account.syncRdpCredentials
+          }
+        }
+      }
+      remoteDoc = normalizeRemoteProtocolsDocument(decrypted.rawDocument)
+    }
+
+    let baseDoc: SyncDocumentProtocolsV2 | null = null
+    if (input.baseDocJson) {
+      baseDoc = normalizeRemoteProtocolsDocument(JSON.parse(input.baseDocJson) as Record<string, unknown>)
+    }
+
+    const localSource = this.buildLocalProtocolsSyncSource(
+      input.plaintextFileSecrets,
+      input.plaintextRdpPasswords,
+      undefined,
+      accountId
+    )
+    const merge = threeWayMergeProtocols({
+      localSource,
+      baseDoc,
+      remoteDoc,
+      resolutions: input.resolutions
+    })
+
+    if (merge.conflicts.length > 0) {
+      return {
+        readOnlySchema: false,
+        conflicts: merge.conflicts,
+        needsUpload: false,
+        fileSecretsToEncrypt: [],
+        rdpSecretsToEncrypt: [],
+        localFileProfileUpdates: [],
+        deletedFileProfileIds: [],
+        localRdpProfileUpdates: [],
+        deletedRdpProfileIds: [],
+        localKnownRdpHosts: [],
+        deletedKnownRdpHostIds: [],
+        nextPreferences: merge.nextPreferences
+      }
+    }
+
+    const uploadEnvelope = merge.needsUpload
+      ? encryptNamespaceDocument(
+          vaultKey,
+          account.vaultId,
+          'protocols',
+          account.keyVersion,
+          merge.merged,
+          input.maxDocumentBytes
+        )
+      : undefined
+
+    const fileSecretsToEncrypt = merge.localFileProfileUpdates
+      .filter((item) => item.secretsTouched)
+      .map((item) => ({ profileId: item.profile.id, secrets: item.plaintextSecrets }))
+
+    const rdpSecretsToEncrypt = merge.localRdpProfileUpdates
+      .filter((item) => item.passwordTouched)
+      .map((item) => ({ profileId: item.profile.id, password: item.plaintextPassword }))
+
+    const docExtraKeys = Object.keys(merge.merged).filter(
+      (k) =>
+        ![
+          'schemaVersion',
+          'updatedAt',
+          'preferences',
+          'fileProfiles',
+          'rdpProfiles',
+          'knownRdpHosts'
+        ].includes(k)
+    )
+    const docExtra = docExtraKeys.length
+      ? Object.fromEntries(docExtraKeys.map((k) => [k, merge.merged[k]]))
+      : undefined
+
+    return {
+      readOnlySchema: false,
+      conflicts: [],
+      needsUpload: merge.needsUpload,
+      uploadEnvelope,
+      mergedBaseJson: JSON.stringify(merge.merged),
+      fileSecretsToEncrypt,
+      rdpSecretsToEncrypt,
+      localFileProfileUpdates: merge.localFileProfileUpdates,
+      deletedFileProfileIds: merge.deletedFileProfileIds,
+      localRdpProfileUpdates: merge.localRdpProfileUpdates,
+      deletedRdpProfileIds: merge.deletedRdpProfileIds,
+      localKnownRdpHosts: merge.localKnownRdpHosts,
+      deletedKnownRdpHostIds: merge.deletedKnownRdpHostIds,
+      nextPreferences: merge.nextPreferences,
+      docExtra
+    }
+  }
+
+  syncCommitProtocolsApplied(input: {
+    accountId?: string
+    localFileProfileUpdates: LocalMergedFileProfile[]
+    encryptedFileSecrets: Record<string, Uint8Array | null>
+    deletedFileProfileIds: string[]
+    localRdpProfileUpdates: LocalMergedRdpProfile[]
+    encryptedRdpSecrets: Record<string, Uint8Array | null>
+    deletedRdpProfileIds: string[]
+    localKnownRdpHosts: KnownRdpHostEntry[]
+    deletedKnownRdpHostIds: string[]
+    nextPreferences: { syncFileCredentials: boolean; syncRdpCredentials: boolean }
+    revision: string | null
+    etag: string | null
+    baseDocCipher: Uint8Array | null
+    docExtra?: Record<string, unknown>
+  }): { fileProfiles: FileProfile[]; rdpProfiles: RdpProfile[]; knownRdpHosts: KnownRdpHostEntry[] } {
+    const accountId = input.accountId ?? 'primary'
+    const nowIso = new Date().toISOString()
+
+    this.db.transaction(() => {
+      for (const deletedId of input.deletedFileProfileIds) {
+        this.stmt('DELETE FROM file_profiles WHERE id = ?').run(deletedId)
+      }
+      const selectExistingFile = this.stmt('SELECT id, secret FROM file_profiles WHERE id = ?')
+      const selectFileByName = this.stmt(
+        'SELECT id FROM file_profiles WHERE name = ? COLLATE NOCASE AND id != ?'
+      )
+      const upsertFile = this.stmt(
+        `INSERT INTO file_profiles (id, name, protocol, document, secret, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name,
+           protocol = excluded.protocol,
+           document = excluded.document,
+           secret = excluded.secret,
+           updated_at = excluded.updated_at`
+      )
+      for (const entry of input.localFileProfileUpdates) {
+        const existing = selectExistingFile.get(entry.profile.id) as
+          | { id: string; secret: Buffer | null }
+          | undefined
+        const hasOverride = Object.prototype.hasOwnProperty.call(input.encryptedFileSecrets, entry.profile.id)
+        const nextSecret = hasOverride
+          ? input.encryptedFileSecrets[entry.profile.id]
+            ? Buffer.from(input.encryptedFileSecrets[entry.profile.id]!)
+            : null
+          : (existing?.secret ?? null)
+
+        let candidateName = entry.profile.name
+        const conflict = selectFileByName.get(candidateName, entry.profile.id) as { id: string } | undefined
+        if (conflict) {
+          candidateName = `${entry.profile.name.slice(0, 70)} (${entry.profile.id.slice(0, 4)})`
+        }
+        const doc: FileProfile = {
+          ...entry.profile,
+          name: candidateName,
+          hasSecrets: Boolean(nextSecret)
+        }
+        upsertFile.run(
+          doc.id,
+          doc.name,
+          doc.protocol,
+          JSON.stringify(doc),
+          nextSecret,
+          doc.updatedAt || nowIso
+        )
+      }
+
+      for (const deletedId of input.deletedRdpProfileIds) {
+        this.stmt('DELETE FROM rdp_profiles WHERE id = ?').run(deletedId)
+      }
+      const selectExistingRdp = this.stmt('SELECT id, secret FROM rdp_profiles WHERE id = ?')
+      const selectRdpByName = this.stmt(
+        'SELECT id FROM rdp_profiles WHERE name = ? COLLATE NOCASE AND id != ?'
+      )
+      const upsertRdp = this.stmt(
+        `INSERT INTO rdp_profiles (id, name, document, secret, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           name = excluded.name,
+           document = excluded.document,
+           secret = excluded.secret,
+           updated_at = excluded.updated_at`
+      )
+      for (const entry of input.localRdpProfileUpdates) {
+        const existing = selectExistingRdp.get(entry.profile.id) as
+          | { id: string; secret: Buffer | null }
+          | undefined
+        const hasOverride = Object.prototype.hasOwnProperty.call(input.encryptedRdpSecrets, entry.profile.id)
+        const nextSecret = hasOverride
+          ? input.encryptedRdpSecrets[entry.profile.id]
+            ? Buffer.from(input.encryptedRdpSecrets[entry.profile.id]!)
+            : null
+          : (existing?.secret ?? null)
+
+        let candidateName = entry.profile.name
+        const conflict = selectRdpByName.get(candidateName, entry.profile.id) as { id: string } | undefined
+        if (conflict) {
+          candidateName = `${entry.profile.name.slice(0, 70)} (${entry.profile.id.slice(0, 4)})`
+        }
+        const doc: RdpProfile = {
+          ...entry.profile,
+          name: candidateName,
+          hasPassword: Boolean(nextSecret)
+        }
+        upsertRdp.run(doc.id, doc.name, JSON.stringify(doc), nextSecret, doc.updatedAt || nowIso)
+      }
+
+      for (const deletedKnownId of input.deletedKnownRdpHostIds) {
+        this.stmt('DELETE FROM known_rdp_hosts WHERE id = ?').run(deletedKnownId)
+      }
+      const upsertKnownRdp = this.stmt(
+        `INSERT INTO known_rdp_hosts (id, host, port, fingerprint, subject, issuer, valid_from, valid_to, accepted_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           host = excluded.host,
+           port = excluded.port,
+           fingerprint = excluded.fingerprint,
+           subject = excluded.subject,
+           issuer = excluded.issuer,
+           valid_from = excluded.valid_from,
+           valid_to = excluded.valid_to,
+           accepted_at = excluded.accepted_at`
+      )
+      for (const item of input.localKnownRdpHosts) {
+        upsertKnownRdp.run(
+          item.id,
+          item.host,
+          item.port,
+          item.fingerprint,
+          item.subject,
+          item.issuer,
+          item.validFrom,
+          item.validTo,
+          item.acceptedAt
+        )
+      }
+
+      this.stmt(
+        `UPDATE sync_accounts
+           SET sync_file_credentials = ?,
+               sync_rdp_credentials = ?,
+               updated_at = ?
+           WHERE id = ?`
+      ).run(
+        input.nextPreferences.syncFileCredentials ? 1 : 0,
+        input.nextPreferences.syncRdpCredentials ? 1 : 0,
+        nowIso,
+        accountId
+      )
+
+      this.stmt(
+        `INSERT INTO sync_namespaces (
+           namespace, last_revision, last_etag, last_sync_at, base_doc_cipher,
+           pending_changes, read_only_remote_schema, remote_schema_version, doc_extra, updated_at
+         ) VALUES ('protocols', ?, ?, ?, ?, 0, 0, NULL, ?, ?)
+         ON CONFLICT(namespace) DO UPDATE SET
+           last_revision = excluded.last_revision,
+           last_etag = excluded.last_etag,
+           last_sync_at = excluded.last_sync_at,
+           base_doc_cipher = excluded.base_doc_cipher,
+           pending_changes = 0,
+           read_only_remote_schema = 0,
+           remote_schema_version = NULL,
+           doc_extra = excluded.doc_extra,
+           updated_at = excluded.updated_at`
+      ).run(
+        input.revision,
+        input.etag,
+        nowIso,
+        input.baseDocCipher ? Buffer.from(input.baseDocCipher) : null,
+        input.docExtra ? JSON.stringify(input.docExtra) : null,
+        nowIso
+      )
+    })()
+
+    return {
+      fileProfiles: this.fileProfilesList(),
+      rdpProfiles: this.rdpProfilesList(),
+      knownRdpHosts: this.rdpKnownHostsList()
+    }
+  }
+
+  syncEvaluateSettingsAndMerge(input: {
+    accountId?: string
+    baseDocJson?: string | null
+    remoteEnvelope?: SyncDocumentEnvelope | null
+    resolutions?: Record<string, 'local' | 'remote'>
+    maxDocumentBytes?: number
+  }): SyncEvaluateSettingsOutput {
+    const accountId = input.accountId ?? 'primary'
+    const vaultKey = this.vaultKeys.get(accountId)
+    if (!vaultKey) throw new Error('保管库未解锁，请先输入主密码解锁')
+    const account = this.syncAccountGet(accountId)
+    if (!account?.vaultId) throw new Error('同步账号尚未绑定保管库')
+
+    let remoteDoc: SyncDocumentSettingsV2 | null = null
+    if (input.remoteEnvelope) {
+      const decrypted = decryptNamespaceDocument(vaultKey, account.vaultId, 'settings', input.remoteEnvelope)
+      if (decrypted.readOnlySchema) {
+        const now = new Date().toISOString()
+        this.stmt(
+          `INSERT INTO sync_namespaces (namespace, read_only_remote_schema, remote_schema_version, updated_at)
+           VALUES ('settings', 1, ?, ?)
+           ON CONFLICT(namespace) DO UPDATE SET
+             read_only_remote_schema = 1,
+             remote_schema_version = excluded.remote_schema_version,
+             updated_at = excluded.updated_at`
+        ).run(decrypted.schemaVersion, now)
+        return {
+          readOnlySchema: true,
+          remoteSchemaVersion: decrypted.schemaVersion,
+          conflicts: [],
+          needsUpload: false,
+          nextPreferences: { syncProtocolSettings: account.syncProtocolSettings }
+        }
+      }
+      remoteDoc = normalizeRemoteSettingsDocument(decrypted.rawDocument)
+    }
+
+    let baseDoc: SyncDocumentSettingsV2 | null = null
+    if (input.baseDocJson) {
+      baseDoc = normalizeRemoteSettingsDocument(JSON.parse(input.baseDocJson) as Record<string, unknown>)
+    }
+
+    const localSource = this.buildLocalSettingsSyncSource(undefined, accountId)
+    const merge = threeWayMergeSettings({
+      localSource,
+      baseDoc,
+      remoteDoc,
+      resolutions: input.resolutions
+    })
+
+    if (merge.conflicts.length > 0) {
+      return {
+        readOnlySchema: false,
+        conflicts: merge.conflicts,
+        needsUpload: false,
+        nextPreferences: merge.nextPreferences
+      }
+    }
+
+    const uploadEnvelope = merge.needsUpload
+      ? encryptNamespaceDocument(
+          vaultKey,
+          account.vaultId,
+          'settings',
+          account.keyVersion,
+          merge.merged,
+          input.maxDocumentBytes
+        )
+      : undefined
+
+    const docExtraKeys = Object.keys(merge.merged).filter(
+      (k) => !['schemaVersion', 'updatedAt', 'preferences', 'protocolSettings'].includes(k)
+    )
+    const docExtra = docExtraKeys.length
+      ? Object.fromEntries(docExtraKeys.map((k) => [k, merge.merged[k]]))
+      : undefined
+
+    return {
+      readOnlySchema: false,
+      conflicts: [],
+      needsUpload: merge.needsUpload,
+      uploadEnvelope,
+      mergedBaseJson: JSON.stringify(merge.merged),
+      nextProtocolSettings: merge.nextProtocolSettings,
+      nextPreferences: merge.nextPreferences,
+      docExtra
+    }
+  }
+
+  syncCommitSettingsApplied(input: {
+    accountId?: string
+    nextProtocolSettings: AllProtocolSettings
+    revision: string | null
+    etag: string | null
+    baseDocCipher: Uint8Array | null
+    docExtra?: Record<string, unknown>
+  }): { protocolSettings: AllProtocolSettings } {
+    const nowIso = new Date().toISOString()
+    this.db.transaction(() => {
+      const current = this.protocolSettingsAll()
+      const mergedRdp = {
+        ...normalizeProtocolSettings('rdp', input.nextProtocolSettings.rdp),
+        externalClientPath: current.rdp.externalClientPath,
+        sharedDrivePath: current.rdp.sharedDrivePath
+      }
+      const docs: Record<ProtocolNamespace, unknown> = {
+        ssh: normalizeProtocolSettings('ssh', input.nextProtocolSettings.ssh),
+        files: normalizeProtocolSettings('files', input.nextProtocolSettings.files),
+        rdp: mergedRdp
+      }
+      const upsert = this.stmt(
+        `INSERT INTO protocol_settings (namespace, document, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(namespace) DO UPDATE SET document = excluded.document, updated_at = excluded.updated_at`
+      )
+      for (const ns of PROTOCOL_NAMESPACES) {
+        upsert.run(ns, JSON.stringify(docs[ns]), nowIso)
+      }
+
+      this.stmt(
+        `INSERT INTO sync_namespaces (
+           namespace, last_revision, last_etag, last_sync_at, base_doc_cipher,
+           pending_changes, read_only_remote_schema, remote_schema_version, doc_extra, updated_at
+         ) VALUES ('settings', ?, ?, ?, ?, 0, 0, NULL, ?, ?)
+         ON CONFLICT(namespace) DO UPDATE SET
+           last_revision = excluded.last_revision,
+           last_etag = excluded.last_etag,
+           last_sync_at = excluded.last_sync_at,
+           base_doc_cipher = excluded.base_doc_cipher,
+           pending_changes = 0,
+           read_only_remote_schema = 0,
+           remote_schema_version = NULL,
+           doc_extra = excluded.doc_extra,
+           updated_at = excluded.updated_at`
+      ).run(
+        input.revision,
+        input.etag,
+        nowIso,
+        input.baseDocCipher ? Buffer.from(input.baseDocCipher) : null,
+        input.docExtra ? JSON.stringify(input.docExtra) : null,
+        nowIso
+      )
+    })()
+
+    return { protocolSettings: this.protocolSettingsAll() }
+  }
+
+  syncRecordNamespaceUploadedCheckpoint(input: {
+    namespace: 'protocols' | 'settings'
+    revision: string | null
+    etag: string | null
+    baseDocCipher: Uint8Array | null
+    docExtra?: Record<string, unknown>
+  }): void {
+    const nowIso = new Date().toISOString()
+    this.stmt(
+      `INSERT INTO sync_namespaces (namespace, last_revision, last_etag, base_doc_cipher, doc_extra, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(namespace) DO UPDATE SET
+         last_revision = excluded.last_revision,
+         last_etag = excluded.last_etag,
+         base_doc_cipher = excluded.base_doc_cipher,
+         doc_extra = excluded.doc_extra,
+         updated_at = excluded.updated_at`
+    ).run(
+      input.namespace,
+      input.revision,
+      input.etag,
+      input.baseDocCipher ? Buffer.from(input.baseDocCipher) : null,
+      input.docExtra ? JSON.stringify(input.docExtra) : null,
+      nowIso
+    )
+  }
+
+  syncEvaluateNamespaceRevisionRestore(input: {
+    accountId?: string
+    namespace: 'protocols' | 'settings'
+    plaintextFileSecrets?: Record<string, FileSecretsInput>
+    plaintextRdpPasswords?: Record<string, string>
+    revisionEnvelope: SyncDocumentEnvelope
+  }): SyncEvaluateProtocolsOutput | SyncEvaluateSettingsOutput {
+    const accountId = input.accountId ?? 'primary'
+    const vaultKey = this.vaultKeys.get(accountId)
+    if (!vaultKey) throw new Error('保管库未解锁')
+    const account = this.syncAccountGet(accountId)
+    if (!account?.vaultId) throw new Error('同步账号尚未绑定保管库')
+
+    const decrypted = decryptNamespaceDocument(
+      vaultKey,
+      account.vaultId,
+      input.namespace,
+      input.revisionEnvelope
+    )
+    if (decrypted.readOnlySchema) {
+      throw new Error(`历史版本 schemaVersion=${decrypted.schemaVersion} 高于当前客户端版本，无法回滚恢复。`)
+    }
+
+    if (input.namespace === 'protocols') {
+      const remoteDoc = normalizeRemoteProtocolsDocument(decrypted.rawDocument)
+      const localSource = this.buildLocalProtocolsSyncSource(
+        input.plaintextFileSecrets ?? {},
+        input.plaintextRdpPasswords ?? {},
+        undefined,
+        accountId
+      )
+      const currentLocalDoc = buildLocalProtocolsDocument(localSource)
+      const merge = threeWayMergeProtocols({
+        localSource,
+        baseDoc: currentLocalDoc,
+        remoteDoc
+      })
+      const fileSecretsToEncrypt = merge.localFileProfileUpdates
+        .filter((item) => item.secretsTouched)
+        .map((item) => ({ profileId: item.profile.id, secrets: item.plaintextSecrets }))
+      const rdpSecretsToEncrypt = merge.localRdpProfileUpdates
+        .filter((item) => item.passwordTouched)
+        .map((item) => ({ profileId: item.profile.id, password: item.plaintextPassword }))
+      return {
+        readOnlySchema: false,
+        conflicts: [],
+        needsUpload: false,
+        mergedBaseJson: JSON.stringify(merge.merged),
+        fileSecretsToEncrypt,
+        rdpSecretsToEncrypt,
+        localFileProfileUpdates: merge.localFileProfileUpdates,
+        deletedFileProfileIds: merge.deletedFileProfileIds,
+        localRdpProfileUpdates: merge.localRdpProfileUpdates,
+        deletedRdpProfileIds: merge.deletedRdpProfileIds,
+        localKnownRdpHosts: merge.localKnownRdpHosts,
+        deletedKnownRdpHostIds: merge.deletedKnownRdpHostIds,
+        nextPreferences: merge.nextPreferences
+      } satisfies SyncEvaluateProtocolsOutput
+    }
+
+    const remoteDoc = normalizeRemoteSettingsDocument(decrypted.rawDocument)
+    const localSource = this.buildLocalSettingsSyncSource(undefined, accountId)
+    const currentLocalDoc = buildLocalSettingsDocument(localSource)
+    const merge = threeWayMergeSettings({
+      localSource,
+      baseDoc: currentLocalDoc,
+      remoteDoc
+    })
+    return {
+      readOnlySchema: false,
+      conflicts: [],
+      needsUpload: false,
+      mergedBaseJson: JSON.stringify(merge.merged),
+      nextProtocolSettings: merge.nextProtocolSettings,
+      nextPreferences: merge.nextPreferences
+    } satisfies SyncEvaluateSettingsOutput
+  }
+
+  async syncPrepareBatchRotate(input: {
+    accountId?: string
+    newKeyVersion: number
+    masterPassword: string
+    syncPasswords: boolean
+    syncFileCredentials: boolean
+    syncRdpCredentials: boolean
+    syncProtocolSettings: boolean
+    includeNamespaces: SyncNamespace[]
+    maxDocumentBytes?: number
+    plaintextPasswords: Record<string, string>
+    plaintextFileSecrets: Record<string, FileSecretsInput>
+    plaintextRdpPasswords: Record<string, string>
+  }): Promise<{
+    recoveryKey: string
+    keyEnvelope: VaultMetadataWire
+    envelopes: Partial<Record<SyncNamespace, SyncDocumentEnvelope>>
+    nextBaseDocs: Partial<Record<SyncNamespace, string>>
+  }> {
+    const accountId = input.accountId ?? 'primary'
+    const account = this.syncAccountGet(accountId)
+    if (!account?.vaultId) throw new Error('尚未创建或关联保管库')
+    const materials = await rotateVaultKeyMaterials(input.newKeyVersion, input.masterPassword)
+    const envelopes: Partial<Record<SyncNamespace, SyncDocumentEnvelope>> = {}
+    const nextBaseDocs: Partial<Record<SyncNamespace, string>> = {}
+
+    // Always re-encrypt `core`
+    const coreSource = this.buildLocalSyncSource(
+      input.plaintextPasswords,
+      { syncPasswords: input.syncPasswords, syncPrivateKeys: account.syncPrivateKeys },
+      accountId
+    )
+    const coreDoc = threeWayMerge({ localSource: coreSource, baseDoc: null, remoteDoc: null }).merged
+    coreDoc.preferences.syncPasswords = input.syncPasswords
+    if (!input.syncPasswords) {
+      coreDoc.servers = coreDoc.servers.map((server) => {
+        if (!server.secrets) return server
+        const nextSecrets = { ...server.secrets }
+        delete nextSecrets.password
+        delete nextSecrets.passphrase
+        const next = { ...server }
+        if (Object.keys(nextSecrets).length > 0) next.secrets = nextSecrets
+        else delete next.secrets
+        return next
+      })
+    }
+    envelopes.core = encryptSyncDocument(materials.vaultKey, account.vaultId, input.newKeyVersion, coreDoc)
+    nextBaseDocs.core = JSON.stringify(coreDoc)
+
+    if (input.includeNamespaces.includes('protocols')) {
+      const protoSource = this.buildLocalProtocolsSyncSource(
+        input.plaintextFileSecrets,
+        input.plaintextRdpPasswords,
+        {
+          syncFileCredentials: input.syncFileCredentials,
+          syncRdpCredentials: input.syncRdpCredentials
+        },
+        accountId
+      )
+      const protoDoc = buildLocalProtocolsDocument(protoSource)
+      envelopes.protocols = encryptNamespaceDocument(
+        materials.vaultKey,
+        account.vaultId,
+        'protocols',
+        input.newKeyVersion,
+        protoDoc,
+        input.maxDocumentBytes
+      )
+      nextBaseDocs.protocols = JSON.stringify(protoDoc)
+    }
+
+    if (input.includeNamespaces.includes('settings')) {
+      const settingsSource = this.buildLocalSettingsSyncSource(
+        { syncProtocolSettings: input.syncProtocolSettings },
+        accountId
+      )
+      const settingsDoc = buildLocalSettingsDocument(settingsSource)
+      envelopes.settings = encryptNamespaceDocument(
+        materials.vaultKey,
+        account.vaultId,
+        'settings',
+        input.newKeyVersion,
+        settingsDoc,
+        input.maxDocumentBytes
+      )
+      nextBaseDocs.settings = JSON.stringify(settingsDoc)
+    }
+
+    const oldPending = this.pendingRotatedKeys.get(accountId)
+    if (oldPending) oldPending.key.fill(0)
+    this.pendingRotatedKeys.set(accountId, { keyVersion: input.newKeyVersion, key: materials.vaultKey })
+    return {
+      recoveryKey: materials.recoveryKey,
+      keyEnvelope: materials.envelope,
+      envelopes,
+      nextBaseDocs
+    }
+  }
+
+  syncCommitBatchRotate(input: {
+    accountId?: string
+    keyVersion: number
+    syncPasswords: boolean
+    syncFileCredentials: boolean
+    syncRdpCredentials: boolean
+    coreRevision: string
+    coreEtag: string | null
+    coreBaseDocCipher: Uint8Array | null
+    namespaces?: Partial<
+      Record<
+        'protocols' | 'settings',
+        { revision: string; etag: string | null; baseDocCipher: Uint8Array | null }
+      >
+    >
+  }): void {
+    const accountId = input.accountId ?? 'primary'
+    const pending = this.pendingRotatedKeys.get(accountId)
+    if (!pending || pending.keyVersion !== input.keyVersion) {
+      throw new Error('轮换密钥会话不存在或已过期')
+    }
+    const oldKey = this.vaultKeys.get(accountId)
+    if (oldKey) oldKey.fill(0)
+    this.vaultKeys.set(accountId, pending.key)
+    this.pendingRotatedKeys.delete(accountId)
+    const nowIso = new Date().toISOString()
+
+    this.db.transaction(() => {
+      this.stmt(
+        `UPDATE sync_accounts
+           SET key_version = ?,
+               sync_passwords = ?,
+               sync_file_credentials = ?,
+               sync_rdp_credentials = ?,
+               last_revision = ?,
+               last_etag = ?,
+               last_sync_at = ?,
+               base_doc_cipher = ?,
+               pending_changes = 0,
+               updated_at = ?
+           WHERE id = ?`
+      ).run(
+        input.keyVersion,
+        input.syncPasswords ? 1 : 0,
+        input.syncFileCredentials ? 1 : 0,
+        input.syncRdpCredentials ? 1 : 0,
+        input.coreRevision,
+        input.coreEtag,
+        nowIso,
+        input.coreBaseDocCipher ? Buffer.from(input.coreBaseDocCipher) : null,
+        nowIso,
+        accountId
+      )
+
+      const upsertNs = this.stmt(
+        `INSERT INTO sync_namespaces (
+           namespace, last_revision, last_etag, last_sync_at, base_doc_cipher,
+           pending_changes, read_only_remote_schema, remote_schema_version, updated_at
+         ) VALUES (?, ?, ?, ?, ?, 0, 0, NULL, ?)
+         ON CONFLICT(namespace) DO UPDATE SET
+           last_revision = excluded.last_revision,
+           last_etag = excluded.last_etag,
+           last_sync_at = excluded.last_sync_at,
+           base_doc_cipher = excluded.base_doc_cipher,
+           pending_changes = 0,
+           read_only_remote_schema = 0,
+           remote_schema_version = NULL,
+           updated_at = excluded.updated_at`
+      )
+      for (const ns of ['protocols', 'settings'] as const) {
+        const entry = input.namespaces?.[ns]
+        if (!entry) continue
+        upsertNs.run(
+          ns,
+          entry.revision,
+          entry.etag,
+          nowIso,
+          entry.baseDocCipher ? Buffer.from(entry.baseDocCipher) : null,
+          nowIso
+        )
+      }
+    })()
   }
 
   close(): void {

@@ -1,8 +1,12 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import {
   ArrowUp,
   Check,
+  ChevronDown,
+  ChevronRight,
+  Copy,
+  Download,
   Edit3,
   Eye,
   EyeOff,
@@ -11,15 +15,20 @@ import {
   FolderOpen,
   FolderPlus,
   HardDrive,
+  Home,
   Link2,
   Lock,
+  PanelLeftClose,
+  PanelLeftOpen,
   Plus,
   RefreshCw,
+  RotateCw,
   Search,
+  Settings,
+  Shield,
   Star,
   Trash2,
   Upload,
-  Download,
   X,
   Zap
 } from '@lucide/vue'
@@ -51,6 +60,7 @@ import {
   clearFinishedFileTransfers,
   closeFileTab,
   createRemoteDirectory,
+  deleteRemoteEntries,
   deleteRemoteEntry,
   downloadEntriesFromActiveTab,
   fileTabs,
@@ -61,20 +71,28 @@ import {
   filesShowHidden,
   filesSortAsc,
   filesSortBy,
+  findSavedFileProfile,
+  findSavedSshHost,
+  goHomeDirectory,
   goParentDirectory,
   initFilesWorkspaceListeners,
   openAdhocFileTab,
   openFileProfileTab,
   openSftpHostTab,
+  reconnectFileTab,
   refreshFileDirectory,
   renameRemoteEntry,
+  retryFileTransfer,
   uploadLocalPathsToActiveTab,
-  visibleFileEntries
+  visibleFileEntries,
+  type FileWorkspaceTransfer
 } from '../services/files-workspace'
 import {
   bootstrap,
   fileProfiles,
   hosts,
+  notify,
+  openSettingsDomain,
   page,
   protocolSettings,
   removeFileProfile,
@@ -82,13 +100,62 @@ import {
   windowInstance
 } from '../stores/workbench'
 
-const c = (base: string, token: string) => instanceClass(base, windowInstance(safeInstanceToken(token)))
+const tokenCache = new Map<string, string>()
+function cachedToken(raw: string): string {
+  let tok = tokenCache.get(raw)
+  if (tok !== undefined) return tok
+  if (tokenCache.size > 4000) tokenCache.clear()
+  tok = safeInstanceToken(raw)
+  tokenCache.set(raw, tok)
+  return tok
+}
+const c = (base: string, token: string) => instanceClass(base, windowInstance(cachedToken(token)))
 
+const mtimeFormatter = new Intl.DateTimeFormat(undefined, {
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false
+})
+
+const chmodPermissions = computed(() => [
+  { label: t('sftp.permOwnerRead'), shift: 8 },
+  { label: t('sftp.permOwnerWrite'), shift: 7 },
+  { label: t('sftp.permOwnerExec'), shift: 6 },
+  { label: t('sftp.permGroupRead'), shift: 5 },
+  { label: t('sftp.permGroupWrite'), shift: 4 },
+  { label: t('sftp.permGroupExec'), shift: 3 },
+  { label: t('sftp.permOtherRead'), shift: 2 },
+  { label: t('sftp.permOtherWrite'), shift: 1 },
+  { label: t('sftp.permOtherExec'), shift: 0 }
+])
+
+const sidebarCollapsed = ref(false)
 const inventoryQuery = ref('')
 const favOnly = ref(false)
 const pathInput = ref('')
 const dragActive = ref(false)
+const dragDepth = ref(0)
 const actionError = ref('')
+const queueExpanded = ref(true)
+const conflictApplyAll = ref(false)
+
+// Selection & Context menu
+const browserBodyEl = ref<HTMLElement>()
+const tableScrollEl = ref<HTMLElement>()
+const selectedPaths = ref<Set<string>>(new Set())
+const lastSelectedPath = ref('')
+const contextMenu = ref<{ entry: SftpEntry; x: number; y: number } | null>(null)
+
+// Lightweight virtual windowing for large directories (>150 items)
+const VIRTUAL_THRESHOLD = 150
+const VIRTUAL_ROW_HEIGHT = 40
+const VIRTUAL_OVERSCAN = 12
+const tableScrollTop = ref(0)
+const tableViewportHeight = ref(560)
 
 // File profile editor state
 const editorOpen = ref(false)
@@ -104,6 +171,8 @@ const secretForm = reactive({
   secretAccessKey: '',
   sessionToken: ''
 })
+const secretInputEl = ref<HTMLInputElement>()
+const modalInputEl = ref<HTMLInputElement>()
 
 // Mini modal dialogs
 const modal = ref<
@@ -112,6 +181,7 @@ const modal = ref<
   | { kind: 'rename'; entry: SftpEntry; value: string }
   | { kind: 'chmod'; entry: SftpEntry; value: string }
   | { kind: 'deleteFile'; entry: SftpEntry }
+  | { kind: 'deleteBatch'; entries: SftpEntry[] }
   | { kind: 'deleteProfile'; profile: FileProfile }
 >(null)
 
@@ -145,9 +215,120 @@ const breadcrumbs = computed(() =>
   activeFileTab.value ? remoteBreadcrumbs(activeFileTab.value.currentPath) : []
 )
 
+const tableColCount = computed(() => (activeFileTab.value?.capabilities.posixMetadata ? 6 : 5))
+
+const selectedEntries = computed(() =>
+  visibleFileEntries.value.filter((entry) => selectedPaths.value.has(entry.path))
+)
+
+const allVisibleSelected = computed(
+  () =>
+    visibleFileEntries.value.length > 0 && selectedEntries.value.length === visibleFileEntries.value.length
+)
+
+const virtualEnabled = computed(() => visibleFileEntries.value.length > VIRTUAL_THRESHOLD)
+
+const virtualWindow = computed(() => {
+  const entries = visibleFileEntries.value
+  if (!virtualEnabled.value) {
+    return { items: entries, topHeight: 0, bottomHeight: 0 }
+  }
+  const total = entries.length
+  const visibleCount = Math.ceil(tableViewportHeight.value / VIRTUAL_ROW_HEIGHT) + VIRTUAL_OVERSCAN * 2
+  const firstVisible = Math.floor(tableScrollTop.value / VIRTUAL_ROW_HEIGHT)
+  const start = Math.max(0, Math.min(total - visibleCount, firstVisible - VIRTUAL_OVERSCAN))
+  const end = Math.min(total, start + visibleCount)
+  return {
+    items: entries.slice(start, end),
+    topHeight: start * VIRTUAL_ROW_HEIGHT,
+    bottomHeight: Math.max(0, (total - end) * VIRTUAL_ROW_HEIGHT)
+  }
+})
+
+function onTableScroll(): void {
+  const el = tableScrollEl.value
+  if (!el) return
+  tableScrollTop.value = el.scrollTop
+  if (el.clientHeight > 0) tableViewportHeight.value = el.clientHeight
+}
+
+watch(tableScrollEl, (el, _, onCleanup) => {
+  if (!el) return
+  onTableScroll()
+  const observer = new ResizeObserver(onTableScroll)
+  observer.observe(el)
+  onCleanup(() => observer.disconnect())
+})
+
+watch(
+  () => [activeFileTabId.value, activeFileTab.value?.currentPath] as const,
+  () => {
+    pathInput.value = ''
+    actionError.value = ''
+    selectedPaths.value = new Set()
+    lastSelectedPath.value = ''
+    contextMenu.value = null
+    tableScrollTop.value = 0
+    if (tableScrollEl.value) tableScrollEl.value.scrollTop = 0
+  }
+)
+
+watch(filesConflictPrompt, () => {
+  conflictApplyAll.value = false
+})
+
+watch(modal, async (next) => {
+  if (!next) return
+  if (next.kind === 'mkdir' || next.kind === 'rename' || next.kind === 'chmod') {
+    await nextTick()
+    modalInputEl.value?.focus()
+    if (next.kind === 'rename' || next.kind === 'chmod') {
+      modalInputEl.value?.select()
+    }
+  }
+})
+
+watch(filesSecretPrompt, async (next) => {
+  if (!next) return
+  await nextTick()
+  secretInputEl.value?.focus()
+})
+
+function onWindowKeydown(event: KeyboardEvent): void {
+  if (page.value !== 'files' || event.key !== 'Escape') return
+  if (contextMenu.value) {
+    contextMenu.value = null
+    event.preventDefault()
+    return
+  }
+  if (filesConflictPrompt.value) {
+    filesConflictPrompt.value.resolve({ decision: 'cancel', applyAll: true })
+    event.preventDefault()
+    return
+  }
+  if (modal.value) {
+    modal.value = null
+    event.preventDefault()
+    return
+  }
+  if (filesSecretPrompt.value) {
+    cancelSecretPrompt()
+    event.preventDefault()
+  }
+}
+
 onMounted(() => {
   initFilesWorkspaceListeners()
+  window.addEventListener('keydown', onWindowKeydown)
 })
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onWindowKeydown)
+})
+
+function isDirEntry(entry: SftpEntry): boolean {
+  return entry.kind === 'directory' || entry.targetKind === 'directory'
+}
 
 function openCreateEditor(mode: 'create' | 'quick', profile?: FileProfile) {
   editorMode.value = mode
@@ -170,9 +351,7 @@ async function handleSaveProfile(input: FileProfileInput, connectAfter: boolean)
     const updated = await saveFileProfile(input)
     editorOpen.value = false
     if (connectAfter) {
-      const target =
-        (input.id ? updated.find((p) => p.id === input.id) : undefined) ??
-        updated.find((p) => p.name === input.name)
+      const target = findSavedFileProfile(updated, input.id, input.name)
       if (target) {
         const inlineSecrets = !input.saveSecrets && input.secrets ? input.secrets : undefined
         await openFileProfileTab(target, inlineSecrets)
@@ -194,10 +373,11 @@ async function handleSaveSshAndConnect(input: HostInput) {
   editorBusy.value = true
   editorError.value = ''
   try {
-    const savedList = await window.orbit.hosts.save(input)
+    const savePayload: HostInput = input.savePassword ? input : { ...input, password: '' }
+    const savedList = await window.orbit.hosts.save(savePayload)
     hosts.value = savedList
     editorOpen.value = false
-    const created = savedList.find((h) => h.name === input.name)
+    const created = findSavedSshHost(savedList, input.id, input.name)
     if (created) {
       await openSftpHostTab(created, input.savePassword ? undefined : input.password)
     }
@@ -247,20 +427,126 @@ function cancelSecretPrompt() {
 function formatMtime(epochSec: number): string {
   if (!epochSec) return '—'
   const date = new Date(epochSec * 1000)
-  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString(undefined, { hour12: false })
+  return Number.isNaN(date.getTime()) ? '—' : mtimeFormatter.format(date)
 }
 
 function toggleSort(field: SftpSortField) {
   if (filesSortBy.value === field) filesSortAsc.value = !filesSortAsc.value
   else {
     filesSortBy.value = field
-    filesSortAsc.value = true
+    filesSortAsc.value = field === 'name'
   }
+}
+
+function sortArrow(field: SftpSortField): string {
+  if (filesSortBy.value !== field) return ''
+  return filesSortAsc.value ? ' ↑' : ' ↓'
+}
+
+function onRowClick(entry: SftpEntry, event: MouseEvent) {
+  contextMenu.value = null
+  const next = new Set(selectedPaths.value)
+  if (event.shiftKey && lastSelectedPath.value) {
+    const entries = visibleFileEntries.value
+    const fromIdx = entries.findIndex((e) => e.path === lastSelectedPath.value)
+    const toIdx = entries.findIndex((e) => e.path === entry.path)
+    if (fromIdx >= 0 && toIdx >= 0) {
+      if (!event.ctrlKey && !event.metaKey) next.clear()
+      const start = Math.min(fromIdx, toIdx)
+      const end = Math.max(fromIdx, toIdx)
+      for (let i = start; i <= end; i++) {
+        next.add(entries[i]!.path)
+      }
+      selectedPaths.value = next
+      return
+    }
+  }
+  if (event.ctrlKey || event.metaKey) {
+    if (next.has(entry.path)) next.delete(entry.path)
+    else next.add(entry.path)
+  } else {
+    next.clear()
+    next.add(entry.path)
+  }
+  lastSelectedPath.value = entry.path
+  selectedPaths.value = next
+}
+
+function toggleRowCheckbox(entry: SftpEntry) {
+  contextMenu.value = null
+  const next = new Set(selectedPaths.value)
+  if (next.has(entry.path)) next.delete(entry.path)
+  else next.add(entry.path)
+  lastSelectedPath.value = entry.path
+  selectedPaths.value = next
+}
+
+function toggleSelectAll() {
+  if (allVisibleSelected.value) {
+    selectedPaths.value = new Set()
+    lastSelectedPath.value = ''
+  } else {
+    selectedPaths.value = new Set(visibleFileEntries.value.map((e) => e.path))
+    lastSelectedPath.value = visibleFileEntries.value[0]?.path ?? ''
+  }
+}
+
+function onTableKeydown(event: KeyboardEvent) {
+  if (!activeFileTab.value || activeFileTab.value.state !== 'running') return
+  const target = event.target as HTMLElement | null
+  if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
+
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+    event.preventDefault()
+    selectedPaths.value = new Set(visibleFileEntries.value.map((e) => e.path))
+    return
+  }
+  if (event.key === 'Backspace') {
+    event.preventDefault()
+    void goParentDirectory()
+    return
+  }
+  const chosen = selectedEntries.value
+  if (event.key === 'Enter' && chosen.length === 1 && target?.tagName !== 'BUTTON') {
+    event.preventDefault()
+    void handleEntryDoubleClick(chosen[0]!)
+    return
+  }
+  if (event.key === 'F2' && chosen.length === 1) {
+    event.preventDefault()
+    modal.value = { kind: 'rename', entry: chosen[0]!, value: chosen[0]!.name }
+    return
+  }
+  if (event.key === 'Delete' && chosen.length > 0) {
+    event.preventDefault()
+    void handleBatchDeleteTrigger(chosen)
+  }
+}
+
+function openRowContextMenu(entry: SftpEntry, event: MouseEvent) {
+  if (!selectedPaths.value.has(entry.path)) {
+    selectedPaths.value = new Set([entry.path])
+    lastSelectedPath.value = entry.path
+  }
+  const container = browserBodyEl.value
+  if (!container) return
+  const rect = container.getBoundingClientRect()
+  const x = Math.min(Math.max(8, event.clientX - rect.left), Math.max(8, rect.width - 188))
+  const y = Math.min(Math.max(48, event.clientY - rect.top), Math.max(48, rect.height - 210))
+  contextMenu.value = { entry, x, y }
+}
+
+function copyRemotePath(path: string) {
+  contextMenu.value = null
+  void window.orbit.clipboard.writeText(path).then(
+    () => notify(t('filesPage.copiedPath', { path })),
+    () => notify(t('sftp.clipboardFailed'))
+  )
 }
 
 async function handleEntryDoubleClick(entry: SftpEntry) {
   if (!activeFileTab.value) return
-  if (entry.kind === 'directory' || entry.targetKind === 'directory') {
+  if (isDirEntry(entry)) {
     await refreshFileDirectory(activeFileTab.value.id, entry.path)
   } else {
     await downloadEntriesFromActiveTab([entry])
@@ -283,25 +569,107 @@ async function handleUploadDirs() {
   if (paths.length) await uploadLocalPathsToActiveTab(paths)
 }
 
-async function handleDrop(event: DragEvent) {
-  dragActive.value = false
+function hasFileDragPayload(dataTransfer: DataTransfer | null | undefined): boolean {
+  if (!dataTransfer) return false
+  return dataTransfer.types.includes('Files') || dataTransfer.types.includes('text/uri-list')
+}
+
+function extractDroppedFiles(dataTransfer: DataTransfer): File[] {
+  if (dataTransfer.files.length > 0) {
+    return Array.from(dataTransfer.files)
+  }
+  const files: File[] = []
+  for (const item of Array.from(dataTransfer.items ?? [])) {
+    if (item.kind !== 'file') continue
+    const file = item.getAsFile()
+    if (file) files.push(file)
+  }
+  return files
+}
+
+function onDragEnter(event: DragEvent) {
   if (!activeFileTab.value || activeFileTab.value.state !== 'running') return
-  const dropped = event.dataTransfer?.files
-  if (!dropped) return
-  const paths = window.orbit.sftp.getDroppedPaths(dropped)
-  if (paths.length) await uploadLocalPathsToActiveTab(paths)
+  if (!hasFileDragPayload(event.dataTransfer)) return
+  dragDepth.value += 1
+  dragActive.value = true
+}
+
+function onDragOver(event: DragEvent) {
+  const accepts =
+    Boolean(activeFileTab.value && activeFileTab.value.state === 'running') &&
+    hasFileDragPayload(event.dataTransfer)
+  dragActive.value = accepts
+  if (accepts && event.dataTransfer) {
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'copy'
+  }
+}
+
+function onDragLeave() {
+  dragDepth.value = Math.max(0, dragDepth.value - 1)
+  if (dragDepth.value === 0) dragActive.value = false
+}
+
+async function handleDrop(event: DragEvent) {
+  dragDepth.value = 0
+  dragActive.value = false
+  if (!activeFileTab.value || activeFileTab.value.state !== 'running' || !event.dataTransfer) return
+  const droppedFiles = extractDroppedFiles(event.dataTransfer)
+  const paths = window.orbit.sftp.getDroppedPaths(droppedFiles)
+  if (!paths.length) {
+    if (droppedFiles.length > 0 || event.dataTransfer.types.includes('text/uri-list')) {
+      notify(t('sftp.dropNoLocalPaths'))
+    }
+    return
+  }
+  await uploadLocalPathsToActiveTab(paths)
 }
 
 async function handleDeleteTrigger(entry: SftpEntry) {
+  contextMenu.value = null
   if (!protocolSettings.value.files.confirmDelete) {
     try {
       await deleteRemoteEntry(entry)
+      selectedPaths.value = new Set()
     } catch (error) {
       actionError.value = error instanceof Error ? error.message : String(error)
     }
     return
   }
   modal.value = { kind: 'deleteFile', entry }
+}
+
+async function handleBatchDeleteTrigger(entries: SftpEntry[]) {
+  contextMenu.value = null
+  if (!entries.length) return
+  if (entries.length === 1) {
+    await handleDeleteTrigger(entries[0]!)
+    return
+  }
+  if (!protocolSettings.value.files.confirmDelete) {
+    try {
+      await deleteRemoteEntries(entries)
+      selectedPaths.value = new Set()
+    } catch (error) {
+      actionError.value = error instanceof Error ? error.message : String(error)
+    }
+    return
+  }
+  modal.value = { kind: 'deleteBatch', entries }
+}
+
+function chmodBit(shift: number): boolean {
+  if (modal.value?.kind !== 'chmod') return false
+  const parsed = Number.parseInt(modal.value.value, 8)
+  if (!Number.isFinite(parsed)) return false
+  return Boolean((parsed >> shift) & 1)
+}
+
+function toggleChmodBit(shift: number) {
+  if (modal.value?.kind !== 'chmod') return
+  const current = Number.parseInt(modal.value.value, 8)
+  const base = Number.isFinite(current) ? current : 0o644
+  modal.value.value = formatOctalMode(base ^ (1 << shift))
 }
 
 async function confirmModal() {
@@ -317,17 +685,36 @@ async function confirmModal() {
     } else if (current.kind === 'chmod') {
       const parsed = Number.parseInt(current.value.trim(), 8)
       if (!Number.isFinite(parsed) || parsed < 0 || parsed > 0o7777) {
-        throw new Error('请输入有效的 4 位或 3 位八进制权限（如 0755）')
+        throw new Error(t('filesPage.invalidOctalMode'))
       }
       await chmodRemoteEntry(current.entry, parsed)
     } else if (current.kind === 'deleteFile') {
       await deleteRemoteEntry(current.entry)
+      selectedPaths.value = new Set()
+    } else if (current.kind === 'deleteBatch') {
+      await deleteRemoteEntries(current.entries)
+      selectedPaths.value = new Set()
     } else if (current.kind === 'deleteProfile') {
       await removeFileProfile(current.profile.id)
     }
   } catch (error) {
     actionError.value = error instanceof Error ? error.message : String(error)
   }
+}
+
+function transferPercent(item: FileWorkspaceTransfer): number {
+  if (item.status === 'completed') return 100
+  if (item.totalBytes <= 0) return item.status === 'running' ? 12 : 0
+  return Math.min(100, Math.round((item.transferredBytes / item.totalBytes) * 100))
+}
+
+function formatTransferStatus(item: FileWorkspaceTransfer): string {
+  if (item.error) return item.error
+  if (item.status === 'queued') return t('filesPage.statusQueued')
+  if (item.status === 'running') return t('filesPage.statusRunning')
+  if (item.status === 'completed') return t('filesPage.statusCompleted')
+  if (item.status === 'cancelled') return t('filesPage.statusCancelled')
+  return t('filesPage.statusFailed')
 }
 
 function revealTransferLocal(localPath: string) {
@@ -340,9 +727,9 @@ function openExternalSshTrustHint(host: Host) {
 </script>
 
 <template>
-  <section v-if="page === 'files'" class="container_files_page_root_base" data-testid="files-page">
+  <section class="container_files_page_root_base" data-testid="files-page" @click="contextMenu = null">
     <!-- Left Server Inventory Sidebar -->
-    <aside class="container_files_inventory_sidebar_base">
+    <aside v-show="!sidebarCollapsed" class="container_files_inventory_sidebar_base">
       <div class="container_files_inventory_header_base">
         <span class="container_files_inventory_header_eyebrow">{{ t('filesPage.eyebrow') }}</span>
         <h2 class="container_files_inventory_header_title">{{ t('filesPage.title') }}</h2>
@@ -482,27 +869,56 @@ function openExternalSshTrustHint(host: Host) {
 
     <!-- Main Right File Explorer Stage -->
     <div class="container_files_stage_body_base">
-      <!-- Connected Session Tabs -->
-      <div v-if="fileTabs.length" class="container_files_tabs_bar_base" role="tablist">
-        <div
-          v-for="tab in fileTabs"
-          :key="tab.id"
-          :class="c('container_files_tabs_item_base', tab.id)"
-          role="tab"
-          :aria-selected="activeFileTabId === tab.id"
-          @click="activeFileTabId = tab.id"
+      <!-- Top Stage Header with Sidebar Toggle, Session Tabs & Settings -->
+      <div class="container_files_stage_topbar_base">
+        <button
+          class="container_files_stage_sidebar_toggle"
+          type="button"
+          :title="t('filesPage.toggleSidebar')"
+          :aria-label="t('filesPage.toggleSidebar')"
+          @click="sidebarCollapsed = !sidebarCollapsed"
         >
-          <span :class="c('container_files_tabs_item_proto', tab.id)">{{ tab.protocol.toUpperCase() }}</span>
-          <span :class="c('container_files_tabs_item_title', tab.id)">{{ tab.title }}</span>
-          <button
-            :class="c('container_files_tabs_item_close', tab.id)"
-            type="button"
-            :aria-label="t('filesPage.tabClose', { name: tab.title })"
-            @click.stop="closeFileTab(tab.id)"
+          <PanelLeftOpen v-if="sidebarCollapsed" :size="14" />
+          <PanelLeftClose v-else :size="14" />
+        </button>
+
+        <div v-if="fileTabs.length" class="container_files_tabs_bar_base" role="tablist">
+          <div
+            v-for="tab in fileTabs"
+            :key="tab.id"
+            :class="c('container_files_tabs_item_base', tab.id)"
+            role="tab"
+            tabindex="0"
+            :aria-selected="activeFileTabId === tab.id"
+            @click="activeFileTabId = tab.id"
+            @keydown.enter="activeFileTabId = tab.id"
+            @keydown.space.prevent="activeFileTabId = tab.id"
           >
-            <X :size="12" />
-          </button>
+            <span :class="c('container_files_tabs_item_dot', tab.id)" :data-state="tab.state" />
+            <span :class="c('container_files_tabs_item_proto', tab.id)">
+              {{ tab.protocol.toUpperCase() }}
+            </span>
+            <span :class="c('container_files_tabs_item_title', tab.id)">{{ tab.title }}</span>
+            <button
+              :class="c('container_files_tabs_item_close', tab.id)"
+              type="button"
+              :aria-label="t('filesPage.tabClose', { name: tab.title })"
+              @click.stop="closeFileTab(tab.id)"
+            >
+              <X :size="12" />
+            </button>
+          </div>
         </div>
+
+        <button
+          class="container_files_stage_settings_btn"
+          type="button"
+          :title="t('filesPage.openSettings')"
+          @click="openSettingsDomain('files')"
+        >
+          <Settings :size="13" />
+          {{ t('filesPage.openSettings') }}
+        </button>
       </div>
 
       <!-- Empty Stage -->
@@ -534,11 +950,13 @@ function openExternalSshTrustHint(host: Host) {
       <!-- Active File Session -->
       <div
         v-else
+        ref="browserBodyEl"
         class="container_files_browser_body_base"
         :data-drag="dragActive"
-        @dragover.prevent="dragActive = true"
-        @dragleave.self="dragActive = false"
-        @drop.prevent="handleDrop"
+        @dragenter.prevent="onDragEnter"
+        @dragover="onDragOver"
+        @dragleave.prevent="onDragLeave"
+        @drop.prevent.stop="handleDrop"
       >
         <div class="container_files_toolbar_top_row">
           <div class="container_files_toolbar_crumbs_base">
@@ -551,6 +969,16 @@ function openExternalSshTrustHint(host: Host) {
               @click="goParentDirectory"
             >
               <ArrowUp :size="14" />
+            </button>
+            <button
+              class="container_files_toolbar_home_btn"
+              type="button"
+              :title="t('filesPage.homeBtn')"
+              :aria-label="t('filesPage.homeBtn')"
+              :disabled="activeFileTab.state !== 'running'"
+              @click="goHomeDirectory"
+            >
+              <Home :size="14" />
             </button>
             <div class="container_files_crumbs_trail_row">
               <button
@@ -629,6 +1057,9 @@ function openExternalSshTrustHint(host: Host) {
             <EyeOff v-else :size="13" />
             {{ t('filesPage.hiddenToggle') }}
           </button>
+          <span class="container_files_toolbar_count_badge">
+            {{ t('filesPage.itemCount', { count: visibleFileEntries.length }) }}
+          </span>
           <input
             v-model="filesFilter"
             class="container_files_toolbar_filter_input"
@@ -641,31 +1072,96 @@ function openExternalSshTrustHint(host: Host) {
           {{ t('filesPage.s3VirtualDirNote') }}
         </p>
 
-        <p v-if="activeFileTab.error || actionError" class="container_files_error_banner_text" role="alert">
-          {{ actionError || activeFileTab.error }}
-        </p>
+        <div v-if="activeFileTab.error || actionError" class="container_files_error_banner_row" role="alert">
+          <p class="container_files_error_banner_text">
+            {{ actionError || activeFileTab.error }}
+          </p>
+          <button
+            v-if="
+              (activeFileTab.state === 'error' || activeFileTab.state === 'exited') &&
+              activeFileTab.sourceKind !== 'adhoc'
+            "
+            class="container_files_error_reconn_btn"
+            type="button"
+            @click="reconnectFileTab(activeFileTab.id)"
+          >
+            <RotateCw :size="12" />
+            {{ t('filesPage.reconnectBtn') }}
+          </button>
+        </div>
 
         <div v-if="activeFileTab.state === 'connecting'" class="container_files_state_connecting_box">
           {{ t('filesPage.connectingState', { name: activeFileTab.title }) }}
         </div>
 
-        <div v-else class="container_files_table_scroll_wrap">
-          <table class="container_files_table_grid_base">
+        <div
+          v-else-if="activeFileTab.state === 'error' || activeFileTab.state === 'exited'"
+          class="container_files_state_offline_box"
+        >
+          <p class="container_files_state_offline_title">{{ t('filesPage.emptyDisconnected') }}</p>
+          <button
+            v-if="activeFileTab.sourceKind !== 'adhoc'"
+            class="container_files_state_offline_btn"
+            type="button"
+            data-primary="true"
+            @click="reconnectFileTab(activeFileTab.id)"
+          >
+            <RotateCw :size="13" />
+            {{ t('filesPage.reconnectBtn') }}
+          </button>
+        </div>
+
+        <div
+          v-else
+          ref="tableScrollEl"
+          class="container_files_table_scroll_wrap"
+          tabindex="0"
+          @scroll.passive="onTableScroll"
+          @keydown="onTableKeydown"
+        >
+          <table
+            class="container_files_table_grid_base"
+            :style="{ '--files-row-height': `${VIRTUAL_ROW_HEIGHT}px` }"
+          >
             <thead class="container_files_table_head_row">
               <tr class="container_files_table_head_tr">
+                <th class="container_files_table_th_check">
+                  <input
+                    class="container_files_table_check_all"
+                    type="checkbox"
+                    :checked="allVisibleSelected"
+                    :aria-label="t('filesPage.selectAll')"
+                    @change="toggleSelectAll"
+                  />
+                </th>
                 <th class="container_files_table_th_name">
-                  <button class="container_files_table_sort_name" type="button" @click="toggleSort('name')">
-                    {{ t('filesPage.colName') }}
+                  <button
+                    class="container_files_table_sort_name"
+                    type="button"
+                    :data-active="filesSortBy === 'name'"
+                    @click="toggleSort('name')"
+                  >
+                    {{ t('filesPage.colName') }}{{ sortArrow('name') }}
                   </button>
                 </th>
                 <th class="container_files_table_th_size">
-                  <button class="container_files_table_sort_size" type="button" @click="toggleSort('size')">
-                    {{ t('filesPage.colSize') }}
+                  <button
+                    class="container_files_table_sort_size"
+                    type="button"
+                    :data-active="filesSortBy === 'size'"
+                    @click="toggleSort('size')"
+                  >
+                    {{ t('filesPage.colSize') }}{{ sortArrow('size') }}
                   </button>
                 </th>
                 <th class="container_files_table_th_mtime">
-                  <button class="container_files_table_sort_mtime" type="button" @click="toggleSort('mtime')">
-                    {{ t('filesPage.colModified') }}
+                  <button
+                    class="container_files_table_sort_mtime"
+                    type="button"
+                    :data-active="filesSortBy === 'mtime'"
+                    @click="toggleSort('mtime')"
+                  >
+                    {{ t('filesPage.colModified') }}{{ sortArrow('mtime') }}
                   </button>
                 </th>
                 <th v-if="activeFileTab.capabilities.posixMetadata" class="container_files_table_th_perms">
@@ -676,27 +1172,47 @@ function openExternalSshTrustHint(host: Host) {
             </thead>
             <tbody class="container_files_table_body_rows">
               <tr v-if="!visibleFileEntries.length" class="container_files_table_empty_row">
-                <td
-                  :colspan="activeFileTab.capabilities.posixMetadata ? 5 : 4"
-                  class="container_files_table_empty_cell"
-                >
+                <td :colspan="tableColCount" class="container_files_table_empty_cell">
                   {{ filesFilter ? t('filesPage.emptyFilter') : t('filesPage.emptyDir') }}
                 </td>
               </tr>
+              <tr v-if="virtualWindow.topHeight > 0" class="container_files_table_spacer_top">
+                <td
+                  :colspan="tableColCount"
+                  class="container_files_table_spcell_top"
+                  :style="{ height: `${virtualWindow.topHeight}px` }"
+                />
+              </tr>
               <tr
-                v-for="entry in visibleFileEntries"
+                v-for="entry in virtualWindow.items"
                 :key="entry.path"
                 :class="c('container_files_table_entry_row', entry.path)"
                 :data-kind="entry.kind"
+                :data-selected="selectedPaths.has(entry.path)"
+                @click="onRowClick(entry, $event)"
                 @dblclick="handleEntryDoubleClick(entry)"
+                @contextmenu.prevent.stop="openRowContextMenu(entry, $event)"
               >
+                <td :class="c('container_files_table_entry_check', entry.path)" @click.stop>
+                  <input
+                    :class="c('container_files_table_row_checkbox', entry.path)"
+                    type="checkbox"
+                    :checked="selectedPaths.has(entry.path)"
+                    :aria-label="entry.name"
+                    @change="toggleRowCheckbox(entry)"
+                  />
+                </td>
                 <td :class="c('container_files_table_entry_name', entry.path)">
-                  <Folder v-if="entry.kind === 'directory' || entry.targetKind === 'directory'" :size="14" />
+                  <Link2 v-if="entry.kind === 'symlink'" :size="14" />
+                  <Folder v-else-if="isDirEntry(entry)" :size="14" />
                   <FileIcon v-else :size="14" />
                   <span :class="c('container_files_table_entry_label', entry.path)">{{ entry.name }}</span>
+                  <em v-if="entry.linkTarget" :class="c('container_files_table_entry_link', entry.path)">
+                    → {{ entry.linkTarget }}
+                  </em>
                 </td>
                 <td :class="c('container_files_table_entry_size', entry.path)">
-                  {{ entry.kind === 'directory' ? '—' : formatBytes(entry.size) }}
+                  {{ isDirEntry(entry) ? '—' : formatBytes(entry.size) }}
                 </td>
                 <td :class="c('container_files_table_entry_mtime', entry.path)">
                   {{ formatMtime(entry.mtime) }}
@@ -707,7 +1223,7 @@ function openExternalSshTrustHint(host: Host) {
                 >
                   {{ entry.permissions }}
                 </td>
-                <td :class="c('container_files_table_entry_actions', entry.path)">
+                <td :class="c('container_files_table_entry_actions', entry.path)" @click.stop>
                   <button
                     :class="c('container_files_row_btn_download', entry.path)"
                     type="button"
@@ -743,8 +1259,113 @@ function openExternalSshTrustHint(host: Host) {
                   </button>
                 </td>
               </tr>
+              <tr v-if="virtualWindow.bottomHeight > 0" class="container_files_table_spacer_bot">
+                <td
+                  :colspan="tableColCount"
+                  class="container_files_table_spcell_bot"
+                  :style="{ height: `${virtualWindow.bottomHeight}px` }"
+                />
+              </tr>
             </tbody>
           </table>
+        </div>
+
+        <!-- Batch Action Bar -->
+        <div
+          v-if="selectedEntries.length > 0 && activeFileTab.state === 'running'"
+          class="container_files_batch_bar_base"
+        >
+          <span class="container_files_batch_bar_label">
+            {{ t('filesPage.batchSelected', { count: selectedEntries.length }) }}
+          </span>
+          <button
+            class="container_files_batch_btn_download"
+            type="button"
+            @click="downloadEntriesFromActiveTab(selectedEntries)"
+          >
+            <Download :size="12" />
+            {{ t('filesPage.download') }}
+          </button>
+          <button
+            class="container_files_batch_btn_delete"
+            type="button"
+            @click="handleBatchDeleteTrigger(selectedEntries)"
+          >
+            <Trash2 :size="12" />
+            {{ t('filesPage.remove') }}
+          </button>
+          <button class="container_files_batch_btn_clear" type="button" @click="selectedPaths = new Set()">
+            {{ t('filesPage.clearSelection') }}
+          </button>
+        </div>
+
+        <!-- Right-click Context Menu -->
+        <div
+          v-if="contextMenu"
+          class="container_files_context_menu_box"
+          :style="{ left: `${contextMenu.x}px`, top: `${contextMenu.y}px` }"
+          role="menu"
+          @click.stop
+        >
+          <button
+            class="container_files_cmenu_btn_download"
+            type="button"
+            @click="
+              () => {
+                const target = contextMenu!.entry
+                contextMenu = null
+                void downloadEntriesFromActiveTab([target])
+              }
+            "
+          >
+            <Download :size="13" />
+            {{ t('filesPage.download') }}
+          </button>
+          <button
+            class="container_files_cmenu_btn_rename"
+            type="button"
+            @click="
+              () => {
+                const target = contextMenu!.entry
+                contextMenu = null
+                modal = { kind: 'rename', entry: target, value: target.name }
+              }
+            "
+          >
+            <Edit3 :size="13" />
+            {{ t('filesPage.rename') }}
+          </button>
+          <button
+            v-if="activeFileTab.capabilities.chmod"
+            class="container_files_cmenu_btn_chmod"
+            type="button"
+            @click="
+              () => {
+                const target = contextMenu!.entry
+                contextMenu = null
+                modal = { kind: 'chmod', entry: target, value: formatOctalMode(target.mode) }
+              }
+            "
+          >
+            <Shield :size="13" />
+            {{ t('filesPage.chmod') }}
+          </button>
+          <button
+            class="container_files_cmenu_btn_copypath"
+            type="button"
+            @click="copyRemotePath(contextMenu.entry.path)"
+          >
+            <Copy :size="13" />
+            {{ t('filesPage.copyPath') }}
+          </button>
+          <button
+            class="container_files_cmenu_btn_delete"
+            type="button"
+            @click="handleDeleteTrigger(contextMenu.entry)"
+          >
+            <Trash2 :size="13" />
+            {{ t('filesPage.remove') }}
+          </button>
         </div>
 
         <div v-if="dragActive" class="container_files_drop_overlay_box">
@@ -755,49 +1376,79 @@ function openExternalSshTrustHint(host: Host) {
       <!-- Transfer Queue Panel -->
       <section v-if="fileTransfers.length" class="container_files_queue_panel_base">
         <header class="container_files_queue_header_row">
-          <strong class="container_files_queue_header_title">
-            {{ t('filesPage.queueTitle', { active: activeFilesTransferCount, total: fileTransfers.length }) }}
-          </strong>
+          <button
+            class="container_files_queue_toggle_btn"
+            type="button"
+            :title="t('filesPage.queueExpand')"
+            @click="queueExpanded = !queueExpanded"
+          >
+            <ChevronDown v-if="queueExpanded" :size="13" />
+            <ChevronRight v-else :size="13" />
+            <strong class="container_files_queue_header_title">
+              {{
+                t('filesPage.queueTitle', { active: activeFilesTransferCount, total: fileTransfers.length })
+              }}
+            </strong>
+          </button>
           <button class="container_files_queue_clear_btn" type="button" @click="clearFinishedFileTransfers">
             {{ t('filesPage.clearDone') }}
           </button>
         </header>
-        <div class="container_files_queue_list_scroll">
+        <div v-if="queueExpanded" class="container_files_queue_list_scroll">
           <div
             v-for="item in fileTransfers"
             :key="item.id"
             :class="c('container_files_queue_item_row', item.id)"
             :data-status="item.status"
           >
-            <span :class="c('container_files_queue_item_dir', item.id)">
-              {{ item.protocol.toUpperCase() }} · {{ item.direction === 'upload' ? 'UP' : 'DOWN' }}
-            </span>
-            <span :class="c('container_files_queue_item_name', item.id)">{{ item.name }}</span>
-            <span :class="c('container_files_queue_item_bytes', item.id)">
-              {{ formatBytes(item.transferredBytes) }} / {{ formatBytes(item.totalBytes) }}
-              <template v-if="item.status === 'running' && item.speedBps > 0">
-                · {{ formatSpeed(item.speedBps) }}
-              </template>
-            </span>
-            <span :class="c('container_files_queue_item_status', item.id)">
-              {{ item.error || item.status }}
-            </span>
-            <button
-              v-if="item.status === 'running' || item.status === 'queued'"
-              :class="c('container_files_queue_item_cancel', item.id)"
-              type="button"
-              @click="cancelFileTransfer(item)"
-            >
-              {{ t('filesPage.cancelTransfer') }}
-            </button>
-            <button
-              v-else-if="item.direction === 'download' && item.status === 'completed'"
-              :class="c('container_files_queue_item_reveal', item.id)"
-              type="button"
-              @click="revealTransferLocal(item.localPath)"
-            >
-              {{ t('filesPage.revealLocal') }}
-            </button>
+            <div :class="c('container_files_queue_item_top', item.id)">
+              <span :class="c('container_files_queue_item_dir', item.id)">
+                {{ item.protocol.toUpperCase() }} · {{ item.direction === 'upload' ? 'UP' : 'DOWN' }}
+              </span>
+              <span :class="c('container_files_queue_item_name', item.id)" :title="item.remotePath">
+                {{ item.name }}
+              </span>
+              <span :class="c('container_files_queue_item_bytes', item.id)">
+                {{ formatBytes(item.transferredBytes) }} / {{ formatBytes(item.totalBytes) }}
+                <template v-if="item.status === 'running' && item.speedBps > 0">
+                  · {{ formatSpeed(item.speedBps) }}
+                </template>
+              </span>
+              <span :class="c('container_files_queue_item_status', item.id)">
+                {{ formatTransferStatus(item) }}
+              </span>
+              <button
+                v-if="item.status === 'running' || item.status === 'queued'"
+                :class="c('container_files_queue_item_cancel', item.id)"
+                type="button"
+                @click="cancelFileTransfer(item)"
+              >
+                {{ t('filesPage.cancelTransfer') }}
+              </button>
+              <button
+                v-else-if="item.status === 'failed' || item.status === 'cancelled'"
+                :class="c('container_files_queue_item_retry', item.id)"
+                type="button"
+                @click="retryFileTransfer(item)"
+              >
+                <RotateCw :size="11" />
+                {{ t('filesPage.retryTransfer') }}
+              </button>
+              <button
+                v-else-if="item.direction === 'download' && item.status === 'completed'"
+                :class="c('container_files_queue_item_reveal', item.id)"
+                type="button"
+                @click="revealTransferLocal(item.localPath)"
+              >
+                {{ t('filesPage.revealLocal') }}
+              </button>
+            </div>
+            <div :class="c('container_files_queue_item_track', item.id)">
+              <div
+                :class="c('container_files_queue_item_bar', item.id)"
+                :style="{ width: `${transferPercent(item)}%` }"
+              />
+            </div>
           </div>
         </div>
       </section>
@@ -818,7 +1469,13 @@ function openExternalSshTrustHint(host: Host) {
     />
 
     <!-- Credentials Prompt Dialog (SFTP / FTP / FTPS / WebDAV / S3) -->
-    <div v-if="filesSecretPrompt" class="container_files_secret_overlay_base" role="dialog" aria-modal="true">
+    <div
+      v-if="filesSecretPrompt"
+      class="container_files_secret_overlay_base"
+      role="dialog"
+      aria-modal="true"
+      @click.self="cancelSecretPrompt"
+    >
       <form class="container_files_secret_dialog_card" @submit.prevent="submitSecretPrompt">
         <h3 class="container_files_secret_dialog_title">
           {{ t('filesPage.promptSecretTitle', { name: filesSecretPrompt.name }) }}
@@ -833,6 +1490,7 @@ function openExternalSshTrustHint(host: Host) {
           <label class="container_files_secret_field_s3key">
             {{ t('filesPage.promptS3SecretLabel') }}
             <input
+              ref="secretInputEl"
               v-model="secretForm.secretAccessKey"
               class="container_files_secret_input_s3key"
               type="password"
@@ -855,11 +1513,21 @@ function openExternalSshTrustHint(host: Host) {
           class="container_files_secret_field_token"
         >
           {{ t('filesPage.promptTokenLabel') }}
-          <input v-model="secretForm.token" class="container_files_secret_input_token" type="password" />
+          <input
+            ref="secretInputEl"
+            v-model="secretForm.token"
+            class="container_files_secret_input_token"
+            type="password"
+          />
         </label>
         <label v-else class="container_files_secret_field_pw">
           {{ t('filesPage.promptPasswordLabel') }}
-          <input v-model="secretForm.password" class="container_files_secret_input_pw" type="password" />
+          <input
+            ref="secretInputEl"
+            v-model="secretForm.password"
+            class="container_files_secret_input_pw"
+            type="password"
+          />
         </label>
         <div class="container_files_secret_dialog_actions">
           <button class="container_files_secret_btn_cancel" type="button" @click="cancelSecretPrompt">
@@ -879,6 +1547,7 @@ function openExternalSshTrustHint(host: Host) {
       class="container_files_conflict_overlay_base"
       role="dialog"
       aria-modal="true"
+      @click.self="filesConflictPrompt.resolve({ decision: 'cancel', applyAll: true })"
     >
       <div class="container_files_conflict_dialog_card">
         <h3 class="container_files_conflict_dialog_title">{{ t('sftp.conflictTitle') }}</h3>
@@ -893,25 +1562,29 @@ function openExternalSshTrustHint(host: Host) {
             })
           }}
         </p>
+        <label class="container_files_conflict_check_row">
+          <input v-model="conflictApplyAll" class="container_files_conflict_check_box" type="checkbox" />
+          <span class="container_files_conflict_check_label">{{ t('sftp.conflictApplyAll') }}</span>
+        </label>
         <div class="container_files_conflict_dialog_actions">
           <button
             class="container_files_conflict_btn_cancel"
             type="button"
-            @click="filesConflictPrompt.resolve('cancel')"
+            @click="filesConflictPrompt.resolve({ decision: 'cancel', applyAll: true })"
           >
-            {{ t('actionDialog.cancel') }}
+            {{ t('filesPage.conflictCancelAll') }}
           </button>
           <button
             class="container_files_conflict_btn_skip"
             type="button"
-            @click="filesConflictPrompt.resolve('skip')"
+            @click="filesConflictPrompt.resolve({ decision: 'skip', applyAll: conflictApplyAll })"
           >
             {{ t('sftp.conflictSkip') }}
           </button>
           <button
             class="container_files_conflict_btn_rename"
             type="button"
-            @click="filesConflictPrompt.resolve('rename')"
+            @click="filesConflictPrompt.resolve({ decision: 'rename', applyAll: conflictApplyAll })"
           >
             {{ t('sftp.conflictRename') }}
           </button>
@@ -919,7 +1592,7 @@ function openExternalSshTrustHint(host: Host) {
             class="container_files_conflict_btn_overwrite"
             type="button"
             data-primary="true"
-            @click="filesConflictPrompt.resolve('overwrite')"
+            @click="filesConflictPrompt.resolve({ decision: 'overwrite', applyAll: conflictApplyAll })"
           >
             {{ t('sftp.conflictOverwrite') }}
           </button>
@@ -928,7 +1601,13 @@ function openExternalSshTrustHint(host: Host) {
     </div>
 
     <!-- Action Mini Modal (mkdir / rename / chmod / delete confirmation) -->
-    <div v-if="modal" class="container_files_modal_overlay_base" role="dialog" aria-modal="true">
+    <div
+      v-if="modal"
+      class="container_files_modal_overlay_base"
+      role="dialog"
+      aria-modal="true"
+      @click.self="modal = null"
+    >
       <form class="container_files_modal_dialog_card" @submit.prevent="confirmModal">
         <h3 class="container_files_modal_dialog_title">
           {{
@@ -941,26 +1620,49 @@ function openExternalSshTrustHint(host: Host) {
                   : t('filesPage.confirmDeleteTitle')
           }}
         </h3>
-        <label
-          v-if="modal.kind === 'mkdir' || modal.kind === 'rename' || modal.kind === 'chmod'"
-          class="container_files_modal_dialog_field"
-        >
-          {{
-            modal.kind === 'mkdir'
-              ? t('filesPage.mkdirPromptLabel')
-              : modal.kind === 'rename'
-                ? t('filesPage.renamePromptLabel')
-                : t('filesPage.chmodPromptLabel')
-          }}
-          <input v-model="modal.value" class="container_files_modal_dialog_input" type="text" />
-        </label>
+        <template v-if="modal.kind === 'mkdir' || modal.kind === 'rename' || modal.kind === 'chmod'">
+          <label class="container_files_modal_dialog_field">
+            {{
+              modal.kind === 'mkdir'
+                ? t('filesPage.mkdirPromptLabel')
+                : modal.kind === 'rename'
+                  ? t('filesPage.renamePromptLabel')
+                  : t('filesPage.chmodPromptLabel')
+            }}
+            <input
+              ref="modalInputEl"
+              v-model="modal.value"
+              class="container_files_modal_dialog_input"
+              type="text"
+            />
+          </label>
+          <div v-if="modal.kind === 'chmod'" class="container_files_modal_chmod_grid">
+            <label
+              v-for="bit in chmodPermissions"
+              :key="bit.shift"
+              :class="c('container_files_modal_chmod_cell', String(bit.shift))"
+            >
+              <input
+                :class="c('container_files_modal_chmod_check', String(bit.shift))"
+                type="checkbox"
+                :checked="chmodBit(bit.shift)"
+                @change="toggleChmodBit(bit.shift)"
+              />
+              <span :class="c('container_files_modal_chmod_label', String(bit.shift))">
+                {{ bit.label }}
+              </span>
+            </label>
+          </div>
+        </template>
         <p v-else class="container_files_modal_dialog_desc">
           {{
             modal.kind === 'deleteFile'
-              ? modal.entry.kind === 'directory'
+              ? isDirEntry(modal.entry)
                 ? t('filesPage.confirmDeleteDir', { name: modal.entry.name })
                 : t('filesPage.confirmDeleteFile', { name: modal.entry.name })
-              : t('filesPage.deleteProfileConfirm', { name: modal.profile.name })
+              : modal.kind === 'deleteBatch'
+                ? t('filesPage.confirmDeleteBatch', { count: modal.entries.length })
+                : t('filesPage.deleteProfileConfirm', { name: modal.profile.name })
           }}
         </p>
         <div class="container_files_modal_dialog_actions">
@@ -970,11 +1672,19 @@ function openExternalSshTrustHint(host: Host) {
           <button
             class="container_files_modal_btn_confirm"
             type="submit"
-            :data-danger="modal.kind === 'deleteFile' || modal.kind === 'deleteProfile' ? 'true' : undefined"
-            :data-primary="modal.kind !== 'deleteFile' && modal.kind !== 'deleteProfile' ? 'true' : undefined"
+            :data-danger="
+              modal.kind === 'deleteFile' || modal.kind === 'deleteBatch' || modal.kind === 'deleteProfile'
+                ? 'true'
+                : undefined
+            "
+            :data-primary="
+              modal.kind !== 'deleteFile' && modal.kind !== 'deleteBatch' && modal.kind !== 'deleteProfile'
+                ? 'true'
+                : undefined
+            "
           >
             {{
-              modal.kind === 'deleteFile' || modal.kind === 'deleteProfile'
+              modal.kind === 'deleteFile' || modal.kind === 'deleteBatch' || modal.kind === 'deleteProfile'
                 ? t('filesPage.deleteBtn')
                 : t('hostEditor.save')
             }}
@@ -1157,14 +1867,33 @@ function openExternalSshTrustHint(host: Host) {
   display: flex;
   flex-direction: column;
 }
+.container_files_stage_topbar_base {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-1);
+  flex-shrink: 0;
+}
+.container_files_stage_sidebar_toggle,
+.container_files_stage_settings_btn {
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: var(--font-size-ui-xs);
+  border: 1px solid var(--color-border-control);
+  flex-shrink: 0;
+}
+.container_files_stage_settings_btn {
+  margin-left: auto;
+}
 .container_files_tabs_bar_base {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 12px;
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-surface-1);
   overflow-x: auto;
+  min-width: 0;
+  flex: 1;
 }
 [class*='container_files_tabs_item_base'] {
   display: inline-flex;
@@ -1175,9 +1904,25 @@ function openExternalSshTrustHint(host: Host) {
   border: 1px solid var(--color-border-control);
   background: var(--color-app-bg);
   cursor: pointer;
+  flex-shrink: 0;
   &[aria-selected='true'] {
     border-color: var(--color-accent-primary);
     background: var(--color-accent-primary-soft);
+  }
+}
+[class*='container_files_tabs_item_dot'] {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-text-muted);
+  &[data-state='running'] {
+    background: var(--color-success);
+  }
+  &[data-state='connecting'] {
+    background: var(--color-warning);
+  }
+  &[data-state='error'] {
+    background: var(--color-error);
   }
 }
 [class*='container_files_tabs_item_proto'] {
@@ -1243,7 +1988,7 @@ function openExternalSshTrustHint(host: Host) {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 .container_files_toolbar_crumbs_base {
@@ -1254,6 +1999,7 @@ function openExternalSshTrustHint(host: Host) {
   min-width: 220px;
 }
 .container_files_toolbar_up_btn,
+.container_files_toolbar_home_btn,
 .container_files_toolbar_refresh_btn,
 .container_files_toolbar_mkdir_btn,
 .container_files_toolbar_upfiles_btn,
@@ -1264,6 +2010,17 @@ function openExternalSshTrustHint(host: Host) {
   font-size: var(--font-size-ui-xs);
   min-height: 28px;
   padding: 4px 10px;
+}
+.container_files_toolbar_hidden_btn[aria-pressed='true'] {
+  color: var(--color-accent-primary-bright);
+  background: var(--color-accent-primary-soft);
+  border-color: var(--color-accent-primary-ring);
+}
+.container_files_toolbar_count_badge {
+  margin-left: auto;
+  font-size: var(--font-size-ui-xs);
+  color: var(--color-text-muted);
+  white-space: nowrap;
 }
 .container_files_crumbs_trail_row {
   display: flex;
@@ -1290,7 +2047,6 @@ function openExternalSshTrustHint(host: Host) {
   padding: 5px 9px;
 }
 .container_files_toolbar_filter_input {
-  margin-left: auto;
   width: 200px;
 }
 .container_files_s3_notice_banner {
@@ -1302,19 +2058,43 @@ function openExternalSshTrustHint(host: Host) {
   font-size: var(--font-size-ui-xs);
   color: var(--color-text-muted);
 }
-.container_files_error_banner_text {
-  margin: 0;
+.container_files_error_banner_row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   padding: 8px 12px;
   border-radius: 8px;
   background: rgba(239, 68, 68, 0.12);
   border: 1px solid rgba(239, 68, 68, 0.45);
+}
+.container_files_error_banner_text {
+  margin: 0;
   color: #fca5a5;
   font-size: var(--font-size-ui-xs);
 }
-.container_files_state_connecting_box {
+.container_files_error_reconn_btn {
+  min-height: 26px;
+  padding: 3px 9px;
+  font-size: var(--font-size-ui-xs);
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  flex-shrink: 0;
+}
+.container_files_state_connecting_box,
+.container_files_state_offline_box {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
   padding: 28px;
   text-align: center;
   color: var(--color-text-muted);
+}
+.container_files_state_offline_title {
+  margin: 0;
+  font-size: var(--font-size-ui-sm);
 }
 .container_files_table_scroll_wrap {
   flex: 1;
@@ -1323,6 +2103,9 @@ function openExternalSshTrustHint(host: Host) {
   border: 1px solid var(--color-border);
   border-radius: var(--radius-card);
   background: var(--color-surface-1);
+  &:focus {
+    outline: 1px solid var(--color-accent-primary-ring);
+  }
 }
 .container_files_table_grid_base {
   width: 100%;
@@ -1333,27 +2116,64 @@ function openExternalSshTrustHint(host: Host) {
   border-bottom: 1px solid var(--color-border);
   background: var(--color-surface-2);
   text-align: left;
+  position: sticky;
+  top: 0;
+  z-index: 1;
   th {
     padding: 8px 10px;
     font-weight: 600;
     color: var(--color-text-secondary);
   }
 }
+.container_files_table_th_check {
+  width: 32px;
+  text-align: center;
+}
+.container_files_table_sort_name,
+.container_files_table_sort_size,
+.container_files_table_sort_mtime {
+  padding: 2px 6px;
+  min-height: 24px;
+  font-size: var(--font-size-ui-xs);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  &[data-active='true'] {
+    color: var(--color-accent-primary-bright);
+    background: var(--color-accent-primary-soft);
+    border-color: var(--color-accent-primary-ring);
+  }
+}
 [class*='container_files_table_entry_row'] {
+  height: var(--files-row-height);
   border-bottom: 1px solid var(--color-border-subtle);
   cursor: pointer;
+  user-select: none;
   &:hover {
     background: var(--color-surface-2);
   }
+  &[data-selected='true'] {
+    background: var(--color-accent-primary-soft);
+  }
   td {
-    padding: 7px 10px;
+    padding: 5px 10px;
+    white-space: nowrap;
   }
 }
+[class*='container_files_table_entry_check'] {
+  text-align: center;
+  width: 32px;
+}
 [class*='container_files_table_entry_name'] {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   color: var(--color-text-primary);
+  > svg {
+    margin-inline-end: 8px;
+    vertical-align: middle;
+  }
+}
+[class*='container_files_table_entry_link'] {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--color-accent-secondary);
 }
 [class*='container_files_table_entry_size'],
 [class*='container_files_table_entry_mtime'],
@@ -1364,23 +2184,72 @@ function openExternalSshTrustHint(host: Host) {
   white-space: nowrap;
 }
 [class*='container_files_table_entry_actions'] {
-  display: flex;
-  gap: 4px;
   button {
     min-height: 24px;
     padding: 3px 6px;
     font-size: 11px;
     border: 1px solid var(--color-border-control);
+    vertical-align: middle;
   }
+  button + button {
+    margin-inline-start: 4px;
+  }
+}
+.container_files_table_spcell_top,
+.container_files_table_spcell_bot {
+  padding: 0;
+  border: none;
 }
 .container_files_table_empty_cell {
   padding: 28px;
   text-align: center;
   color: var(--color-text-muted);
 }
+.container_files_batch_bar_base {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: var(--radius-control);
+  background: var(--color-accent-primary-soft);
+  border: 1px solid var(--color-accent-primary-ring);
+  flex-shrink: 0;
+  > button {
+    min-height: 24px;
+    padding: 3px 9px;
+    font-size: var(--font-size-ui-xs);
+    border: 1px solid var(--color-border-control);
+  }
+}
+.container_files_batch_bar_label {
+  margin-right: auto;
+  font-size: var(--font-size-ui-xs);
+  font-weight: 600;
+  color: var(--color-accent-primary-bright);
+}
+.container_files_context_menu_box {
+  position: absolute;
+  z-index: var(--z-dropdown);
+  width: 180px;
+  padding: 5px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-radius: 8px;
+  background: var(--color-surface-2);
+  border: 1px solid var(--color-accent-primary-ring);
+  box-shadow: var(--shadow-3d-dialog);
+  > button {
+    justify-content: flex-start;
+    min-height: 26px;
+    padding: 4px 8px;
+    font-size: var(--font-size-ui-xs);
+  }
+}
 .container_files_drop_overlay_box {
   position: absolute;
   inset: 12px;
+  z-index: 6;
   display: grid;
   place-items: center;
   border-radius: var(--radius-card);
@@ -1395,15 +2264,24 @@ function openExternalSshTrustHint(host: Host) {
   border-top: 1px solid var(--color-border);
   background: var(--color-surface-1);
   padding: 8px 14px;
-  max-height: 170px;
+  max-height: 190px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  flex-shrink: 0;
 }
 .container_files_queue_header_row {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  font-size: var(--font-size-ui-xs);
+}
+.container_files_queue_toggle_btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 6px;
+  min-height: 24px;
   font-size: var(--font-size-ui-xs);
 }
 .container_files_queue_clear_btn {
@@ -1416,16 +2294,21 @@ function openExternalSshTrustHint(host: Host) {
   overflow: auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 5px;
 }
 [class*='container_files_queue_item_row'] {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 8px;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px 8px;
   border-radius: 6px;
   background: var(--color-surface-2);
   font-size: var(--font-size-ui-xs);
+}
+[class*='container_files_queue_item_top'] {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 [class*='container_files_queue_item_dir'] {
   font-family: var(--font-mono);
@@ -1434,6 +2317,7 @@ function openExternalSshTrustHint(host: Host) {
 }
 [class*='container_files_queue_item_name'] {
   flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1441,6 +2325,30 @@ function openExternalSshTrustHint(host: Host) {
 [class*='container_files_queue_item_bytes'] {
   font-family: var(--font-term);
   color: var(--color-text-muted);
+  white-space: nowrap;
+}
+[class*='container_files_queue_item_status'] {
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+[class*='container_files_queue_item_cancel'],
+[class*='container_files_queue_item_retry'],
+[class*='container_files_queue_item_reveal'] {
+  min-height: 22px;
+  padding: 2px 7px;
+  font-size: 11px;
+  border: 1px solid var(--color-border-control);
+}
+[class*='container_files_queue_item_track'] {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--color-surface-1);
+  overflow: hidden;
+}
+[class*='container_files_queue_item_bar'] {
+  height: 100%;
+  background: linear-gradient(90deg, var(--color-accent-secondary), var(--color-accent-primary));
+  transition: width 120ms linear;
 }
 
 .container_files_secret_overlay_base,
@@ -1494,6 +2402,25 @@ function openExternalSshTrustHint(host: Host) {
   gap: 5px;
   font-size: var(--font-size-ui-sm);
 }
+.container_files_conflict_check_row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--font-size-ui-xs);
+  color: var(--color-text-secondary);
+}
+.container_files_modal_chmod_grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+[class*='container_files_modal_chmod_cell'] {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--font-size-ui-xs);
+  color: var(--color-text-secondary);
+}
 .container_files_secret_dialog_actions,
 .container_files_conflict_dialog_actions,
 .container_files_modal_dialog_actions {
@@ -1501,5 +2428,6 @@ function openExternalSshTrustHint(host: Host) {
   justify-content: flex-end;
   gap: 8px;
   margin-top: 4px;
+  flex-wrap: wrap;
 }
 </style>

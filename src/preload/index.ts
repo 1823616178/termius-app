@@ -29,6 +29,7 @@ import type {
   SyncConflictResolutionItem,
   SyncGroupInput,
   SyncLoginInput,
+  SyncNamespace,
   SyncPreferencesUpdate,
   SyncRegisterInput,
   SyncStatusSnapshot,
@@ -140,8 +141,13 @@ const api: Bridge = {
     updatePreferences: (input: SyncPreferencesUpdate) => ipcRenderer.invoke(IPC.syncUpdatePreferences, input),
     listDevices: () => ipcRenderer.invoke(IPC.syncListDevices),
     revokeDevice: (deviceId: string) => ipcRenderer.invoke(IPC.syncRevokeDevice, deviceId),
-    listRevisions: () => ipcRenderer.invoke(IPC.syncListRevisions),
-    restoreRevision: (revision: string) => ipcRenderer.invoke(IPC.syncRestoreRevision, revision),
+    listRevisions: (namespace?: SyncNamespace) =>
+      ipcRenderer.invoke(IPC.syncListRevisions, namespace ? { namespace } : undefined),
+    restoreRevision: (revision: string, namespace?: SyncNamespace) =>
+      ipcRenderer.invoke(
+        IPC.syncRestoreRevision,
+        namespace && namespace !== 'core' ? { revision, namespace } : revision
+      ),
     onStatusChanged: (callback) => {
       const listener = (_event: Electron.IpcRendererEvent, status: SyncStatusSnapshot) => callback(status)
       ipcRenderer.on(IPC.syncStatusChanged, listener)
@@ -192,6 +198,13 @@ const api: Bridge = {
       ipcRenderer.on(IPC.windowState, listener)
       return () => {
         ipcRenderer.removeListener(IPC.windowState, listener)
+      }
+    },
+    onPresence: (callback) => {
+      const listener = (_event: Electron.IpcRendererEvent, present: boolean) => callback(Boolean(present))
+      ipcRenderer.on(IPC.windowPresence, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.windowPresence, listener)
       }
     }
   },
@@ -323,6 +336,8 @@ const api: Bridge = {
     listKnownHosts: () => ipcRenderer.invoke(IPC.rdpKnownHostsList),
     removeKnownHost: (id: string) => ipcRenderer.invoke(IPC.rdpKnownHostRemove, { id }),
     connect: (source: RdpConnectSource) => ipcRenderer.invoke(IPC.rdpConnect, source),
+    setDisplayVisible: (sessionId, visible) =>
+      ipcRenderer.invoke(IPC.rdpSetDisplayVisible, { sessionId, visible }),
     disconnect: (sessionId: string) => ipcRenderer.invoke(IPC.rdpDisconnect, { sessionId }),
     decideCert: (promptId: string, accept: boolean) =>
       ipcRenderer.invoke(IPC.rdpCertDecision, { promptId, accept }),

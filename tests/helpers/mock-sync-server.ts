@@ -1,7 +1,14 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
-import type { SyncDocumentEnvelope, VaultMetadataWire } from '../../src/shared/sync'
+import {
+  MAX_SYNC_DOCUMENT_BYTES,
+  MAX_SYNC_V2_DOCUMENT_BYTES,
+  SYNC_NAMESPACES,
+  type SyncDocumentEnvelope,
+  type SyncNamespace,
+  type VaultMetadataWire
+} from '../../src/shared/sync'
 
 interface StoredDevice {
   id: string
@@ -31,6 +38,7 @@ interface StoredUser {
   passwordHash: string
   vault?: VaultMetadataWire & { id: string }
   revisions: StoredRevision[]
+  namespaceRevisions: Record<SyncNamespace, StoredRevision[]>
   devices: Map<string, StoredDevice>
   idempotencyCache: Map<string, { status: number; body: unknown; headers?: Record<string, string> }>
 }
@@ -41,6 +49,12 @@ interface RefreshRecord {
   used: boolean
 }
 
+export interface MockSyncServerOptions {
+  multiNamespace?: boolean
+  maxDocumentBytes?: number
+  supportsBatchVaultRotate?: boolean
+}
+
 export interface MockSyncServerHandle {
   url: string
   close(): Promise<void>
@@ -48,13 +62,21 @@ export interface MockSyncServerHandle {
     vault?: VaultMetadataWire & { id: string }
     latestRevision?: { revision: string; envelope: SyncDocumentEnvelope }
     revisionCount: number
+    namespaceRevisions: Record<
+      SyncNamespace,
+      {
+        latestRevision?: { revision: string; envelope: SyncDocumentEnvelope }
+        revisionCount: number
+      }
+    >
     devices: number
     refreshRotateCount: number
   }
   pushSimulatedRemoteRevision(
     email: string,
     envelope: SyncDocumentEnvelope,
-    deviceId?: string
+    deviceId?: string,
+    namespace?: SyncNamespace
   ): { revision: string; updatedAt: string }
   expireAllAccessTokens(): void
 }
@@ -70,7 +92,13 @@ function sha256HexOfBase64(b64: string): string {
   return createHash('sha256').update(Buffer.from(b64, 'base64')).digest('hex')
 }
 
-export async function startMockSyncServer(): Promise<MockSyncServerHandle> {
+export async function startMockSyncServer(
+  options: MockSyncServerOptions = {}
+): Promise<MockSyncServerHandle> {
+  const multiNamespace = Boolean(options.multiNamespace)
+  const maxDocumentBytes =
+    options.maxDocumentBytes ?? (multiNamespace ? MAX_SYNC_V2_DOCUMENT_BYTES : MAX_SYNC_DOCUMENT_BYTES)
+  const supportsBatchVaultRotate = options.supportsBatchVaultRotate ?? multiNamespace
   const users = new Map<string, StoredUser>()
   const accessTokens = new Map<string, { email: string; deviceId: string }>()
   const refreshTokens = new Map<string, RefreshRecord>()
@@ -171,11 +199,17 @@ export async function startMockSyncServer(): Promise<MockSyncServerHandle> {
         const now = new Date().toISOString()
         const deviceId = randomUUID()
         const userId = randomUUID()
+        const coreRevs: StoredRevision[] = []
         const user: StoredUser = {
           id: userId,
           email,
           passwordHash: hashPassword(password),
-          revisions: [],
+          revisions: coreRevs,
+          namespaceRevisions: {
+            core: coreRevs,
+            protocols: [],
+            settings: []
+          },
           devices: new Map([
             [
               deviceId,
@@ -282,6 +316,15 @@ export async function startMockSyncServer(): Promise<MockSyncServerHandle> {
         })
       }
 
+      if (multiNamespace && method === 'GET' && path === '/api/v1/capabilities') {
+        return sendJson(res, 200, {
+          maxSchemaVersion: 2,
+          supportedNamespaces: ['core', 'protocols', 'settings'],
+          maxDocumentBytes,
+          supportsBatchVaultRotate
+        })
+      }
+
       if (method === 'GET' && path === '/api/v1/devices') {
         return sendJson(res, 200, {
           items: [...user.devices.values()].map((d) => ({ ...d, current: d.id === deviceId }))
@@ -353,53 +396,98 @@ export async function startMockSyncServer(): Promise<MockSyncServerHandle> {
         const body = (await readJsonBody(req)) as {
           currentPassword: string
           keyEnvelope: VaultMetadataWire
-          document: SyncDocumentEnvelope
+          document?: SyncDocumentEnvelope
+          documents?: Partial<Record<SyncNamespace, SyncDocumentEnvelope>>
+          baseRevisions?: Partial<Record<SyncNamespace, string>>
         }
         if (
           hashPassword(assertNonEmptyString(body.currentPassword, 'currentPassword')) !== user.passwordHash
         ) {
           return sendApiError(res, 401, 'AUTH_INVALID_CREDENTIALS', '当前账号密码不正确')
         }
-        const latestRev = user.revisions.at(-1)?.revision ?? '0'
-        const ifMatchRev = parseIfMatch(req.headers['if-match'])
-        if (ifMatchRev !== latestRev) {
+        const latestCoreRev = user.namespaceRevisions.core.at(-1)?.revision ?? '0'
+        const ifMatchRev = parseIfMatch(req.headers['if-match']) ?? body.baseRevisions?.core ?? null
+        if (ifMatchRev !== latestCoreRev) {
           return sendApiError(res, 409, 'SYNC_REVISION_CONFLICT', '同步版本号不一致')
         }
-        if (sha256HexOfBase64(body.document.ciphertext) !== body.document.ciphertextHash) {
-          return sendApiError(res, 400, 'VALIDATION_ERROR', 'ciphertextHash mismatch')
-        }
-        user.vault = { ...body.keyEnvelope, id: user.vault.id }
-        const nextRev = String(BigInt(latestRev) + BigInt(1))
+
         const now = new Date().toISOString()
         const dev = user.devices.get(deviceId)!
-        user.revisions = [
-          {
-            revision: nextRev,
-            schemaVersion: body.document.schemaVersion,
-            keyVersion: body.keyEnvelope.keyVersion,
-            algorithm: body.document.algorithm,
-            nonce: body.document.nonce,
-            ciphertext: body.document.ciphertext,
-            ciphertextHash: body.document.ciphertextHash,
-            createdByDeviceId: deviceId,
-            createdByDeviceName: dev.name,
-            createdAt: now
+        const batchDocs =
+          multiNamespace && supportsBatchVaultRotate && body.documents
+            ? body.documents
+            : body.document
+              ? { core: body.document }
+              : {}
+
+        if (!batchDocs.core) {
+          return sendApiError(res, 400, 'VALIDATION_ERROR', 'Missing core document on rotate')
+        }
+
+        for (const ns of SYNC_NAMESPACES) {
+          const env = batchDocs[ns]
+          if (!env) continue
+          if (sha256HexOfBase64(env.ciphertext) !== env.ciphertextHash) {
+            return sendApiError(res, 400, 'VALIDATION_ERROR', `${ns} ciphertextHash mismatch`)
           }
-        ]
+          if (ns !== 'core' && body.baseRevisions?.[ns] !== undefined) {
+            const latestNsRev = user.namespaceRevisions[ns].at(-1)?.revision ?? '0'
+            if (String(body.baseRevisions[ns]) !== latestNsRev) {
+              return sendApiError(res, 409, 'SYNC_REVISION_CONFLICT', `${ns} 同步版本号不一致`)
+            }
+          }
+        }
+
+        user.vault = { ...body.keyEnvelope, id: user.vault.id }
+        const nextRevisions: Partial<Record<SyncNamespace, string>> = {}
+        for (const ns of SYNC_NAMESPACES) {
+          const env = batchDocs[ns]
+          if (!env) continue
+          const latestNsRev = user.namespaceRevisions[ns].at(-1)?.revision ?? '0'
+          const nextRev = String(BigInt(latestNsRev) + BigInt(1))
+          nextRevisions[ns] = nextRev
+          const rotatedList: StoredRevision[] = [
+            {
+              revision: nextRev,
+              schemaVersion: env.schemaVersion,
+              keyVersion: body.keyEnvelope.keyVersion,
+              algorithm: env.algorithm,
+              nonce: env.nonce,
+              ciphertext: env.ciphertext,
+              ciphertextHash: env.ciphertextHash,
+              createdByDeviceId: deviceId,
+              createdByDeviceName: dev.name,
+              createdAt: now
+            }
+          ]
+          user.namespaceRevisions[ns] = rotatedList
+          if (ns === 'core') user.revisions = rotatedList
+        }
+
+        const coreNextRev = nextRevisions.core!
         const responseBody = {
           id: user.vault.id,
           keyVersion: user.vault.keyVersion,
-          revision: nextRev,
+          revision: coreNextRev,
+          ...(multiNamespace ? { revisions: nextRevisions } : {}),
           updatedAt: now
         }
-        const headers = { ETag: `"revision-${nextRev}"` }
+        const headers = { ETag: `"revision-${coreNextRev}"` }
         user.idempotencyCache.set(idemKey, { status: 200, body: responseBody, headers })
         return sendJson(res, 200, responseBody, headers)
       }
 
-      if ((method === 'GET' || method === 'HEAD') && path === '/api/v1/sync/document') {
+      const resolveDocNamespace = (p: string): SyncNamespace | null => {
+        if (p === '/api/v1/sync/document') return 'core'
+        if (!multiNamespace) return null
+        const m = /^\/api\/v1\/sync\/documents\/(core|protocols|settings)$/.exec(p)
+        return m ? (m[1] as SyncNamespace) : null
+      }
+
+      const docNs = resolveDocNamespace(path)
+      if ((method === 'GET' || method === 'HEAD') && docNs) {
         if (!user.vault) return sendApiError(res, 404, 'VAULT_NOT_FOUND', '尚未创建同步密钥库')
-        const latest = user.revisions.at(-1)
+        const latest = user.namespaceRevisions[docNs].at(-1)
         if (!latest) return sendApiError(res, 404, 'SYNC_DOCUMENT_NOT_FOUND', '尚未上传同步文档')
         if (method === 'HEAD') {
           res.writeHead(204, {
@@ -427,7 +515,7 @@ export async function startMockSyncServer(): Promise<MockSyncServerHandle> {
         )
       }
 
-      if (method === 'PUT' && path === '/api/v1/sync/document') {
+      if (method === 'PUT' && docNs) {
         const idemKey = String(req.headers['idempotency-key'] ?? '')
         if (!idemKey) return sendApiError(res, 400, 'VALIDATION_ERROR', '缺少 Idempotency-Key')
         if (user.idempotencyCache.has(idemKey)) {
@@ -435,7 +523,8 @@ export async function startMockSyncServer(): Promise<MockSyncServerHandle> {
           return sendJson(res, cached.status, cached.body, cached.headers)
         }
         if (!user.vault) return sendApiError(res, 404, 'VAULT_NOT_FOUND', '尚未创建同步密钥库')
-        const latestRev = user.revisions.at(-1)?.revision ?? '0'
+        const revList = user.namespaceRevisions[docNs]
+        const latestRev = revList.at(-1)?.revision ?? '0'
         const ifMatchRev = parseIfMatch(req.headers['if-match'])
         if (ifMatchRev !== latestRev) {
           return sendApiError(res, 409, 'SYNC_REVISION_CONFLICT', '远端已有更新版本，需要合并冲突')
@@ -451,13 +540,16 @@ export async function startMockSyncServer(): Promise<MockSyncServerHandle> {
         if (doc.algorithm !== 'AES-256-GCM') {
           return sendApiError(res, 400, 'VALIDATION_ERROR', 'Unsupported algorithm')
         }
+        if (Buffer.byteLength(doc.ciphertext, 'utf8') > maxDocumentBytes) {
+          return sendApiError(res, 413, 'PAYLOAD_TOO_LARGE', 'Encrypted document exceeds maxDocumentBytes')
+        }
         if (sha256HexOfBase64(doc.ciphertext) !== doc.ciphertextHash) {
           return sendApiError(res, 400, 'VALIDATION_ERROR', 'ciphertextHash mismatch')
         }
         const nextRev = String(BigInt(latestRev) + BigInt(1))
         const now = new Date().toISOString()
         const dev = user.devices.get(deviceId)!
-        user.revisions.push({
+        revList.push({
           revision: nextRev,
           schemaVersion: doc.schemaVersion,
           keyVersion: doc.keyVersion,
@@ -475,9 +567,18 @@ export async function startMockSyncServer(): Promise<MockSyncServerHandle> {
         return sendJson(res, 200, result, headers)
       }
 
-      if (method === 'GET' && path === '/api/v1/sync/revisions') {
+      const revListMatch =
+        path === '/api/v1/sync/revisions'
+          ? ('core' as SyncNamespace)
+          : multiNamespace
+            ? ((/^\/api\/v1\/sync\/documents\/(core|protocols|settings)\/revisions$/.exec(path)?.[1] as
+                | SyncNamespace
+                | undefined) ?? null)
+            : null
+
+      if (method === 'GET' && revListMatch) {
         return sendJson(res, 200, {
-          items: [...user.revisions].reverse().map((r) => ({
+          items: [...user.namespaceRevisions[revListMatch]].reverse().map((r) => ({
             revision: r.revision,
             schemaVersion: r.schemaVersion,
             keyVersion: r.keyVersion,
@@ -489,24 +590,35 @@ export async function startMockSyncServer(): Promise<MockSyncServerHandle> {
         })
       }
 
-      if (method === 'POST' && /^\/api\/v1\/sync\/revisions\/\d+\/restore$/.test(path)) {
-        const rev = path.split('/')[4]!
+      const restoreMatch = (() => {
+        const legacy = /^\/api\/v1\/sync\/revisions\/(\d+)\/restore$/.exec(path)
+        if (legacy) return { ns: 'core' as SyncNamespace, rev: legacy[1]! }
+        if (!multiNamespace) return null
+        const v2 = /^\/api\/v1\/sync\/documents\/(core|protocols|settings)\/revisions\/(\d+)\/restore$/.exec(
+          path
+        )
+        return v2 ? { ns: v2[1] as SyncNamespace, rev: v2[2]! } : null
+      })()
+
+      if (method === 'POST' && restoreMatch) {
+        const { ns, rev } = restoreMatch
         const idemKey = String(req.headers['idempotency-key'] ?? '')
         if (!idemKey) return sendApiError(res, 400, 'VALIDATION_ERROR', '缺少 Idempotency-Key')
         if (!user.vault) return sendApiError(res, 404, 'VAULT_NOT_FOUND', '尚未创建同步密钥库')
-        const found = user.revisions.find((r) => r.revision === rev)
+        const revList = user.namespaceRevisions[ns]
+        const found = revList.find((r) => r.revision === rev)
         if (!found) return sendApiError(res, 404, 'SYNC_REVISION_NOT_FOUND', '同步历史版本不存在')
         if (found.keyVersion !== user.vault.keyVersion) {
           return sendApiError(res, 409, 'VAULT_KEY_VERSION_MISMATCH', '历史版本使用的密钥已不再有效')
         }
-        const latestRev = user.revisions.at(-1)?.revision ?? '0'
+        const latestRev = revList.at(-1)?.revision ?? '0'
         if (parseIfMatch(req.headers['if-match']) !== latestRev) {
           return sendApiError(res, 409, 'SYNC_REVISION_CONFLICT', '同步版本号不一致')
         }
         const nextRev = String(BigInt(latestRev) + BigInt(1))
         const now = new Date().toISOString()
         const dev = user.devices.get(deviceId)!
-        user.revisions.push({
+        revList.push({
           ...found,
           revision: nextRev,
           createdByDeviceId: deviceId,
@@ -534,37 +646,59 @@ export async function startMockSyncServer(): Promise<MockSyncServerHandle> {
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
     getUserState(email: string) {
       const user = users.get(email.toLowerCase())
-      const latest = user?.revisions.at(-1)
-      return {
-        vault: user?.vault,
-        latestRevision: latest
+      const formatRev = (r?: StoredRevision) =>
+        r
           ? {
-              revision: latest.revision,
+              revision: r.revision,
               envelope: {
-                revision: latest.revision,
-                schemaVersion: latest.schemaVersion,
-                keyVersion: latest.keyVersion,
-                algorithm: latest.algorithm,
-                nonce: latest.nonce,
-                ciphertext: latest.ciphertext,
-                ciphertextHash: latest.ciphertextHash,
-                updatedByDeviceId: latest.createdByDeviceId,
-                updatedAt: latest.createdAt
+                revision: r.revision,
+                schemaVersion: r.schemaVersion,
+                keyVersion: r.keyVersion,
+                algorithm: r.algorithm,
+                nonce: r.nonce,
+                ciphertext: r.ciphertext,
+                ciphertextHash: r.ciphertextHash,
+                updatedByDeviceId: r.createdByDeviceId,
+                updatedAt: r.createdAt
               }
             }
-          : undefined,
-        revisionCount: user?.revisions.length ?? 0,
+          : undefined
+      const latest = user?.namespaceRevisions.core.at(-1)
+      return {
+        vault: user?.vault,
+        latestRevision: formatRev(latest),
+        revisionCount: user?.namespaceRevisions.core.length ?? 0,
+        namespaceRevisions: {
+          core: {
+            latestRevision: formatRev(user?.namespaceRevisions.core.at(-1)),
+            revisionCount: user?.namespaceRevisions.core.length ?? 0
+          },
+          protocols: {
+            latestRevision: formatRev(user?.namespaceRevisions.protocols.at(-1)),
+            revisionCount: user?.namespaceRevisions.protocols.length ?? 0
+          },
+          settings: {
+            latestRevision: formatRev(user?.namespaceRevisions.settings.at(-1)),
+            revisionCount: user?.namespaceRevisions.settings.length ?? 0
+          }
+        },
         devices: user?.devices.size ?? 0,
         refreshRotateCount
       }
     },
-    pushSimulatedRemoteRevision(email: string, envelope: SyncDocumentEnvelope, deviceId = 'remote-peer') {
+    pushSimulatedRemoteRevision(
+      email: string,
+      envelope: SyncDocumentEnvelope,
+      deviceId = 'remote-peer',
+      namespace: SyncNamespace = 'core'
+    ) {
       const user = users.get(email.toLowerCase())
       if (!user) throw new Error(`Mock user not found: ${email}`)
-      const latestRev = user.revisions.at(-1)?.revision ?? '0'
+      const revList = user.namespaceRevisions[namespace]
+      const latestRev = revList.at(-1)?.revision ?? '0'
       const nextRev = String(BigInt(latestRev) + BigInt(1))
       const updatedAt = envelope.updatedAt || new Date().toISOString()
-      user.revisions.push({
+      revList.push({
         revision: nextRev,
         schemaVersion: envelope.schemaVersion,
         keyVersion: envelope.keyVersion,

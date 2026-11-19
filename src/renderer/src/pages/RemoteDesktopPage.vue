@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   Monitor,
   Plus,
@@ -14,7 +14,9 @@ import {
   Settings,
   Copy,
   SquareTerminal,
-  RefreshCw
+  RefreshCw,
+  PanelLeftClose,
+  PanelLeftOpen
 } from '@lucide/vue'
 import { instanceClass, safeInstanceToken } from '../../../shared/classes'
 import type { Host } from '../../../shared/contracts'
@@ -22,24 +24,31 @@ import {
   RDP_DEFAULT_PORT,
   type RdpLaunchMode,
   type RdpProfile,
-  type RdpProfileInput
+  type RdpProfileInput,
+  type RdpProfileOptions
 } from '../../../shared/rdp'
+import OrbitSelect from '../components/OrbitSelect.vue'
 import RdpEmbeddedCanvas from '../components/RdpEmbeddedCanvas.vue'
 import RdpProfileEditor from '../components/RdpProfileEditor.vue'
-import { t } from '../services/i18n'
+import { locale, t } from '../services/i18n'
 import {
   activeRdpCertPrompt,
   activeRdpSessionId,
+  buildReconnectSourceForSession,
+  cancelRdpPasswordPrompt,
   closeRdpSessionTab,
   connectRdpSession,
   currentRdpSession,
   decideRdpCertPrompt,
   disconnectRdpSession,
   ensureRdpWorkspaceListeners,
+  findSavedRdpProfile,
   markRdpSessionStatus,
   rdpConnecting,
   rdpConnectError,
+  rdpPasswordPrompt,
   rdpSessions,
+  requestRdpPasswordPrompt,
   type RdpClientSession
 } from '../services/rdp-workspace'
 import {
@@ -59,13 +68,17 @@ const c = (base: string, token: string) => instanceClass(base, safeInstanceToken
 
 const search = ref('')
 const favoritesOnly = ref(false)
+const sidebarCollapsed = ref(false)
 const editorOpen = ref(false)
 const editorMode = ref<'add' | 'edit' | 'quick'>('add')
 const editingProfile = ref<RdpProfile>()
 const editorPrefillHost = ref<Host>()
 const editorBusy = ref(false)
 const editorError = ref('')
-const sessionSeqMap = reactive<Record<string, number>>({})
+const deleteTarget = ref<RdpProfile | null>(null)
+const promptPasswordValue = ref('')
+const promptPasswordInputRef = ref<HTMLInputElement>()
+const embeddedSessions = computed(() => rdpSessions.value.filter((item) => item.mode === 'embedded'))
 
 const inlineQuick = reactive({
   host: '',
@@ -75,9 +88,35 @@ const inlineQuick = reactive({
   launchMode: 'inherit' as 'inherit' | RdpLaunchMode
 })
 
+function onGlobalKeydown(event: KeyboardEvent): void {
+  if (event.key !== 'Escape') return
+  if (activeRdpCertPrompt.value) {
+    event.preventDefault()
+    void decideRdpCertPrompt(false)
+  } else if (rdpPasswordPrompt.value) {
+    event.preventDefault()
+    closePasswordModal()
+  } else if (deleteTarget.value) {
+    event.preventDefault()
+    deleteTarget.value = null
+  }
+}
+
 onMounted(() => {
   ensureRdpWorkspaceListeners()
   void refreshRdpProbe(false).catch(() => {})
+  window.addEventListener('keydown', onGlobalKeydown)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onGlobalKeydown)
+})
+
+watch(rdpPasswordPrompt, async (next) => {
+  if (!next) return
+  promptPasswordValue.value = ''
+  await nextTick()
+  promptPasswordInputRef.value?.focus()
 })
 
 const filteredProfiles = computed(() => {
@@ -111,6 +150,15 @@ const globalPreferredLabel = computed(() =>
     ? t('remotePage.modeBadgeB')
     : t('remotePage.modeBadgeA')
 )
+
+const inlineModeOptions = computed(() => {
+  void locale.value
+  return [
+    { value: 'inherit', label: globalPreferredLabel.value },
+    { value: 'external', label: t('remotePage.modeBadgeA') },
+    { value: 'embedded', label: t('remotePage.modeBadgeB') }
+  ]
+})
 
 const needsMissingBanner = computed(
   () => protocolSettings.value.rdp.preferredMode === 'external' && !rdpProbe.value.schemeAAvailable
@@ -146,17 +194,53 @@ function openQuickModal(): void {
   editorOpen.value = true
 }
 
-async function handleConnectProfile(profile: RdpProfile): Promise<void> {
+function closePasswordModal(): void {
+  promptPasswordValue.value = ''
+  cancelRdpPasswordPrompt()
+}
+
+async function submitPasswordModal(): Promise<void> {
+  const pending = rdpPasswordPrompt.value
+  if (!pending) return
+  const pw = promptPasswordValue.value
+  promptPasswordValue.value = ''
+  cancelRdpPasswordPrompt()
+  if (pending.replaceSessionId) {
+    await closeRdpSessionTab(pending.replaceSessionId)
+  }
   try {
-    await connectRdpSession({ kind: 'profile', profileId: profile.id })
+    await connectRdpSession({
+      ...pending.source,
+      ...(pw ? { password: pw } : {})
+    })
   } catch (err) {
-    notify(err instanceof Error ? err.message : '连接 RDP 失败')
+    notify(err instanceof Error ? err.message : t('remotePage.connectFailed'))
+  }
+}
+
+async function handleConnectProfile(profile: RdpProfile, password?: string): Promise<void> {
+  if (rdpConnecting.value) return
+  if (!password && !profile.hasPassword) {
+    requestRdpPasswordPrompt({
+      title: profile.name,
+      endpoint: `${profile.username ? `${profile.username}@` : ''}${profile.host}:${profile.port}`,
+      source: { kind: 'profile', profileId: profile.id }
+    })
+    return
+  }
+  try {
+    await connectRdpSession({ kind: 'profile', profileId: profile.id, ...(password ? { password } : {}) })
+  } catch (err) {
+    notify(err instanceof Error ? err.message : t('remotePage.connectFailed'))
   }
 }
 
 async function handleQuickConnectFromSshHost(sshHost: Host): Promise<void> {
-  try {
-    await connectRdpSession({
+  if (rdpConnecting.value) return
+  requestRdpPasswordPrompt({
+    title: `${sshHost.name} (RDP)`,
+    endpoint: `${sshHost.username ? `${sshHost.username}@` : ''}${sshHost.address}:${RDP_DEFAULT_PORT}`,
+    source: {
       kind: 'adhoc',
       name: `${sshHost.name} (RDP)`,
       host: sshHost.address,
@@ -164,17 +248,18 @@ async function handleQuickConnectFromSshHost(sshHost: Host): Promise<void> {
       domain: '',
       username: sshHost.username,
       options: {}
-    })
-  } catch (err) {
-    notify(err instanceof Error ? err.message : '连接 RDP 失败')
-  }
+    }
+  })
 }
 
 async function handleInlineQuickConnect(): Promise<void> {
+  if (rdpConnecting.value) return
   if (!inlineQuick.host.trim()) {
     notify(t('rdpEditor.hostPlaceholder'))
     return
   }
+  const passwordSnapshot = inlineQuick.password
+  inlineQuick.password = ''
   try {
     await connectRdpSession({
       kind: 'adhoc',
@@ -183,12 +268,12 @@ async function handleInlineQuickConnect(): Promise<void> {
       port: Number(inlineQuick.port) || RDP_DEFAULT_PORT,
       domain: '',
       username: inlineQuick.username.trim(),
-      ...(inlineQuick.password ? { password: inlineQuick.password } : {}),
+      ...(passwordSnapshot ? { password: passwordSnapshot } : {}),
       ...(inlineQuick.launchMode !== 'inherit' ? { launchModeOverride: inlineQuick.launchMode } : {}),
       options: {}
     })
   } catch (err) {
-    notify(err instanceof Error ? err.message : '连接 RDP 失败')
+    notify(err instanceof Error ? err.message : t('remotePage.connectFailed'))
   }
 }
 
@@ -199,19 +284,13 @@ async function handleSaveEditor(input: RdpProfileInput, connectAfter: boolean): 
     const savedList = await saveRdpProfile(input)
     editorOpen.value = false
     if (connectAfter) {
-      const target =
-        (input.id ? savedList.find((item) => item.id === input.id) : undefined) ??
-        savedList.find((item) => item.name === input.name)
+      const target = findSavedRdpProfile(savedList, input.id, input.name)
       if (target) {
-        await connectRdpSession({
-          kind: 'profile',
-          profileId: target.id,
-          ...(input.password && !input.savePassword ? { password: input.password } : {})
-        })
+        await handleConnectProfile(target, input.savePassword ? undefined : input.password)
       }
     }
   } catch (err) {
-    editorError.value = err instanceof Error ? err.message : '保存远程桌面配置失败'
+    editorError.value = err instanceof Error ? err.message : t('remotePage.saveFailed')
   } finally {
     editorBusy.value = false
   }
@@ -225,15 +304,7 @@ async function handleConnectQuickModal(payload: {
   username: string
   password: string
   launchMode?: 'external' | 'embedded'
-  resolutionMode: 'fit' | 'fixed'
-  width: number
-  height: number
-  colorDepth: 16 | 24 | 32
-  qualityPreset: 'lan' | 'balanced' | 'low'
-  securityLayer: 'negotiate' | 'nla' | 'tls'
-  certPolicy: 'tofu' | 'strict' | 'warn-allow'
-  enableClipboard: boolean
-  enableAudio: boolean
+  options: RdpProfileOptions
 }): Promise<void> {
   editorBusy.value = true
   editorError.value = ''
@@ -247,79 +318,48 @@ async function handleConnectQuickModal(payload: {
       username: payload.username,
       ...(payload.password ? { password: payload.password } : {}),
       ...(payload.launchMode ? { launchModeOverride: payload.launchMode } : {}),
-      options: {
-        resolutionMode: payload.resolutionMode,
-        width: payload.width,
-        height: payload.height,
-        colorDepth: payload.colorDepth,
-        qualityPreset: payload.qualityPreset,
-        securityLayer: payload.securityLayer,
-        certPolicy: payload.certPolicy,
-        enableClipboard: payload.enableClipboard,
-        enableAudio: payload.enableAudio
-      }
+      options: payload.options
     })
     editorOpen.value = false
   } catch (err) {
-    editorError.value = err instanceof Error ? err.message : '连接失败'
+    editorError.value = err instanceof Error ? err.message : t('remotePage.connectFailed')
   } finally {
     editorBusy.value = false
   }
 }
 
-async function handleDeleteProfile(profile: RdpProfile): Promise<void> {
-  if (!window.confirm(t('remotePage.deleteConfirm', { name: profile.name }))) return
-  await removeRdpProfile(profile.id)
+async function confirmDeleteProfile(): Promise<void> {
+  const target = deleteTarget.value
+  deleteTarget.value = null
+  if (!target) return
+  await removeRdpProfile(target.id)
 }
 
-async function handleSwitchSessionToEmbedded(session: RdpClientSession): Promise<void> {
-  const prevProfileId = session.profileId
-  const snapshotHost = session.host
-  const snapshotPort = session.port
-  const snapshotTitle = session.title
-  const snapshotDomain = session.domain
-  const snapshotUser = session.username
-  await disconnectRdpSession(session.sessionId).catch(() => {})
-  if (prevProfileId) {
-    await connectRdpSession({
-      kind: 'profile',
-      profileId: prevProfileId,
-      launchModeOverride: 'embedded'
-    }).catch((err) => notify(err instanceof Error ? err.message : '切换失败'))
-  } else {
-    await connectRdpSession({
-      kind: 'adhoc',
-      name: snapshotTitle,
-      host: snapshotHost,
-      port: snapshotPort,
-      domain: snapshotDomain,
-      username: snapshotUser,
-      launchModeOverride: 'embedded',
-      options: {}
-    }).catch((err) => notify(err instanceof Error ? err.message : '切换失败'))
+async function reconnectOrSwitchSession(session: RdpClientSession, targetMode: RdpLaunchMode): Promise<void> {
+  const source = buildReconnectSourceForSession(session, targetMode)
+  const linkedProfile = session.profileId
+    ? rdpProfiles.value.find((item) => item.id === session.profileId)
+    : undefined
+  const needsPasswordPrompt = !linkedProfile || !linkedProfile.hasPassword
+  if (needsPasswordPrompt) {
+    requestRdpPasswordPrompt({
+      title: session.title,
+      endpoint: `${session.username ? `${session.username}@` : ''}${session.host}:${session.port}`,
+      source,
+      replaceSessionId: session.sessionId
+    })
+    return
   }
-}
-
-async function handleReconnectEmbedded(session: RdpClientSession): Promise<void> {
   await closeRdpSessionTab(session.sessionId)
-  if (session.profileId) {
-    await connectRdpSession({
-      kind: 'profile',
-      profileId: session.profileId,
-      launchModeOverride: session.mode
-    }).catch((err) => notify(err instanceof Error ? err.message : '重连失败'))
-  } else {
-    await connectRdpSession({
-      kind: 'adhoc',
-      name: session.title,
-      host: session.host,
-      port: session.port,
-      domain: session.domain,
-      username: session.username,
-      launchModeOverride: session.mode,
-      options: {}
-    }).catch((err) => notify(err instanceof Error ? err.message : '重连失败'))
-  }
+  await connectRdpSession(source).catch((err) =>
+    notify(
+      err instanceof Error
+        ? err.message
+        : targetMode !== session.mode
+          ? t('remotePage.switchFailed')
+          : t('remotePage.reconnectFailed')
+    )
+  )
 }
 
 async function copyInstallCommand(): Promise<void> {
@@ -338,7 +378,7 @@ function statusText(status: RdpClientSession['status']): string {
 
 <template>
   <section class="container_remote_page_shell_base" data-testid="remote-page">
-    <aside class="container_remote_sidebar_panel_base">
+    <aside v-show="!sidebarCollapsed" class="container_remote_sidebar_panel_base">
       <div class="container_remote_sidebar_header_box">
         <span class="container_remote_sidebar_header_eyebrow">{{ t('remotePage.eyebrow') }}</span>
         <h2 class="container_remote_sidebar_header_title">{{ t('remotePage.title') }}</h2>
@@ -406,6 +446,7 @@ function statusText(status: RdpClientSession['status']): string {
               <button
                 :class="c('container_remote_card_saved_connbtn', item.id)"
                 type="button"
+                :disabled="rdpConnecting"
                 @click="handleConnectProfile(item)"
               >
                 {{ t('remotePage.connectBtn') }}
@@ -421,7 +462,8 @@ function statusText(status: RdpClientSession['status']): string {
               <button
                 :class="c('container_remote_card_saved_delbtn', item.id)"
                 type="button"
-                @click="handleDeleteProfile(item)"
+                :aria-label="t('remotePage.deleteBtn')"
+                @click="deleteTarget = item"
               >
                 <Trash2 :size="12" />
               </button>
@@ -460,6 +502,7 @@ function statusText(status: RdpClientSession['status']): string {
               <button
                 :class="c('container_remote_card_ssh_connbtn', ssh.id)"
                 type="button"
+                :disabled="rdpConnecting"
                 @click="handleQuickConnectFromSshHost(ssh)"
               >
                 {{ t('remotePage.linkConnectBtn') }}
@@ -473,6 +516,17 @@ function statusText(status: RdpClientSession['status']): string {
     <div class="container_remote_stage_panel_base">
       <header class="container_remote_stage_banner_row">
         <div class="container_remote_stage_probe_group">
+          <button
+            class="container_remote_stage_sidebar_toggle"
+            type="button"
+            :aria-label="t('remotePage.toggleSidebar')"
+            :title="t('remotePage.toggleSidebar')"
+            :aria-pressed="!sidebarCollapsed"
+            @click="sidebarCollapsed = !sidebarCollapsed"
+          >
+            <PanelLeftOpen v-if="sidebarCollapsed" :size="14" />
+            <PanelLeftClose v-else :size="14" />
+          </button>
           <span class="container_remote_stage_mode_pill" data-testid="remote-global-mode-pill">
             {{ globalPreferredLabel }}
           </span>
@@ -527,7 +581,12 @@ function statusText(status: RdpClientSession['status']): string {
         {{ rdpConnectError }}
       </p>
 
-      <div v-if="rdpSessions.length > 0" class="container_remote_tabs_bar_row">
+      <div
+        v-if="rdpSessions.length > 0"
+        class="container_remote_tabs_bar_row"
+        role="tablist"
+        :aria-label="t('remotePage.tabsAria')"
+      >
         <div
           v-for="tab in rdpSessions"
           :key="tab.sessionId"
@@ -537,6 +596,7 @@ function statusText(status: RdpClientSession['status']): string {
           tabindex="0"
           @click="activeRdpSessionId = tab.sessionId"
           @keydown.enter="activeRdpSessionId = tab.sessionId"
+          @keydown.space.prevent="activeRdpSessionId = tab.sessionId"
         >
           <span :class="c('container_remote_tabs_scheme_tag', tab.sessionId)">
             {{ tab.mode === 'embedded' ? 'B' : 'A' }}
@@ -564,15 +624,20 @@ function statusText(status: RdpClientSession['status']): string {
         </div>
 
         <RdpEmbeddedCanvas
-          v-if="currentRdpSession.mode === 'embedded'"
-          :key="`${currentRdpSession.sessionId}-${sessionSeqMap[currentRdpSession.sessionId] ?? 0}`"
-          :session="currentRdpSession"
-          @state-change="(status, msg) => markRdpSessionStatus(currentRdpSession!.sessionId, status, msg)"
-          @disconnect="disconnectRdpSession(currentRdpSession!.sessionId)"
-          @reconnect="handleReconnectEmbedded(currentRdpSession!)"
+          v-for="session in embeddedSessions"
+          :key="session.sessionId"
+          v-show="session.sessionId === currentRdpSession.sessionId"
+          :session="session"
+          @state-change="(status, msg) => markRdpSessionStatus(session.sessionId, status, msg)"
+          @disconnect="disconnectRdpSession(session.sessionId)"
+          @reconnect="reconnectOrSwitchSession(session, session.mode)"
         />
 
-        <div v-else class="container_remote_external_card_panel" data-testid="rdp-external-session-card">
+        <div
+          v-if="currentRdpSession.mode === 'external'"
+          class="container_remote_external_card_panel"
+          data-testid="rdp-external-session-card"
+        >
           <SquareTerminal :size="28" />
           <h3 class="container_remote_external_card_title">
             {{ t('remotePage.externalRunningTitle') }}
@@ -600,10 +665,21 @@ function statusText(status: RdpClientSession['status']): string {
           </p>
           <div class="container_remote_external_card_actions">
             <button
+              v-if="currentRdpSession.status === 'exited' || currentRdpSession.status === 'error'"
+              class="container_remote_external_relaunch_btn"
+              type="button"
+              :disabled="rdpConnecting"
+              @click="reconnectOrSwitchSession(currentRdpSession, 'external')"
+            >
+              <RefreshCw :size="14" />
+              {{ t('remotePage.reconnectExternalBtn') }}
+            </button>
+            <button
               class="container_remote_external_switch_btn"
               type="button"
               data-testid="rdp-switch-embedded-btn"
-              @click="handleSwitchSessionToEmbedded(currentRdpSession)"
+              :disabled="rdpConnecting"
+              @click="reconnectOrSwitchSession(currentRdpSession, 'embedded')"
             >
               <RefreshCw :size="14" />
               {{ t('remotePage.switchToEmbeddedBtn') }}
@@ -666,24 +742,17 @@ function statusText(status: RdpClientSession['status']): string {
               type="password"
             />
           </label>
-          <label class="container_remote_inline_mode_label">
-            {{ t('remotePage.inlineMode') }}
-            <select
-              v-model="inlineQuick.launchMode"
-              class="container_remote_inline_mode_select"
-              data-testid="remote-inline-mode"
-            >
-              <option class="container_remote_inline_mode_optinh" value="inherit">
-                {{ globalPreferredLabel }}
-              </option>
-              <option class="container_remote_inline_mode_optext" value="external">
-                {{ t('remotePage.modeBadgeA') }}
-              </option>
-              <option class="container_remote_inline_mode_optemb" value="embedded">
-                {{ t('remotePage.modeBadgeB') }}
-              </option>
-            </select>
-          </label>
+          <div class="container_remote_inline_mode_label" data-testid="remote-inline-mode">
+            <span class="container_remote_inline_mode_text">{{ t('remotePage.inlineMode') }}</span>
+            <OrbitSelect
+              :model-value="inlineQuick.launchMode"
+              :options="inlineModeOptions"
+              :aria-label="t('remotePage.inlineMode')"
+              width="100%"
+              instance="remote-inline-mode"
+              @update:model-value="inlineQuick.launchMode = $event as 'inherit' | RdpLaunchMode"
+            />
+          </div>
           <button
             class="container_remote_inline_connect_btn"
             type="submit"
@@ -709,6 +778,71 @@ function statusText(status: RdpClientSession['status']): string {
       @save="handleSaveEditor"
       @connect-quick="handleConnectQuickModal"
     />
+
+    <!-- Delete Profile Confirm Modal -->
+    <div
+      v-if="deleteTarget"
+      class="container_remote_del_backdrop_overlay"
+      role="dialog"
+      aria-modal="true"
+      @click.self="deleteTarget = null"
+    >
+      <div class="container_remote_del_dialog_card">
+        <h3 class="container_remote_del_dialog_title">{{ t('remotePage.deleteProfileTitle') }}</h3>
+        <p class="container_remote_del_dialog_desc">
+          {{ t('remotePage.deleteConfirm', { name: deleteTarget.name }) }}
+        </p>
+        <div class="container_remote_del_actions_row">
+          <button class="container_remote_del_cancel_btn" type="button" @click="deleteTarget = null">
+            {{ t('actionDialog.cancel') }}
+          </button>
+          <button
+            class="container_remote_del_confirm_btn"
+            type="button"
+            data-danger="true"
+            @click="confirmDeleteProfile"
+          >
+            {{ t('remotePage.deleteBtn') }}
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Session Password Prompt Modal -->
+    <div
+      v-if="rdpPasswordPrompt"
+      class="container_remote_pw_backdrop_overlay"
+      role="dialog"
+      aria-modal="true"
+      @click.self="closePasswordModal"
+    >
+      <form class="container_remote_pw_dialog_card" @submit.prevent="submitPasswordModal">
+        <h3 class="container_remote_pw_dialog_title">
+          {{ t('remotePage.passwordPromptTitle', { name: rdpPasswordPrompt.title }) }}
+        </h3>
+        <p class="container_remote_pw_dialog_desc">
+          {{ t('remotePage.passwordPromptDesc', { endpoint: rdpPasswordPrompt.endpoint }) }}
+        </p>
+        <label class="container_remote_pw_field_label">
+          {{ t('rdpEditor.password') }}
+          <input
+            ref="promptPasswordInputRef"
+            v-model="promptPasswordValue"
+            class="container_remote_pw_field_input"
+            type="password"
+            autocomplete="current-password"
+          />
+        </label>
+        <div class="container_remote_pw_actions_row">
+          <button class="container_remote_pw_cancel_btn" type="button" @click="closePasswordModal">
+            {{ t('actionDialog.cancel') }}
+          </button>
+          <button class="container_remote_pw_submit_btn" type="submit" data-primary="true">
+            {{ t('remotePage.passwordPromptConnect') }}
+          </button>
+        </div>
+      </form>
+    </div>
 
     <div
       v-if="activeRdpCertPrompt"
@@ -963,6 +1097,14 @@ function statusText(status: RdpClientSession['status']): string {
   align-items: center;
   gap: 8px;
 }
+.container_remote_stage_sidebar_toggle {
+  min-height: 28px;
+  padding: 4px 7px;
+  border-radius: 7px;
+  border: 1px solid var(--color-border-control);
+  background: var(--color-surface-1);
+  color: var(--color-text-primary);
+}
 .container_remote_stage_mode_pill {
   padding: 4px 10px;
   border-radius: 999px;
@@ -1138,6 +1280,7 @@ function statusText(status: RdpClientSession['status']): string {
   justify-content: center;
   gap: 10px;
 }
+.container_remote_external_relaunch_btn,
 .container_remote_external_switch_btn,
 .container_remote_external_stop_btn {
   display: inline-flex;
@@ -1147,6 +1290,7 @@ function statusText(status: RdpClientSession['status']): string {
   border-radius: 8px;
   font-size: var(--font-size-ui-xs);
 }
+.container_remote_external_relaunch_btn,
 .container_remote_external_switch_btn {
   border: 1px solid var(--color-accent-primary);
   background: var(--color-accent-primary-soft);
@@ -1209,6 +1353,8 @@ function statusText(status: RdpClientSession['status']): string {
   color: var(--color-accent-primary-bright);
   font-weight: 600;
 }
+.container_remote_del_backdrop_overlay,
+.container_remote_pw_backdrop_overlay,
 .container_remote_cert_backdrop_overlay {
   position: fixed;
   inset: 0;
@@ -1217,6 +1363,50 @@ function statusText(status: RdpClientSession['status']): string {
   place-items: center;
   background: rgba(5, 8, 13, 0.78);
   backdrop-filter: blur(6px);
+}
+.container_remote_del_dialog_card,
+.container_remote_pw_dialog_card {
+  width: min(440px, 92vw);
+  padding: 20px;
+  border-radius: 14px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-surface-card);
+  box-shadow: var(--shadow-3d-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.container_remote_del_dialog_title,
+.container_remote_pw_dialog_title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--font-size-ui-lg);
+  color: var(--color-text-heading);
+}
+.container_remote_del_dialog_desc,
+.container_remote_pw_dialog_desc {
+  margin: 0;
+  font-size: var(--font-size-ui-sm);
+  color: var(--color-text-secondary);
+}
+.container_remote_pw_field_label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: var(--font-size-ui-xs);
+  color: var(--color-text-secondary);
+}
+.container_remote_del_actions_row,
+.container_remote_pw_actions_row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.container_remote_del_cancel_btn,
+.container_remote_pw_cancel_btn {
+  border: 1px solid var(--color-border-control);
+  background: var(--color-surface-1);
+  color: var(--color-text-secondary);
 }
 .container_remote_cert_dialog_card {
   width: min(560px, 92vw);

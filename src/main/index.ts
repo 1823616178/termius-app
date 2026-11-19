@@ -61,10 +61,12 @@ import {
 } from '../shared/sftp'
 import {
   syncGroupInputSchema,
+  syncListRevisionsInputSchema,
   syncLoginInputSchema,
   syncPreferencesUpdateSchema,
   syncRegisterInputSchema,
   syncResolveConflictsSchema,
+  syncRestoreRevisionInputSchema,
   syncTunnelInputSchema,
   syncVaultCreateInputSchema,
   syncVaultRecoverInputSchema,
@@ -156,11 +158,27 @@ const pendingSftpRequests = new Map<
   string,
   {
     sessionId: string
+    ownerWindowId?: number
+    isTransfer?: boolean
     resolve: (value: unknown) => void
     reject: (error: Error) => void
     timer?: NodeJS.Timeout
   }
 >()
+
+function countActiveSftpTransfers(ownerWindowId?: number): number {
+  let count = 0
+  for (const pending of pendingSftpRequests.values()) {
+    if (!pending.isTransfer) continue
+    if (ownerWindowId !== undefined && pending.ownerWindowId !== ownerWindowId) continue
+    count++
+  }
+  return count
+}
+
+function countActiveAllTransfers(ownerWindowId?: number): number {
+  return countActiveSftpTransfers(ownerWindowId) + (filesService?.getActiveTransferCount(ownerWindowId) ?? 0)
+}
 let pendingSessionOpens = 0
 let quitting = false
 let shuttingDown = false
@@ -327,7 +345,8 @@ function callSftpWorker(
   owner: BrowserWindow,
   sessionId: string,
   payload: Record<string, unknown>,
-  timeoutMs = 30_000
+  timeoutMs = 30_000,
+  isTransfer = false
 ): Promise<unknown> {
   const session = sessions.get(sessionId)
   if (!session || session.owner !== owner.id || session.kind !== 'ssh') {
@@ -343,7 +362,14 @@ function callSftpWorker(
             reject(new Error('SFTP 操作超时，请检查网络连接'))
           }, timeoutMs)
         : undefined
-    pendingSftpRequests.set(requestId, { sessionId, resolve, reject, timer })
+    pendingSftpRequests.set(requestId, {
+      sessionId,
+      ownerWindowId: owner.id,
+      isTransfer,
+      resolve,
+      reject,
+      timer
+    })
     worker.postMessage({ type: 'sftp:request', requestId, sessionId, ...payload })
   })
 }
@@ -400,7 +426,17 @@ async function expandLocalUploadPaths(localPaths: string[]): Promise<SftpExpande
 
 function registerSessionSecurity(): void {
   const defaultSession = electronSession.defaultSession
-  defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
+  defaultSession.setPermissionRequestHandler((contents, permission, callback) => {
+    if (permission === 'clipboard-read' || permission === 'clipboard-sanitized-write') {
+      const owner = BrowserWindow.fromWebContents(contents)
+      const allowed = Boolean(
+        owner && windows.has(owner.id) && owner.isFocused() && trustedUrl(contents.getURL())
+      )
+      callback(allowed)
+      return
+    }
+    callback(false)
+  })
   defaultSession.webRequest.onHeadersReceived((details, callback) => {
     const devOrigin = rendererUrl ? new URL(rendererUrl).origin : ''
     const connect = [
@@ -427,7 +463,6 @@ function registerIpc(): void {
     .refine((v) => Buffer.byteLength(v, 'utf8') <= MAX_CLIPBOARD_BYTES, '复制内容超过 1 MiB 限制')
   const openExternalSchema = z.string().min(1).max(2048)
   const revokeDeviceSchema = z.string().min(1).max(200)
-  const revisionSchema = z.string().regex(/^\d+$/, '无效版本号').max(32)
   const trustDecisionSchema = z.object({ id: idSchema, accept: z.boolean() }).strict()
   const windowActionSchema = z.enum(['minimize', 'maximize', 'close', 'hide-to-tray', 'restore-from-tray'])
   const defaultTrayState = {
@@ -448,9 +483,16 @@ function registerIpc(): void {
     action: string,
     timeoutMs?: number
   ): void => {
-    ipc.handleSchema(channel, schema, (input, owner) => {
+    ipc.handleSchema(channel, schema, async (input, owner) => {
       const { sessionId, ...rest } = input
-      return callSftpWorker(owner, sessionId, { action, ...rest }, timeoutMs)
+      const isTransfer = action === 'upload' || action === 'download'
+      let payload: Record<string, unknown> = { action, ...rest }
+      if (isTransfer) {
+        const settings = await filesService?.getProtocolSettings().catch(() => undefined)
+        const speedLimitBps = Math.max(0, settings?.files.speedLimitKBps ?? 0) * 1024
+        payload = { ...payload, speedLimitBps }
+      }
+      return callSftpWorker(owner, sessionId, payload, timeoutMs, isTransfer)
     })
   }
 
@@ -661,10 +703,14 @@ function registerIpc(): void {
   )
   ipc.handle(IPC.syncListDevices, () => syncService.listDevices())
   ipc.handleSchema(IPC.syncRevokeDevice, revokeDeviceSchema, (deviceId) => syncService.revokeDevice(deviceId))
-  ipc.handle(IPC.syncListRevisions, () => syncService.listRevisions())
-  ipc.handleSchema(IPC.syncRestoreRevision, revisionSchema, (revision) =>
-    syncService.restoreRevision(revision)
-  )
+  ipc.handleSchema(IPC.syncListRevisions, syncListRevisionsInputSchema, (input) => {
+    const ns = typeof input === 'string' ? input : input?.namespace
+    return syncService.listRevisions(ns ?? 'core')
+  })
+  ipc.handleSchema(IPC.syncRestoreRevision, syncRestoreRevisionInputSchema, (input) => {
+    if (typeof input === 'string') return syncService.restoreRevision(input, 'core')
+    return syncService.restoreRevision(input.revision, input.namespace ?? 'core')
+  })
   ipc.handleSchema(IPC.sessionOpen, openSessionSchema, async (input, owner) => {
     if (sessions.size + pendingSessionOpens >= MAX_SESSIONS)
       throw new Error(`最多同时打开 ${MAX_SESSIONS} 个会话，请先关闭不再使用的会话。`)
@@ -788,12 +834,24 @@ function registerIpc(): void {
     })
   }
   ipc.handle(IPC.fileProfilesList, (): Promise<FileProfile[]> => filesService.listProfiles())
-  ipc.handleSchema(IPC.fileProfileSave, fileProfileInputSchema, (input) => filesService.saveProfile(input))
-  ipc.handleSchema(IPC.fileProfileRemove, idSchema, (id) => filesService.removeProfile(id))
+  ipc.handleSchema(IPC.fileProfileSave, fileProfileInputSchema, async (input) => {
+    syncService.markLocalMutation()
+    const next = await filesService.saveProfile(input)
+    syncService.scheduleAutoSync(true)
+    return next
+  })
+  ipc.handleSchema(IPC.fileProfileRemove, idSchema, async (id) => {
+    syncService.markLocalMutation()
+    const next = await filesService.removeProfile(id)
+    syncService.scheduleAutoSync(true)
+    return next
+  })
   ipc.handle(IPC.protocolSettingsGet, (): Promise<AllProtocolSettings> => filesService.getProtocolSettings())
   ipc.handleSchema(IPC.protocolSettingsPatch, protocolSettingsPatchSchema, async (patch) => {
+    syncService.markLocalMutation()
     const next = await filesService.patchProtocolSettings(patch)
     if (patch.namespace === 'rdp') rdpService.invalidateProbeCache()
+    syncService.scheduleAutoSync(true)
     return next
   })
   ipc.handleSchema(IPC.filesConnect, fileConnectSchema, (source, owner) =>
@@ -818,21 +876,41 @@ function registerIpc(): void {
   void fileProfileIdSchema
   ipc.handleSchema(IPC.rdpProbe, fontsListRequestSchema, (refresh) => rdpService.probe(Boolean(refresh)))
   ipc.handle(IPC.rdpProfilesList, () => rdpService.listProfiles())
-  ipc.handleSchema(IPC.rdpProfileSave, rdpProfileInputSchema, (input) => rdpService.saveProfile(input))
-  ipc.handleSchema(IPC.rdpProfileRemove, idSchema, (id) => rdpService.removeProfile(id))
+  ipc.handleSchema(IPC.rdpProfileSave, rdpProfileInputSchema, async (input) => {
+    syncService.markLocalMutation()
+    const next = await rdpService.saveProfile(input)
+    syncService.scheduleAutoSync(true)
+    return next
+  })
+  ipc.handleSchema(IPC.rdpProfileRemove, idSchema, async (id) => {
+    syncService.markLocalMutation()
+    const next = await rdpService.removeProfile(id)
+    syncService.scheduleAutoSync(true)
+    return next
+  })
   ipc.handle(IPC.rdpKnownHostsList, () => rdpService.listKnownHosts())
-  ipc.handleSchema(IPC.rdpKnownHostRemove, rdpKnownHostRemoveSchema, ({ id }) =>
-    rdpService.removeKnownHost(id)
-  )
+  ipc.handleSchema(IPC.rdpKnownHostRemove, rdpKnownHostRemoveSchema, async ({ id }) => {
+    syncService.markLocalMutation()
+    const next = await rdpService.removeKnownHost(id)
+    syncService.scheduleAutoSync(true)
+    return next
+  })
   ipc.handleSchema(IPC.rdpConnect, rdpConnectSourceSchema, (source, owner) =>
     rdpService.connect(owner.id, source)
+  )
+  ipc.handleSchema(
+    IPC.rdpSetDisplayVisible,
+    rdpSessionIdSchema.extend({ visible: z.boolean() }),
+    (input, owner) => rdpService.setDisplayVisible(owner.id, input.sessionId, input.visible)
   )
   ipc.handleSchema(IPC.rdpDisconnect, rdpSessionIdSchema, ({ sessionId }, owner) =>
     rdpService.disconnect(owner.id, sessionId)
   )
-  ipc.handleSchema(IPC.rdpCertDecision, rdpCertDecisionSchema, ({ promptId, accept }, owner) =>
-    rdpService.decideCertPrompt(owner.id, promptId, accept)
-  )
+  ipc.handleSchema(IPC.rdpCertDecision, rdpCertDecisionSchema, async ({ promptId, accept }, owner) => {
+    if (accept) syncService.markLocalMutation()
+    await rdpService.decideCertPrompt(owner.id, promptId, accept)
+    if (accept) syncService.scheduleAutoSync(true)
+  })
   ipc.handle(IPC.trayState, () => trayManager?.getState() ?? defaultTrayState)
   ipc.handleSchema(IPC.trayUpdatePreferences, trayPreferencesPatchSchema, (patch) => {
     if (!trayManager) throw new Error('系统托盘尚未就绪')
@@ -864,6 +942,17 @@ function registerIpc(): void {
   })
 }
 
+function publishWindowPresence(): void {
+  let anyInteractive = false
+  for (const win of windows.values()) {
+    if (win.isDestroyed()) continue
+    const active = win.isVisible() && !win.isMinimized()
+    if (active) anyInteractive = true
+    win.webContents.send(IPC.windowPresence, active)
+  }
+  syncService?.setUiBackgrounded(!anyInteractive)
+}
+
 async function createWindow(): Promise<void> {
   const iconPath = app.isPackaged
     ? join(process.resourcesPath, 'icon.png')
@@ -884,7 +973,7 @@ async function createWindow(): Promise<void> {
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
-      backgroundThrottling: false
+      backgroundThrottling: true
     }
   })
   const windowId = win.id
@@ -901,11 +990,23 @@ async function createWindow(): Promise<void> {
       if (session.owner === windowId) closeSession(id)
     }
   })
+  const publishPresence = () => publishWindowPresence()
+  contents.on('did-finish-load', publishPresence)
   win.on('maximize', () => contents.send(IPC.windowState, true))
   win.on('unmaximize', () => contents.send(IPC.windowState, false))
-  win.on('minimize', () => trayManager?.handleNativeMinimize(win))
-  win.on('show', () => trayManager?.handleWindowShown(win))
-  win.on('restore', () => trayManager?.handleWindowShown(win))
+  win.on('minimize', () => {
+    trayManager?.handleNativeMinimize(win)
+    publishPresence()
+  })
+  win.on('hide', publishPresence)
+  win.on('show', () => {
+    trayManager?.handleWindowShown(win)
+    publishPresence()
+  })
+  win.on('restore', () => {
+    trayManager?.handleWindowShown(win)
+    publishPresence()
+  })
   win.on('close', (event) => {
     if (quitting) return
     const prefs = trayManager?.getPreferences()
@@ -922,14 +1023,22 @@ async function createWindow(): Promise<void> {
     }
     const ownedCount = [...sessions.values()].filter((session) => session.owner === windowId).length
     const activeTunnels = tunnelRuntime?.getActiveCount() ?? 0
-    if (ownedCount === 0 && activeTunnels === 0) return
+    const activeRdp = rdpService?.getActiveSessionCount(windowId) ?? 0
+    const activeTransfers = countActiveAllTransfers(windowId)
+    if (ownedCount === 0 && activeTunnels === 0 && activeRdp === 0 && activeTransfers === 0) return
     const en = currentLocale === 'en-US'
+    const parts: string[] = []
+    if (ownedCount > 0) parts.push(en ? `${ownedCount} terminal session(s)` : `${ownedCount} 个终端会话`)
+    if (activeRdp > 0) parts.push(en ? `${activeRdp} RDP session(s)` : `${activeRdp} 个远程桌面会话`)
+    if (activeTransfers > 0)
+      parts.push(en ? `${activeTransfers} file transfer(s)` : `${activeTransfers} 个文件传输任务`)
+    if (activeTunnels > 0)
+      parts.push(en ? `${activeTunnels} port forwarding tunnel(s)` : `${activeTunnels} 条活动端口转发`)
+    const summary = parts.join(en ? ', ' : '、')
     const response = dialog.showMessageBoxSync(win, {
       type: 'question',
-      title: en ? 'Close Active Sessions & Tunnels?' : '结束活动会话与转发？',
-      message: en
-        ? `Quitting will close ${ownedCount} active terminal session(s) and ${activeTunnels} active port forwarding tunnel(s).`
-        : `退出将结束 ${ownedCount} 个终端会话与 ${activeTunnels} 条活动端口转发。`,
+      title: en ? 'Close Active Sessions & Transfers?' : '结束活动会话与传输？',
+      message: en ? `Quitting will close ${summary}.` : `退出将结束 ${summary}。`,
       buttons: en ? ['Cancel', 'Minimize to Tray', 'End & Quit'] : ['取消', '最小化到后台托盘', '结束并退出'],
       defaultId: 1,
       cancelId: 0,
@@ -948,6 +1057,7 @@ async function createWindow(): Promise<void> {
       if (session.owner === windowId) closeSession(id)
     }
     windows.delete(windowId)
+    publishPresence()
     trayManager?.handleWindowClosed(windowId)
   })
   win.once('ready-to-show', () => win.show())
@@ -1059,12 +1169,23 @@ else {
           const win = [...windows.values()][0]
           const activeSessions = sessions.size
           const activeTunnels = tunnelRuntime?.getActiveCount() ?? 0
+          const activeRdp = rdpService?.getActiveSessionCount() ?? 0
+          const activeTransfers = countActiveAllTransfers()
           const en = currentLocale === 'en-US'
+          const activeParts: string[] = []
+          if (activeSessions > 0)
+            activeParts.push(en ? `${activeSessions} terminal session(s)` : `${activeSessions} 个终端会话`)
+          if (activeRdp > 0)
+            activeParts.push(en ? `${activeRdp} RDP session(s)` : `${activeRdp} 个远程桌面会话`)
+          if (activeTransfers > 0)
+            activeParts.push(en ? `${activeTransfers} file transfer(s)` : `${activeTransfers} 个文件传输任务`)
+          if (activeTunnels > 0)
+            activeParts.push(en ? `${activeTunnels} active tunnel(s)` : `${activeTunnels} 条活动转发`)
           const extra =
-            activeSessions > 0 || activeTunnels > 0
+            activeParts.length > 0
               ? en
-                ? `\n${activeSessions} terminal session(s) and ${activeTunnels} active tunnel(s) will be closed before installing.`
-                : `\n当前仍有 ${activeSessions} 个终端会话与 ${activeTunnels} 条活动转发将在安装前关闭。`
+                ? `\n${activeParts.join(', ')} will be closed before installing.`
+                : `\n当前仍有 ${activeParts.join('、')} 将在安装前关闭。`
               : ''
           const detail = en
             ? `Graphite Orbit will exit automatically once the installer starts to finish updating.${extra}`
@@ -1109,17 +1230,27 @@ else {
         onQuit: () => {
           const activeSessions = sessions.size
           const activeTunnels = tunnelRuntime?.getActiveCount() ?? 0
-          if (activeSessions > 0 || activeTunnels > 0) {
+          const activeRdp = rdpService?.getActiveSessionCount() ?? 0
+          const activeTransfers = countActiveAllTransfers()
+          if (activeSessions > 0 || activeTunnels > 0 || activeRdp > 0 || activeTransfers > 0) {
             const win = [...windows.values()][0]
             if (win) trayManager?.restoreFromTray(win)
             const en = currentLocale === 'en-US'
+            const parts: string[] = []
+            if (activeSessions > 0)
+              parts.push(en ? `${activeSessions} terminal session(s)` : `${activeSessions} 个终端会话`)
+            if (activeRdp > 0) parts.push(en ? `${activeRdp} RDP session(s)` : `${activeRdp} 个远程桌面会话`)
+            if (activeTransfers > 0)
+              parts.push(en ? `${activeTransfers} file transfer(s)` : `${activeTransfers} 个文件传输任务`)
+            if (activeTunnels > 0)
+              parts.push(en ? `${activeTunnels} active tunnel(s)` : `${activeTunnels} 条活动端口转发`)
             const response = win
               ? dialog.showMessageBoxSync(win, {
                   type: 'question',
                   title: en ? 'Quit Graphite Orbit?' : '退出 Graphite Orbit？',
                   message: en
-                    ? `There are still ${activeSessions} terminal session(s) and ${activeTunnels} active tunnel(s) running in the background. Close all and quit?`
-                    : `后台仍有 ${activeSessions} 个终端会话与 ${activeTunnels} 条活动端口转发，确认全部结束并退出吗？`,
+                    ? `There are still ${parts.join(', ')} running in the background. Close all and quit?`
+                    : `后台仍有 ${parts.join('、')} 正在运行，确认全部结束并退出吗？`,
                   buttons: en ? ['Keep Running', 'Close All & Quit'] : ['继续后台运行', '全部结束并退出'],
                   defaultId: 0,
                   cancelId: 0,

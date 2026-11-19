@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
   ArrowUp,
   Check,
@@ -16,9 +16,11 @@ import {
   Link2,
   Pencil,
   RefreshCw,
+  RotateCw,
   Shield,
   Terminal,
   Trash2,
+  Unplug,
   Upload,
   X
 } from '@lucide/vue'
@@ -27,6 +29,7 @@ import {
   formatBytes,
   formatOctalMode,
   joinRemotePosixPath,
+  parentRemotePosixPath,
   remoteBreadcrumbs,
   type SftpEntry
 } from '../../../shared/sftp'
@@ -34,9 +37,11 @@ import {
   activeSftpContext,
   allSshPanes,
   availableSshHosts,
+  closeStandaloneSftpSession,
   connectStandaloneSftpHost,
   downloadRemoteEntries,
   insertRemotePathIntoTerminal,
+  reconnectStandaloneSftp,
   refreshSftpDirectory,
   selectSftpPaneTarget,
   sftpConflictPrompt,
@@ -53,7 +58,7 @@ import {
   visibleSftpEntries
 } from '../services/sftp-store'
 import { t } from '../services/i18n'
-import { notify, windowInstance } from '../stores/workbench'
+import { notify, protocolSettings, windowInstance } from '../stores/workbench'
 import OrbitSelect from './OrbitSelect.vue'
 import SftpTransferQueue from './SftpTransferQueue.vue'
 
@@ -69,28 +74,47 @@ const chmodPermissions = computed(() => [
   { label: t('sftp.permOtherExec'), shift: 0 }
 ])
 
+const tokenPartCache = new Map<string, string>()
 function safeTokenPart(raw: string): string {
-  if (/^[a-z0-9-]+$/.test(raw)) return raw
-  let h1 = 0x811c9dc5
-  let h2 = 0x9e3779b9
-  for (let i = 0; i < raw.length; i++) {
-    const code = raw.charCodeAt(i)
-    h1 = Math.imul(h1 ^ code, 0x01000193)
-    h2 = Math.imul(h2 ^ code, 0x85ebca6b)
+  const cached = tokenPartCache.get(raw)
+  if (cached !== undefined) return cached
+  if (tokenPartCache.size > 4000) tokenPartCache.clear()
+  let result: string
+  if (/^[a-z0-9-]+$/.test(raw)) {
+    result = raw
+  } else {
+    let h1 = 0x811c9dc5
+    let h2 = 0x9e3779b9
+    for (let i = 0; i < raw.length; i++) {
+      const code = raw.charCodeAt(i)
+      h1 = Math.imul(h1 ^ code, 0x01000193)
+      h2 = Math.imul(h2 ^ code, 0x85ebca6b)
+    }
+    result = `k-${(h1 >>> 0).toString(36)}-${(h2 >>> 0).toString(36)}`
   }
-  return `k-${(h1 >>> 0).toString(36)}-${(h2 >>> 0).toString(36)}`
+  tokenPartCache.set(raw, result)
+  return result
 }
 
 const c = (base: string, suffix?: string) =>
   instanceClass(base, windowInstance(suffix ? `sftp-${safeTokenPart(suffix)}` : 'sftp-panel'))
 
 const panelRoot = ref<HTMLElement>()
+const listScrollEl = ref<HTMLElement>()
 const pathEditMode = ref(false)
 const pathInputValue = ref('')
 const pathInputEl = ref<HTMLInputElement>()
 const selectedPaths = ref<Set<string>>(new Set())
+const lastSelectedPath = ref('')
 const dragOverActive = ref(false)
 const dragDepth = ref(0)
+
+// Lightweight virtual windowing for large directories (>150 items)
+const VIRTUAL_THRESHOLD = 150
+const VIRTUAL_ROW_HEIGHT = 46
+const VIRTUAL_OVERSCAN = 10
+const listScrollTop = ref(0)
+const listViewportHeight = ref(480)
 
 const mkdirDialogOpen = ref(false)
 const mkdirName = ref('')
@@ -116,6 +140,38 @@ const isReady = computed(() =>
 const selectedEntries = computed(() =>
   visibleSftpEntries.value.filter((entry) => selectedPaths.value.has(entry.path))
 )
+
+const virtualWindow = computed(() => {
+  const entries = visibleSftpEntries.value
+  if (entries.length <= VIRTUAL_THRESHOLD) {
+    return { items: entries, topHeight: 0, bottomHeight: 0 }
+  }
+  const total = entries.length
+  const visibleCount = Math.ceil(listViewportHeight.value / VIRTUAL_ROW_HEIGHT) + VIRTUAL_OVERSCAN * 2
+  const firstVisible = Math.floor(listScrollTop.value / VIRTUAL_ROW_HEIGHT)
+  const start = Math.max(0, Math.min(total - visibleCount, firstVisible - VIRTUAL_OVERSCAN))
+  const end = Math.min(total, start + visibleCount)
+  return {
+    items: entries.slice(start, end),
+    topHeight: start * VIRTUAL_ROW_HEIGHT,
+    bottomHeight: Math.max(0, (total - end) * VIRTUAL_ROW_HEIGHT)
+  }
+})
+
+function onListScroll(): void {
+  const el = listScrollEl.value
+  if (!el) return
+  listScrollTop.value = el.scrollTop
+  if (el.clientHeight > 0) listViewportHeight.value = el.clientHeight
+}
+
+watch(listScrollEl, (el, _, onCleanup) => {
+  if (!el) return
+  onListScroll()
+  const observer = new ResizeObserver(onListScroll)
+  observer.observe(el)
+  onCleanup(() => observer.disconnect())
+})
 
 const targetSelectorOptions = computed(() => {
   const options: { value: string; label: string; hint?: string }[] = []
@@ -145,7 +201,8 @@ const selectedTargetValue = computed(() => {
 })
 
 function onTargetChanged(value: string): void {
-  selectedPaths.value.clear()
+  selectedPaths.value = new Set()
+  lastSelectedPath.value = ''
   if (value.startsWith('pane:')) {
     selectSftpPaneTarget(value.slice(5))
     return
@@ -159,11 +216,55 @@ function onTargetChanged(value: string): void {
 
 watch(sftpCurrentPath, () => {
   selectedPaths.value = new Set()
+  lastSelectedPath.value = ''
   contextMenu.value = null
+  listScrollTop.value = 0
+  if (listScrollEl.value) listScrollEl.value.scrollTop = 0
 })
 
 watch(sftpConflictPrompt, () => {
   conflictApplyAll.value = false
+})
+
+function onWindowKeydown(event: KeyboardEvent): void {
+  if (!sftpDrawerOpen.value || event.key !== 'Escape') return
+  if (contextMenu.value) {
+    contextMenu.value = null
+    event.preventDefault()
+    return
+  }
+  if (sftpConflictPrompt.value) {
+    sftpConflictPrompt.value.resolve({ decision: 'cancel', applyAll: true })
+    event.preventDefault()
+    return
+  }
+  if (mkdirDialogOpen.value) {
+    mkdirDialogOpen.value = false
+    event.preventDefault()
+    return
+  }
+  if (renameTarget.value) {
+    renameTarget.value = null
+    event.preventDefault()
+    return
+  }
+  if (chmodTarget.value) {
+    chmodTarget.value = null
+    event.preventDefault()
+    return
+  }
+  if (deleteTarget.value) {
+    deleteTarget.value = null
+    event.preventDefault()
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('keydown', onWindowKeydown)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onWindowKeydown)
 })
 
 async function openPathEdit(): Promise<void> {
@@ -212,6 +313,11 @@ function toggleSort(field: 'name' | 'size' | 'mtime'): void {
   }
 }
 
+function sortArrow(field: 'name' | 'size' | 'mtime'): string {
+  if (sftpSortBy.value !== field) return ''
+  return sftpSortAsc.value ? ' ↑' : ' ↓'
+}
+
 function isDirEntry(entry: SftpEntry): boolean {
   return entry.kind === 'directory' || entry.targetKind === 'directory'
 }
@@ -219,6 +325,21 @@ function isDirEntry(entry: SftpEntry): boolean {
 function onRowClick(entry: SftpEntry, event: MouseEvent): void {
   contextMenu.value = null
   const next = new Set(selectedPaths.value)
+  if (event.shiftKey && lastSelectedPath.value) {
+    const entries = visibleSftpEntries.value
+    const fromIdx = entries.findIndex((e) => e.path === lastSelectedPath.value)
+    const toIdx = entries.findIndex((e) => e.path === entry.path)
+    if (fromIdx >= 0 && toIdx >= 0) {
+      if (!event.ctrlKey && !event.metaKey) next.clear()
+      const start = Math.min(fromIdx, toIdx)
+      const end = Math.max(fromIdx, toIdx)
+      for (let i = start; i <= end; i++) {
+        next.add(entries[i]!.path)
+      }
+      selectedPaths.value = next
+      return
+    }
+  }
   if (event.ctrlKey || event.metaKey) {
     if (next.has(entry.path)) next.delete(entry.path)
     else next.add(entry.path)
@@ -226,7 +347,40 @@ function onRowClick(entry: SftpEntry, event: MouseEvent): void {
     next.clear()
     next.add(entry.path)
   }
+  lastSelectedPath.value = entry.path
   selectedPaths.value = next
+}
+
+function onListKeydown(event: KeyboardEvent): void {
+  if (!isReady.value) return
+  const target = event.target as HTMLElement | null
+  if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
+
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
+    event.preventDefault()
+    selectedPaths.value = new Set(visibleSftpEntries.value.map((e) => e.path))
+    return
+  }
+  if (event.key === 'Backspace') {
+    event.preventDefault()
+    goUp()
+    return
+  }
+  const chosen = selectedEntries.value
+  if (event.key === 'Enter' && chosen.length === 1 && target?.tagName !== 'BUTTON') {
+    event.preventDefault()
+    onRowDoubleClick(chosen[0]!)
+    return
+  }
+  if (event.key === 'F2' && chosen.length === 1) {
+    event.preventDefault()
+    void openRenameModal(chosen[0]!)
+    return
+  }
+  if (event.key === 'Delete' && chosen.length > 0) {
+    event.preventDefault()
+    requestDelete(chosen)
+  }
 }
 
 function onRowDoubleClick(entry: SftpEntry): void {
@@ -240,6 +394,7 @@ function onRowDoubleClick(entry: SftpEntry): void {
 function openRowContextMenu(entry: SftpEntry, event: MouseEvent): void {
   if (!selectedPaths.value.has(entry.path)) {
     selectedPaths.value = new Set([entry.path])
+    lastSelectedPath.value = entry.path
   }
   const rootEl = panelRoot.value
   if (!rootEl) return
@@ -295,8 +450,8 @@ async function submitRename(): Promise<void> {
   renameTarget.value = null
   if (nextName === target.name) return
   try {
-    const parent = target.path.slice(0, Math.max(1, target.path.lastIndexOf('/')))
-    const nextPath = joinRemotePosixPath(parent === target.path ? '/' : parent, nextName)
+    const parent = parentRemotePosixPath(target.path)
+    const nextPath = joinRemotePosixPath(parent, nextName)
     await window.orbit.sftp.rename(sessionId, target.path, nextPath)
     notify(t('sftp.renameSuccess', { name: nextName }))
     await refreshSftpDirectory(sftpCurrentPath.value)
@@ -346,27 +501,37 @@ async function submitChmod(): Promise<void> {
   }
 }
 
-function requestDelete(entries: SftpEntry[]): void {
-  contextMenu.value = null
-  if (!entries.length) return
-  deleteTarget.value = entries
-}
-
-async function confirmDelete(): Promise<void> {
+async function executeDelete(targets: SftpEntry[]): Promise<void> {
   const sessionId = activeSftpContext.value?.sessionId
-  const targets = deleteTarget.value
-  deleteTarget.value = null
-  if (!sessionId || !targets?.length) return
+  if (!sessionId || !targets.length) return
   try {
     for (const entry of targets) {
-      await window.orbit.sftp.remove(sessionId, entry.path, entry.kind === 'directory')
+      await window.orbit.sftp.remove(sessionId, entry.path, isDirEntry(entry))
     }
     notify(t('sftp.deletedItems', { count: targets.length }))
     selectedPaths.value = new Set()
+    lastSelectedPath.value = ''
     await refreshSftpDirectory(sftpCurrentPath.value)
   } catch (error) {
     notify(error instanceof Error ? error.message : t('sftp.deleteFailed'))
   }
+}
+
+function requestDelete(entries: SftpEntry[]): void {
+  contextMenu.value = null
+  if (!entries.length) return
+  if (!protocolSettings.value.files.confirmDelete) {
+    void executeDelete(entries)
+    return
+  }
+  deleteTarget.value = entries
+}
+
+async function confirmDelete(): Promise<void> {
+  const targets = deleteTarget.value
+  deleteTarget.value = null
+  if (!targets?.length) return
+  await executeDelete(targets)
 }
 
 async function pickAndUploadFiles(): Promise<void> {
@@ -493,15 +658,27 @@ function revealLocalFile(localPath: string): void {
         />
         <span v-else class="container_workspace_sftp_header_empty-host">{{ t('sftp.noHostSelected') }}</span>
       </div>
-      <button
-        class="container_workspace_sftp_header_close"
-        type="button"
-        :aria-label="t('sftp.closeAria')"
-        :title="t('sftp.closeTitle')"
-        @click="sftpDrawerOpen = false"
-      >
-        <X :size="14" />
-      </button>
+      <div class="container_workspace_sftp_header_actions">
+        <button
+          v-if="activeSftpContext?.source === 'standalone'"
+          class="container_workspace_sftp_header_disconn"
+          type="button"
+          :aria-label="t('sftp.disconnectStandalone')"
+          :title="t('sftp.disconnectStandalone')"
+          @click="closeStandaloneSftpSession"
+        >
+          <Unplug :size="13" />
+        </button>
+        <button
+          class="container_workspace_sftp_header_close"
+          type="button"
+          :aria-label="t('sftp.closeAria')"
+          :title="t('sftp.closeTitle')"
+          @click="sftpDrawerOpen = false"
+        >
+          <X :size="14" />
+        </button>
+      </div>
     </header>
 
     <div class="container_workspace_sftp_toolbar_base">
@@ -629,7 +806,7 @@ function revealLocalFile(localPath: string): void {
         :data-active="sftpSortBy === 'name'"
         @click="toggleSort('name')"
       >
-        {{ t('sftp.sortName') }}
+        {{ t('sftp.sortName') }}{{ sortArrow('name') }}
       </button>
       <button
         class="container_workspace_sftp_sort_size"
@@ -637,7 +814,7 @@ function revealLocalFile(localPath: string): void {
         :data-active="sftpSortBy === 'size'"
         @click="toggleSort('size')"
       >
-        {{ t('sftp.sortSize') }}
+        {{ t('sftp.sortSize') }}{{ sortArrow('size') }}
       </button>
       <button
         class="container_workspace_sftp_sort_mtime"
@@ -645,7 +822,7 @@ function revealLocalFile(localPath: string): void {
         :data-active="sftpSortBy === 'mtime'"
         @click="toggleSort('mtime')"
       >
-        {{ t('sftp.sortTime') }}
+        {{ t('sftp.sortTime') }}{{ sortArrow('mtime') }}
       </button>
       <span class="container_workspace_sftp_filter_count">
         {{ t('sftp.itemCount', { count: visibleSftpEntries.length }) }}
@@ -711,6 +888,19 @@ function revealLocalFile(localPath: string): void {
         <p v-if="activeSftpContext.message" class="container_workspace_sftp_pending_desc">
           {{ activeSftpContext.message }}
         </p>
+        <button
+          v-if="
+            activeSftpContext.source === 'standalone' &&
+            (activeSftpContext.state === 'error' || activeSftpContext.state === 'exited')
+          "
+          class="container_workspace_sftp_pending_reconn"
+          type="button"
+          data-primary
+          @click="reconnectStandaloneSftp"
+        >
+          <RotateCw :size="13" />
+          {{ t('sftp.reconnectAction') }}
+        </button>
       </div>
 
       <div v-else-if="sftpError" class="container_workspace_sftp_error_box" role="alert">
@@ -732,15 +922,39 @@ function revealLocalFile(localPath: string): void {
       </div>
 
       <div v-else-if="!visibleSftpEntries.length" class="container_workspace_sftp_empty_base">
-        <p class="container_workspace_sftp_empty_title">{{ t('sftp.emptyDirTitle') }}</p>
-        <p class="container_workspace_sftp_empty_desc">
-          {{ t('sftp.emptyDirDesc') }}
+        <p class="container_workspace_sftp_empty_title">
+          {{ sftpFilter.trim() ? t('sftp.filterEmptyTitle') : t('sftp.emptyDirTitle') }}
         </p>
+        <p class="container_workspace_sftp_empty_desc">
+          {{ sftpFilter.trim() ? t('sftp.filterEmptyDesc') : t('sftp.emptyDirDesc') }}
+        </p>
+        <button
+          v-if="sftpFilter.trim()"
+          class="container_workspace_sftp_empty_clear"
+          type="button"
+          @click="sftpFilter = ''"
+        >
+          {{ t('sftp.clearFilter') }}
+        </button>
       </div>
 
-      <div v-else class="container_workspace_sftp_list_scroll" role="list">
+      <div
+        v-else
+        ref="listScrollEl"
+        class="container_workspace_sftp_list_scroll"
+        :style="{ '--sftp-row-height': `${VIRTUAL_ROW_HEIGHT}px` }"
+        role="list"
+        tabindex="0"
+        @scroll.passive="onListScroll"
+        @keydown="onListKeydown"
+      >
         <div
-          v-for="entry in visibleSftpEntries"
+          v-if="virtualWindow.topHeight > 0"
+          class="container_workspace_sftp_list_topspace"
+          :style="{ height: `${virtualWindow.topHeight}px` }"
+        />
+        <div
+          v-for="entry in virtualWindow.items"
           :key="entry.path"
           :class="c('container_workspace_sftp_row_item', entry.path)"
           :data-selected="selectedPaths.has(entry.path)"
@@ -798,6 +1012,11 @@ function revealLocalFile(localPath: string): void {
             </button>
           </div>
         </div>
+        <div
+          v-if="virtualWindow.bottomHeight > 0"
+          class="container_workspace_sftp_list_botspace"
+          :style="{ height: `${virtualWindow.bottomHeight}px` }"
+        />
       </div>
 
       <div v-if="dragOverActive" class="container_workspace_sftp_drop_overlay">
@@ -904,7 +1123,11 @@ function revealLocalFile(localPath: string): void {
       </button>
     </div>
 
-    <div v-if="mkdirDialogOpen" class="container_workspace_sftp_mkdir_backdrop">
+    <div
+      v-if="mkdirDialogOpen"
+      class="container_workspace_sftp_mkdir_backdrop"
+      @click.self="mkdirDialogOpen = false"
+    >
       <form class="container_workspace_sftp_mkdir_card" @submit.prevent="submitMkdir">
         <strong class="container_workspace_sftp_mkdir_title">{{ t('sftp.mkdirTitle') }}</strong>
         <input
@@ -930,7 +1153,11 @@ function revealLocalFile(localPath: string): void {
       </form>
     </div>
 
-    <div v-if="renameTarget" class="container_workspace_sftp_rename_backdrop">
+    <div
+      v-if="renameTarget"
+      class="container_workspace_sftp_rename_backdrop"
+      @click.self="renameTarget = null"
+    >
       <form class="container_workspace_sftp_rename_card" @submit.prevent="submitRename">
         <strong class="container_workspace_sftp_rename_title">
           {{ t('sftp.renameTitle', { name: renameTarget.name }) }}
@@ -953,7 +1180,7 @@ function revealLocalFile(localPath: string): void {
       </form>
     </div>
 
-    <div v-if="chmodTarget" class="container_workspace_sftp_chmod_backdrop">
+    <div v-if="chmodTarget" class="container_workspace_sftp_chmod_backdrop" @click.self="chmodTarget = null">
       <form class="container_workspace_sftp_chmod_card" @submit.prevent="submitChmod">
         <strong class="container_workspace_sftp_chmod_title">
           {{ t('sftp.chmodTitle', { name: chmodTarget.name }) }}
@@ -991,7 +1218,11 @@ function revealLocalFile(localPath: string): void {
       </form>
     </div>
 
-    <div v-if="deleteTarget" class="container_workspace_sftp_delete_backdrop">
+    <div
+      v-if="deleteTarget"
+      class="container_workspace_sftp_delete_backdrop"
+      @click.self="deleteTarget = null"
+    >
       <div
         class="container_workspace_sftp_delete_card"
         role="dialog"
@@ -1028,7 +1259,11 @@ function revealLocalFile(localPath: string): void {
       </div>
     </div>
 
-    <div v-if="sftpConflictPrompt" class="container_workspace_sftp_conflict_backdrop">
+    <div
+      v-if="sftpConflictPrompt"
+      class="container_workspace_sftp_conflict_backdrop"
+      @click.self="sftpConflictPrompt.resolve({ decision: 'cancel', applyAll: true })"
+    >
       <div
         class="container_workspace_sftp_conflict_card"
         role="dialog"
@@ -1051,6 +1286,13 @@ function revealLocalFile(localPath: string): void {
           <span class="container_workspace_sftp_conflict_label">{{ t('sftp.conflictApplyAll') }}</span>
         </label>
         <div class="container_workspace_sftp_conflict_actions">
+          <button
+            class="container_workspace_sftp_conflict_abort"
+            type="button"
+            @click="sftpConflictPrompt.resolve({ decision: 'cancel', applyAll: true })"
+          >
+            {{ t('filesPage.conflictCancelAll') }}
+          </button>
           <button
             class="container_workspace_sftp_conflict_cancel"
             type="button"
@@ -1143,6 +1385,12 @@ function revealLocalFile(localPath: string): void {
   gap: 7px;
   min-width: 0;
 }
+.container_workspace_sftp_header_actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
 .container_workspace_sftp_header_badge {
   font-family: var(--font-mono);
   font-size: 10px;
@@ -1177,6 +1425,7 @@ function revealLocalFile(localPath: string): void {
   font-size: 11px;
   color: var(--color-text-muted);
 }
+.container_workspace_sftp_header_disconn,
 .container_workspace_sftp_header_close {
   min-height: 24px;
   padding: 4px 6px;
@@ -1313,10 +1562,20 @@ function revealLocalFile(localPath: string): void {
   padding: 4px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  &:focus {
+    outline: none;
+  }
+}
+.container_workspace_sftp_list_topspace,
+.container_workspace_sftp_list_botspace {
+  flex-shrink: 0;
 }
 [class*='container_workspace_sftp_row_item'] {
   display: flex;
+  box-sizing: border-box;
+  flex: 0 0 calc(var(--sftp-row-height) - 2px);
+  min-height: 0;
+  margin-block-end: 2px;
   align-items: center;
   gap: 8px;
   padding: 6px 8px;
@@ -1355,6 +1614,7 @@ function revealLocalFile(localPath: string): void {
 }
 [class*='container_workspace_sftp_row_name'] {
   font-size: 12px;
+  line-height: 15px;
   color: var(--color-text-primary);
   white-space: nowrap;
   overflow: hidden;
@@ -1368,7 +1628,11 @@ function revealLocalFile(localPath: string): void {
 [class*='container_workspace_sftp_row_meta'] {
   font-family: var(--font-mono);
   font-size: 10px;
+  line-height: 12px;
   color: var(--color-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 [class*='container_workspace_sftp_row_actions'] {
   display: flex;
@@ -1392,6 +1656,14 @@ function revealLocalFile(localPath: string): void {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+.container_workspace_sftp_pending_reconn,
+.container_workspace_sftp_empty_clear {
+  align-self: flex-start;
+  min-height: 26px;
+  padding: 4px 10px;
+  font-size: 11px;
+  border: 1px solid var(--color-border-control);
 }
 .container_workspace_sftp_nohost_title,
 .container_workspace_sftp_pending_title,
@@ -1590,6 +1862,7 @@ function revealLocalFile(localPath: string): void {
   display: flex;
   justify-content: flex-end;
   gap: 6px;
+  flex-wrap: wrap;
   > button {
     min-height: 28px;
     padding: 4px 10px;

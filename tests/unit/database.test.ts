@@ -344,4 +344,45 @@ describe('Repository persistence and migrations', () => {
       repo.close()
     }
   })
+
+  it('migrates schema v5 to v6 with .bak-v5 backup, adds sync_namespaces and marks pending changes on multi-protocol mutations', () => {
+    const dir = makeTempDir()
+    const dbPath = join(dir, 'v5.db')
+    const first = new Repository(dbPath)
+    first.close()
+
+    const raw = new Database(dbPath)
+    raw.exec('DROP TABLE sync_namespaces; PRAGMA user_version = 5;')
+    raw.close()
+
+    const repo = new Repository(dbPath)
+    try {
+      expect(readdirSync(dir).filter((n) => n.startsWith('v5.db.bak-v5-'))).toHaveLength(1)
+      expect(repo.syncNamespacesList()).toEqual([])
+
+      repo.fileProfileSave({ name: 'Nas-FTP', protocol: 'ftp', host: '10.0.0.12' })
+      expect(repo.syncNamespaceGet('protocols')?.pendingChanges).toBe(true)
+
+      repo.protocolSettingsPatch('ssh', { defaultPort: 2200 })
+      expect(repo.syncNamespaceGet('settings')?.pendingChanges).toBe(true)
+
+      const acc = repo.syncAccountUpsert({
+        serverUrl: 'https://sync.example.com',
+        email: 'ops@example.com',
+        rememberEmail: true,
+        keepSignedIn: false,
+        autoSync: true,
+        deviceId: 'dev-v6',
+        deviceName: 'V6-Box',
+        syncFileCredentials: true,
+        syncRdpCredentials: true,
+        syncProtocolSettings: false
+      })
+      expect(acc.syncFileCredentials).toBe(true)
+      expect(acc.syncRdpCredentials).toBe(true)
+      expect(acc.syncProtocolSettings).toBe(false)
+    } finally {
+      repo.close()
+    }
+  })
 })

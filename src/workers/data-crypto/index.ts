@@ -51,7 +51,20 @@ const ALLOWED_METHODS = new Set<keyof Repository>([
   'syncCancelRotate',
   'syncEvaluateRevisionRestore',
   'syncCommitApplied',
-  'syncRecordUploadedCheckpoint'
+  'syncRecordUploadedCheckpoint',
+  'syncNamespacesList',
+  'syncNamespaceGet',
+  'syncNamespaceMarkPending',
+  'syncListFileSecretBlobs',
+  'syncListRdpSecretBlobs',
+  'syncEvaluateProtocolsAndMerge',
+  'syncCommitProtocolsApplied',
+  'syncEvaluateSettingsAndMerge',
+  'syncCommitSettingsApplied',
+  'syncRecordNamespaceUploadedCheckpoint',
+  'syncEvaluateNamespaceRevisionRestore',
+  'syncPrepareBatchRotate',
+  'syncCommitBatchRotate'
 ])
 
 process.parentPort.on('message', ({ data }) => {

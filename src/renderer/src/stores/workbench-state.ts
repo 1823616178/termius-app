@@ -207,7 +207,7 @@ export const trayState = ref<TrayState>({
 })
 export const updateState = ref<UpdateStatusSnapshot>({
   phase: 'idle',
-  currentVersion: '1.2.0',
+  currentVersion: '1.3.0',
   repository: { ...DEFAULT_UPDATE_REPOSITORY },
   preferences: {
     autoCheckOnStartup: true,
