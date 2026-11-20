@@ -20,6 +20,7 @@ defineProps<{
 
 const c = (base: string, token: string) => instanceClass(base, windowInstance(token))
 const ctaHovered = ref(false)
+const sheathed = ref(false)
 const stageRef = ref<InstanceType<typeof OrbitStage3D> | null>(null)
 const swordPhaseNote = ref('开阵启封 · 万锋初现')
 const swordFormationIndex = ref(0)
@@ -34,6 +35,7 @@ const activeFormationName = computed(() => {
 const displayPhaseNote = computed(() => translateSwordPhaseLabel(swordPhaseNote.value))
 
 function replaySwordIntro() {
+  sheathed.value = false
   welcomeIntroKey.value += 1
   swordPhaseNote.value = '开阵启封 · 万锋初现'
   stageRef.value?.replayIntro()
@@ -62,6 +64,7 @@ function jumpSwordFormation(index: number) {
       class="container_workspace_welcome_body_stage"
       :active="active"
       :boost="ctaHovered"
+      :sheathed="sheathed"
       :instance="windowInstance('welcome')"
       :on-frame-rate="recordMotionFrameRate"
       @phase="swordPhaseNote = $event"
@@ -77,6 +80,14 @@ function jumpSwordFormation(index: number) {
       </span>
     </div>
     <div class="container_workspace_welcome_body_controls">
+      <button
+        v-if="stageRef && !stageRef.fallbackVisible"
+        class="container_workspace_welcome_body_scabbard"
+        type="button"
+        @click="sheathed = !sheathed"
+      >
+        {{ t(sheathed ? 'welcome.drawSword' : 'welcome.sheatheSword') }}
+      </button>
       <button
         class="container_workspace_welcome_body_replay"
         type="button"
@@ -444,6 +455,7 @@ function jumpSwordFormation(index: number) {
   animation: workspace-seal-unfold 620ms cubic-bezier(0.22, 1, 0.36, 1) 320ms both;
 }
 .container_workspace_welcome_body_replay,
+.container_workspace_welcome_body_scabbard,
 .container_workspace_welcome_body_climax {
   min-height: 32px;
   padding: 4px 12px;

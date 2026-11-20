@@ -4,10 +4,17 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js'
 export interface MainSwordModel {
   group: THREE.Group
   bladeMaterial: THREE.MeshStandardMaterial
-  goldMaterial: THREE.MeshStandardMaterial
+  silverMaterial: THREE.MeshStandardMaterial
+  scabbard: THREE.Group
   tasselMaterial: THREE.MeshStandardMaterial
   tasselGroup: THREE.Group
   glow: THREE.Sprite
+  bladeAura: THREE.Group
+  auraMaterial: THREE.MeshBasicMaterial
+  inlayMaterial: THREE.MeshStandardMaterial
+  bladeFlow: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>
+  flowHead: THREE.Uniform<number>
+  flowColor: THREE.Uniform<THREE.Color>
 }
 
 export const MAIN_SWORD_PIVOT_Y = -0.72
@@ -137,13 +144,19 @@ function createBladeEdgeGeometry(side: number): THREE.BufferGeometry {
 
 export function createXuanyuanGuardGeometry(): THREE.ExtrudeGeometry {
   const shape = new THREE.Shape()
-  shape.moveTo(0.07, 0.055)
-  shape.bezierCurveTo(0.18, 0.075, 0.3, 0.07, 0.4, 0.045)
-  shape.bezierCurveTo(0.47, 0.028, 0.5, -0.012, 0.485, -0.052)
-  shape.bezierCurveTo(0.47, -0.095, 0.42, -0.115, 0.37, -0.1)
-  shape.bezierCurveTo(0.3, -0.082, 0.22, -0.075, 0.14, -0.09)
-  shape.lineTo(0.07, -0.12)
+  // Swept openwork: one tine turns back toward the grip, the other catches the blade.
+  shape.moveTo(0.045, 0.13)
+  shape.bezierCurveTo(0.24, 0.17, 0.47, -0.02, 0.33, -0.23)
+  shape.bezierCurveTo(0.58, -0.16, 0.6, -0.45, 0.47, -0.72)
+  shape.bezierCurveTo(0.48, -0.48, 0.29, -0.49, 0.24, -0.31)
+  shape.bezierCurveTo(0.17, -0.43, 0.19, -0.54, 0.23, -0.61)
+  shape.bezierCurveTo(0.04, -0.48, 0.15, -0.26, 0.04, -0.18)
   shape.closePath()
+  const piercing = new THREE.Path()
+  piercing.moveTo(0.19, -0.025)
+  piercing.bezierCurveTo(0.36, -0.045, 0.32, -0.19, 0.27, -0.24)
+  piercing.bezierCurveTo(0.29, -0.13, 0.19, -0.12, 0.19, -0.025)
+  shape.holes.push(piercing)
   const geometry = new THREE.ExtrudeGeometry(shape, {
     steps: 1,
     depth: 0.095,
@@ -157,15 +170,15 @@ export function createXuanyuanGuardGeometry(): THREE.ExtrudeGeometry {
   return geometry
 }
 
-function createGuardScroll(side: number, facing: number): THREE.Mesh {
+function createGuardScroll(side: number, facing: number, material: THREE.Material): THREE.Mesh {
   const curve = new THREE.CatmullRomCurve3([
-    new THREE.Vector3(side * 0.15, -0.762, facing * 0.066),
-    new THREE.Vector3(side * 0.27, -0.752, facing * 0.066),
-    new THREE.Vector3(side * 0.37, -0.768, facing * 0.062),
-    new THREE.Vector3(side * 0.44, -0.802, facing * 0.055),
-    new THREE.Vector3(side * 0.465, -0.85, facing * 0.045)
+    new THREE.Vector3(side * 0.08, -0.72, facing * 0.081),
+    new THREE.Vector3(side * 0.25, -0.79, facing * 0.081),
+    new THREE.Vector3(side * 0.37, -1.03, facing * 0.081),
+    new THREE.Vector3(side * 0.49, -1.12, facing * 0.078),
+    new THREE.Vector3(side * 0.5, -1.34, facing * 0.07)
   ])
-  return new THREE.Mesh(new THREE.TubeGeometry(curve, 24, 0.012, 5, false))
+  return new THREE.Mesh(new THREE.TubeGeometry(curve, 24, 0.015, 5, false), material)
 }
 
 function createGripHelix(direction: number, material: THREE.Material): THREE.Mesh {
@@ -218,8 +231,8 @@ export function createXuanyuanBladeOrnaments(
   const addPath = (points: ReadonlyArray<readonly [number, number]>, facing: number): void => {
     const surfacePoints = (offset: number): THREE.Vector3[] =>
       points.map(([x, y]) => new THREE.Vector3(x, y, facing * (bladeSurfaceDepth(x, y) + offset)))
-    grooves.push(surfaceTube(surfacePoints(0.003), 0.0065))
-    inlays.push(surfaceTube(surfacePoints(0.009), 0.0035))
+    grooves.push(surfaceTube(surfacePoints(0.003), 0.011))
+    inlays.push(surfaceTube(surfacePoints(0.012), 0.006))
   }
 
   for (const facing of [-1, 1]) {
@@ -332,11 +345,15 @@ export function createXuanyuanInscriptionTexture(): THREE.CanvasTexture {
   }
 
   const metal = context.createLinearGradient(0, 0, canvas.width, 0)
-  metal.addColorStop(0, '#c8ad75')
-  metal.addColorStop(0.18, '#eee0b9')
-  metal.addColorStop(0.5, '#fff7df')
-  metal.addColorStop(0.82, '#eee0b9')
-  metal.addColorStop(1, '#c8ad75')
+  metal.addColorStop(0, '#e6ffff')
+  metal.addColorStop(0.17, '#a5d4dc')
+  metal.addColorStop(0.21, '#547483')
+  metal.addColorStop(0.47, '#a5c8d0')
+  metal.addColorStop(0.5, '#c8edff')
+  metal.addColorStop(0.53, '#718e9b')
+  metal.addColorStop(0.79, '#3d6171')
+  metal.addColorStop(0.83, '#98c4d2')
+  metal.addColorStop(1, '#f0ffff')
   context.fillStyle = metal
   context.fillRect(0, 0, canvas.width, canvas.height)
   context.lineCap = 'round'
@@ -435,6 +452,123 @@ export function createXuanyuanInscriptionTexture(): THREE.CanvasTexture {
   return texture
 }
 
+function createScabbard(
+  silver: THREE.Material,
+  polished: THREE.Material,
+  shadow: THREE.Material,
+  sapphire: THREE.Material
+): THREE.Group {
+  const scabbard = new THREE.Group()
+  scabbard.name = 'SilverCloudScabbard'
+  // The throat folds inward. Its cavity clears both faces of the assembled blade.
+  const profile = [
+    [0.207, 0.21],
+    [0.211, 0.012],
+    [0.26, 0],
+    [0.29, 0.055],
+    [0.28, 0.17],
+    [0.235, 0.38],
+    [0.218, 0.94],
+    [0.197, 3.25],
+    [0.267, 3.58],
+    [0.241, 3.89],
+    [0.167, 4.24],
+    [0.07, 4.45],
+    [0, 4.54]
+  ] as const
+  const body = new THREE.Mesh(
+    new THREE.LatheGeometry(
+      profile.map(([r, y]) => new THREE.Vector2(r, y)),
+      20
+    ),
+    silver
+  )
+  body.scale.z = 0.56
+  scabbard.add(body)
+
+  for (const [y, r] of [
+    [0.06, 0.28],
+    [0.21, 0.268],
+    [0.95, 0.218],
+    [3.29, 0.205],
+    [3.87, 0.221]
+  ] as const) {
+    const band = new THREE.Mesh(new THREE.TorusGeometry(r, 0.018, 5, 36), polished)
+    band.position.y = y
+    band.rotation.x = Math.PI / 2
+    band.scale.y = 0.56
+    scabbard.add(band)
+  }
+  const wire = (coords: number[][], material: THREE.Material, width: number): void => {
+    const curve = new THREE.CatmullRomCurve3(coords.map(([x, y, z]) => new THREE.Vector3(x, y, z)))
+    scabbard.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 24, width, 5, false), material))
+  }
+  for (const face of [-1, 1]) {
+    for (const side of [-1, 1]) {
+      for (const y of [0.27, 3.46]) {
+        wire(
+          [
+            [side * 0.08, y, face * 0.15],
+            [side * 0.22, y + 0.12, face * 0.093],
+            [side * 0.246, y + 0.31, face * 0.055],
+            [side * 0.155, y + 0.45, face * 0.105],
+            [side * 0.128, y + 0.33, face * 0.13],
+            [side * 0.178, y + 0.27, face * 0.115]
+          ],
+          polished,
+          0.021
+        )
+      }
+      wire(
+        [
+          [0, 0.19, 0.17 * face],
+          [side * 0.19, 0.42, 0.091 * face],
+          [side * 0.12, 0.72, 0.12 * face],
+          [0, 1.02, 0.139 * face]
+        ],
+        polished,
+        0.024
+      )
+      wire(
+        [
+          [side * 0.11, 0.86, 0.117 * face],
+          [side * 0.085, 1.7, 0.115 * face],
+          [side * 0.078, 2.8, 0.108 * face],
+          [side * 0.13, 3.35, 0.104 * face],
+          [side * 0.175, 3.57, 0.092 * face],
+          [0, 4.33, 0.075 * face]
+        ],
+        shadow,
+        0.013
+      )
+      wire(
+        [
+          [0, 3.27, 0.136 * face],
+          [side * 0.125, 3.53, 0.12 * face],
+          [side * 0.079, 3.81, 0.127 * face],
+          [0, 4.07, 0.118 * face]
+        ],
+        polished,
+        0.025
+      )
+    }
+    for (const [y, z] of [
+      [0.49, 0.134],
+      [3.68, 0.142]
+    ] as const) {
+      const bezel = new THREE.Mesh(new THREE.OctahedronGeometry(0.119), shadow)
+      bezel.scale.set(0.98, 1.66, 0.3)
+      bezel.position.set(0, y, face * z)
+      scabbard.add(bezel)
+      const gem = new THREE.Mesh(new THREE.OctahedronGeometry(0.088), sapphire)
+      gem.position.set(0, y, face * (z + 0.033))
+      gem.scale.set(1, 1.64, 0.58)
+      scabbard.add(gem)
+    }
+  }
+  return scabbard
+}
+
 export function createMainSword(
   glowTexture: THREE.Texture,
   inscriptionTexture: THREE.Texture
@@ -442,71 +576,112 @@ export function createMainSword(
   const group = new THREE.Group()
   group.name = 'XuanyuanSword'
   const bladeMaterial = new THREE.MeshStandardMaterial({
-    color: '#f6e7b6',
+    color: '#ebf4ff',
     map: inscriptionTexture,
     metalness: 0.86,
     roughness: 0.2,
-    emissive: '#af7929',
+    emissive: '#7594b6',
     emissiveMap: inscriptionTexture,
     emissiveIntensity: 0.24,
     flatShading: true
   })
-  const goldMaterial = new THREE.MeshStandardMaterial({
-    color: '#d6a74b',
+  const silverMaterial = new THREE.MeshStandardMaterial({
+    color: '#d5e4f4',
     metalness: 0.9,
     roughness: 0.23,
-    emissive: '#67420e',
+    emissive: '#557092',
     emissiveIntensity: 0.22,
     side: THREE.DoubleSide
   })
-  const brightGoldMaterial = new THREE.MeshStandardMaterial({
-    color: '#ffedbc',
+  const polishedSilver = new THREE.MeshStandardMaterial({
+    color: '#edf7ff',
     metalness: 0.92,
     roughness: 0.17,
-    emissive: '#c48c2b',
+    emissive: '#94b6d5',
     emissiveIntensity: 0.48,
     side: THREE.DoubleSide
   })
-  const bronzeMaterial = new THREE.MeshStandardMaterial({
-    color: '#4c3520',
+  const gunmetal = new THREE.MeshStandardMaterial({
+    color: '#425570',
     metalness: 0.8,
     roughness: 0.38
   })
   const gripMaterial = new THREE.MeshStandardMaterial({
-    color: '#191414',
+    color: '#adc1d8',
     roughness: 0.58,
     metalness: 0.24
   })
   const jadeMaterial = new THREE.MeshStandardMaterial({
-    color: '#73d7b2',
+    color: '#6faeff',
     metalness: 0.35,
     roughness: 0.14,
-    emissive: '#21745d',
+    emissive: '#285dd4',
     emissiveIntensity: 0.55
   })
   const tasselMaterial = new THREE.MeshStandardMaterial({
-    color: '#b84532',
+    color: '#d9ecff',
     roughness: 0.68,
-    emissive: '#4b100b',
+    emissive: '#4a6b89',
     emissiveIntensity: 0.25
   })
 
   const blade = new THREE.Mesh(createXuanyuanBladeGeometry(), bladeMaterial)
   blade.name = 'XuanyuanBlade'
-  group.add(blade)
-  group.add(createXuanyuanBladeOrnaments(bronzeMaterial, brightGoldMaterial))
+  const bladeAssembly = new THREE.Group()
+  bladeAssembly.scale.set(0.69, 1, 0.8)
+  group.add(bladeAssembly)
+  bladeAssembly.add(blade)
+  const flowHead = new THREE.Uniform(-1)
+  const flowColor = new THREE.Uniform(new THREE.Color('#84e8db'))
+  const bladeFlow = new THREE.Mesh(
+    blade.geometry,
+    new THREE.ShaderMaterial({
+      uniforms: { flowHead, flowColor },
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+      vertexShader: `
+      varying vec2 bladeUv;
+      void main() {
+        bladeUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+      fragmentShader: `
+      uniform float flowHead;
+      uniform vec3 flowColor;
+      varying vec2 bladeUv;
+      void main() {
+        float across = abs(bladeUv.x - 0.5);
+        float distanceToHead = flowHead - bladeUv.y - across * 0.13;
+        float front = exp(-distanceToHead * distanceToHead * 529.0);
+        float wake = smoothstep(-0.02, 0.04, distanceToHead) * (1.0 - smoothstep(0.04, 0.42, distanceToHead));
+        float spine = 1.0 - smoothstep(0.016, 0.09, across);
+        float strength = front * (0.36 + 0.64 * spine) + wake * (0.14 + 0.82 * spine);
+        gl_FragColor = vec4(mix(flowColor, vec3(0.82, 0.94, 1.0), front * spine), strength);
+        #include <colorspace_fragment>
+      }
+    `
+    })
+  )
+  bladeAssembly.add(bladeFlow)
+  const inlayMaterial = polishedSilver.clone()
+  bladeAssembly.add(createXuanyuanBladeOrnaments(gunmetal, inlayMaterial))
   for (const side of [-1, 1]) {
-    group.add(new THREE.Mesh(createBladeEdgeGeometry(side), brightGoldMaterial))
+    bladeAssembly.add(new THREE.Mesh(createBladeEdgeGeometry(side), polishedSilver))
   }
 
   const collarGeometry = new THREE.CylinderGeometry(0.2, 0.2, 0.11, 8)
-  const collar = new THREE.Mesh(collarGeometry, goldMaterial)
+  const collar = new THREE.Mesh(collarGeometry, silverMaterial)
   collar.position.y = -0.7
   collar.scale.set(1.35, 1, 0.76)
   collar.rotation.y = Math.PI / 8
   group.add(collar)
   for (const y of [-0.605, -0.795]) {
-    const collarBand = new THREE.Mesh(new THREE.CylinderGeometry(0.185, 0.185, 0.028, 8), brightGoldMaterial)
+    const collarBand = new THREE.Mesh(new THREE.CylinderGeometry(0.185, 0.185, 0.028, 8), polishedSilver)
     collarBand.position.y = y
     collarBand.scale.set(1.35, 1, 0.76)
     collarBand.rotation.y = Math.PI / 8
@@ -515,32 +690,25 @@ export function createMainSword(
 
   const guardGeometry = createXuanyuanGuardGeometry()
   for (const side of [-1, 1]) {
-    const wing = new THREE.Mesh(guardGeometry, goldMaterial)
+    const wing = new THREE.Mesh(guardGeometry, silverMaterial)
     wing.scale.x = side
     group.add(wing)
-    const tip = new THREE.Mesh(new THREE.SphereGeometry(0.04, 8, 6), brightGoldMaterial)
-    tip.position.set(side * 0.478, -0.855, 0)
-    group.add(tip)
     for (const facing of [-1, 1]) {
-      const scroll = createGuardScroll(side, facing)
-      scroll.material = brightGoldMaterial
-      group.add(scroll)
-      const volute = new THREE.Mesh(
-        new THREE.TorusGeometry(0.05, 0.012, 5, 20, Math.PI * 1.65),
-        brightGoldMaterial
-      )
-      volute.position.set(side * 0.44, -0.845, facing * 0.058)
-      volute.rotation.z = side * 0.5
-      group.add(volute)
+      group.add(createGuardScroll(side, facing, polishedSilver))
+      const inset = new THREE.Mesh(new THREE.OctahedronGeometry(0.08), jadeMaterial)
+      inset.position.set(side * 0.36, -1.065, facing * 0.071)
+      inset.scale.set(0.65, 1.45, 0.42)
+      inset.rotation.z = side * 0.4
+      group.add(inset)
     }
   }
 
-  const mask = new THREE.Mesh(new THREE.DodecahedronGeometry(0.14, 0), bronzeMaterial)
+  const mask = new THREE.Mesh(new THREE.DodecahedronGeometry(0.14, 0), gunmetal)
   mask.position.set(0, -0.78, 0)
   mask.scale.set(1.1, 0.85, 0.65)
   group.add(mask)
   for (const side of [-1, 1]) {
-    const horn = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.18, 5), goldMaterial)
+    const horn = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.18, 5), silverMaterial)
     horn.position.set(side * 0.09, -0.61, 0.015)
     horn.rotation.z = -side * 0.55
     group.add(horn)
@@ -548,32 +716,32 @@ export function createMainSword(
     eye.position.set(side * 0.071, -0.706, 0.116)
     group.add(eye)
   }
-  const bezel = new THREE.Mesh(new THREE.TorusGeometry(0.105, 0.018, 6, 4), brightGoldMaterial)
+  const bezel = new THREE.Mesh(new THREE.TorusGeometry(0.105, 0.018, 6, 4), polishedSilver)
   bezel.position.set(0, -0.82, 0.13)
   bezel.rotation.z = Math.PI / 4
   bezel.scale.y = 1.15
   group.add(bezel)
   const jade = new THREE.Mesh(new THREE.OctahedronGeometry(0.085, 0), jadeMaterial)
   jade.position.set(0, -0.82, 0.145)
-  jade.scale.set(0.8, 1.2, 0.65)
+  jade.scale.set(1.25, 1.75, 0.8)
   group.add(jade)
 
   const grip = new THREE.Mesh(new THREE.CylinderGeometry(0.066, 0.078, 0.66, 12), gripMaterial)
   grip.position.y = -1.18
   group.add(grip)
-  group.add(createGripHelix(1, brightGoldMaterial))
-  group.add(createGripHelix(-1, bronzeMaterial))
+  group.add(createGripHelix(1, polishedSilver))
+  group.add(createGripHelix(-1, gunmetal))
   for (const y of [-0.88, -1.5]) {
-    const gripCollar = new THREE.Mesh(new THREE.CylinderGeometry(0.091, 0.091, 0.06, 12), goldMaterial)
+    const gripCollar = new THREE.Mesh(new THREE.CylinderGeometry(0.091, 0.091, 0.06, 12), silverMaterial)
     gripCollar.position.y = y
     group.add(gripCollar)
-    const band = new THREE.Mesh(new THREE.TorusGeometry(0.085, 0.009, 5, 16), brightGoldMaterial)
+    const band = new THREE.Mesh(new THREE.TorusGeometry(0.085, 0.009, 5, 16), polishedSilver)
     band.rotation.x = Math.PI / 2
     band.position.y = y
     group.add(band)
   }
 
-  const pommel = new THREE.Mesh(new THREE.TorusGeometry(0.122, 0.032, 8, 24), goldMaterial)
+  const pommel = new THREE.Mesh(new THREE.TorusGeometry(0.122, 0.032, 8, 24), silverMaterial)
   pommel.position.y = -1.66
   group.add(pommel)
   const pommelJade = new THREE.Mesh(new THREE.SphereGeometry(0.055, 12, 8), jadeMaterial)
@@ -585,7 +753,7 @@ export function createMainSword(
   const knot = new THREE.Mesh(new THREE.SphereGeometry(0.052, 10, 8), tasselMaterial)
   knot.scale.y = 1.2
   tasselGroup.add(knot)
-  const binding = new THREE.Mesh(new THREE.TorusGeometry(0.045, 0.008, 5, 16), brightGoldMaterial)
+  const binding = new THREE.Mesh(new THREE.TorusGeometry(0.045, 0.008, 5, 16), polishedSilver)
   binding.rotation.x = Math.PI / 2
   binding.position.y = -0.045
   tasselGroup.add(binding)
@@ -605,6 +773,20 @@ export function createMainSword(
     )
   }
 
+  for (const detail of tasselGroup.children) {
+    detail.position.x += 0.32
+    detail.position.y -= 0.46
+  }
+  const cord = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(0.13, -0.07, 0.05),
+    new THREE.Vector3(0.28, -0.27, 0.07),
+    new THREE.Vector3(0.32, -0.46, 0)
+  ])
+  tasselGroup.add(new THREE.Mesh(new THREE.TubeGeometry(cord, 24, 0.012, 5, false), polishedSilver))
+  const bead = new THREE.Mesh(new THREE.OctahedronGeometry(0.067), jadeMaterial)
+  bead.position.set(0.32, -0.42, 0)
+  tasselGroup.add(bead)
   group.add(tasselGroup)
   const glowMaterial = new THREE.SpriteMaterial({
     map: glowTexture,
@@ -618,5 +800,52 @@ export function createMainSword(
   glow.position.set(0, 0.65, -0.5)
   glow.scale.set(5.6, 5.6, 1)
   group.add(glow)
-  return { group, bladeMaterial, goldMaterial, tasselMaterial, tasselGroup, glow }
+  // Two tapered ribbons lift from the guard and converge on the point in blade-local space.
+  const bladeAura = new THREE.Group()
+  const auraMaterial = new THREE.MeshBasicMaterial({
+    color: '#ffe199',
+    transparent: true,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending
+  })
+  const vertices: number[] = []
+  const indices: number[] = []
+  for (let i = 0; i <= 80; i++) {
+    const u = i / 80
+    const envelope = Math.sin(u * Math.PI)
+    const radius = 0.37 * (1 - u) + 0.36 * envelope
+    const angle = u * Math.PI * 2.7
+    const y = THREE.MathUtils.lerp(BLADE_BASE, BLADE_TIP, u)
+    for (const side of [-1, 1]) {
+      const r = radius + side * envelope * 0.021
+      vertices.push(r * Math.cos(angle), y, r * Math.sin(angle))
+    }
+    const a = i * 2
+    if (i < 80) indices.push(a, a + 1, a + 2, a + 2, a + 1, a + 3)
+  }
+  const auraGeometry = new THREE.BufferGeometry()
+  auraGeometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3))
+  auraGeometry.setIndex(indices)
+  for (const angle of [0, Math.PI]) {
+    const ribbon = new THREE.Mesh(auraGeometry, auraMaterial)
+    ribbon.rotation.y = angle
+    bladeAura.add(ribbon)
+  }
+  group.add(bladeAura)
+  return {
+    group,
+    bladeMaterial,
+    silverMaterial,
+    tasselMaterial,
+    scabbard: createScabbard(silverMaterial, polishedSilver, gunmetal, jadeMaterial),
+    tasselGroup,
+    glow,
+    bladeAura,
+    auraMaterial,
+    inlayMaterial,
+    bladeFlow,
+    flowHead,
+    flowColor
+  }
 }

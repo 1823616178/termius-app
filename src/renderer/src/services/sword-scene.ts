@@ -22,6 +22,8 @@ import {
 import {
   createEmptyPose,
   DEPTH_FOCUS_Z,
+  FORMATIONS,
+  formationAt,
   formationDepthAt,
   type FormationDepth,
   formationCount,
@@ -43,6 +45,7 @@ export interface SwordSceneOptions {
   tier: 'full' | 'light'
   state: string
   boost: boolean
+  sheathed?: boolean
   palette: { accentA: string; accentB: string; seal: string; text: string; bg?: string }
 }
 
@@ -230,15 +233,45 @@ function buildSwordScene(
   scene.add(formation)
 
   const foregroundMaterial = flyingMaterial.clone()
-  foregroundMaterial.color.set('#f1ddae')
+  foregroundMaterial.color.set('#eff5f2')
   foregroundMaterial.emissive.set('#8a6530')
   foregroundMaterial.emissiveIntensity = 0.58
-  const foreground = Array.from({ length: 6 }, () => {
-    const sword = new THREE.Mesh(flyingGeometry, foregroundMaterial)
-    sword.frustumCulled = false
-    scene.add(sword)
-    return sword
+  // Pack each lane into sweeping ribbons with a larger lead sword and a tapering tail.
+  const foregroundFlights = Array.from({ length: 640 }, (_, index) => {
+    const lane = index % 8
+    const slot = Math.floor(index / 8)
+    const tail = (slot % 16) / 15
+    return {
+      phase: (Math.floor(slot / 16) / 5) * TAU + lane * 0.38 - tail * (lane < 4 ? 0.88 : -0.88),
+      speed: lane < 4 ? 2 : -2,
+      radiusX: 2.8 + lane * 0.17 + tail * 0.28,
+      radiusY: 1.65 + lane * 0.09 + tail * 0.22,
+      tilt: lane < 4 ? 0.26 : -0.24,
+      depth: 0.95 + lane * 0.21 + tail * 0.17,
+      scale: (slot % 16 === 0 ? 0.235 : 0.14 - tail * 0.067) + lane * 0.005,
+      tail
+    }
   })
+  const foreground = new THREE.InstancedMesh(flyingGeometry, foregroundMaterial, foregroundFlights.length)
+  foreground.instanceMatrix.setUsage(THREE.DynamicDrawUsage)
+  foreground.frustumCulled = false
+  scene.add(foreground)
+
+  // Attenuate just the blades behind the tip's screen-space halo, from any orbit angle.
+  const tipHalo = new THREE.Uniform(new THREE.Vector3())
+  for (const material of [flyingMaterial, skyMaterial, foregroundMaterial]) {
+    material.onBeforeCompile = (shader) => {
+      shader.uniforms.tipHalo = tipHalo
+      shader.fragmentShader =
+        'uniform vec3 tipHalo;\n' +
+        shader.fragmentShader.replace(
+          '#include <opaque_fragment>',
+          `float tipDistance = length(gl_FragCoord.xy - tipHalo.xy);
+         outgoingLight *= mix(0.25, 1.0, smoothstep(0.0, max(0.001, tipHalo.z), tipDistance));
+         #include <opaque_fragment>`
+        )
+    }
+  }
 
   const guardianMaterial = flyingMaterial.clone()
   guardianMaterial.color.set('#e9f4ee')
@@ -301,7 +334,7 @@ function buildSwordScene(
   formation.add(glints)
   const inscriptionTexture = createXuanyuanInscriptionTexture()
   const mainSword: MainSwordModel = createMainSword(glowTexture, inscriptionTexture)
-  scene.add(mainSword.group)
+  scene.add(mainSword.group, mainSword.scabbard)
 
   const pillarTexture = createPillarTexture()
   const pillarMaterial = new THREE.MeshBasicMaterial({
@@ -325,6 +358,19 @@ function buildSwordScene(
   scene.add(pillarSprite)
 
   const flareTexture = createFlareTexture()
+  const tipStar = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: flareTexture,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    })
+  )
+  tipStar.position.y = MAIN_SWORD_TIP_Y
+  mainSword.group.add(tipStar)
+  const guardLight = new THREE.Sprite(mainSword.glow.material.clone())
+  guardLight.position.set(0, MAIN_SWORD_PIVOT_Y, 0.13)
+  mainSword.group.add(guardLight)
   const flareMaterial = new THREE.SpriteMaterial({
     map: flareTexture,
     color: '#f2dab0',
@@ -526,6 +572,12 @@ function buildSwordScene(
   const trailPoseA = createEmptyPose()
   const trailPoseB = createEmptyPose()
   let lastLoopTime = 0
+  let bladePitch = 0
+  let bladeRollAngle = 0
+  let flowTime = 2
+  let sheathTravel = initialOptions.sheathed ? 1 : 0
+  const restingRotation = new THREE.Quaternion().setFromEuler(new THREE.Euler(0.12, -0.15, -2.96))
+  const silkDrape = new THREE.Quaternion()
   let lastFormationIndex = 0
   let manualPulseProgress = 0
   let disposed = false
@@ -622,13 +674,22 @@ function buildSwordScene(
       .copy(isError ? seal : steel)
       .lerp(accent, 0.35)
       .multiplyScalar(0.18)
-    foregroundMaterial.emissive.copy(isError ? seal : gold).multiplyScalar(0.45)
+    foregroundMaterial.emissive.copy(accent).multiplyScalar(0.13)
+    foregroundFlights.forEach((flight, i) => {
+      instanceColor.copy(i % 8 < 4 ? gold : accent).lerp(steel, 0.24)
+      instanceColor.multiplyScalar(1.25 - flight.tail * 0.77)
+      foreground.setColorAt(i, instanceColor)
+    })
+    if (foreground.instanceColor) foreground.instanceColor.needsUpdate = true
     guardianMaterial.emissive.copy(accent).multiplyScalar(0.35)
-    mainSword.bladeMaterial.color.copy(steel).lerp(gold, 0.58)
-    mainSword.bladeMaterial.emissive.copy(isError ? seal : gold).multiplyScalar(0.34)
-    mainSword.goldMaterial.color.copy(gold)
-    mainSword.tasselMaterial.color.copy(seal)
-    mainSword.glow.material.color.copy(isError ? seal : gold).lerp(brightGold, 0.32)
+    mainSword.bladeMaterial.color.set('#e5f2f5').lerp(steel, 0.13)
+    mainSword.bladeMaterial.emissive.copy(isError ? seal : steel).multiplyScalar(0.32)
+    mainSword.flowColor.value.set(isError ? seal : '#6cbcff')
+    mainSword.glow.material.color.copy(mainSword.flowColor.value)
+    mainSword.auraMaterial.color.copy(mainSword.flowColor.value)
+    mainSword.inlayMaterial.emissive.set('#9bcfff')
+    tipStar.material.color.set('#e5f5ff')
+    guardLight.material.color.copy(mainSword.flowColor.value)
     pillarMaterial.color.copy(isError ? seal : gold)
     flareMaterial.color.copy(isError ? seal : gold).lerp(brightGold, 0.35)
     shockwaves[0]!.material.color.copy(isError ? seal : gold)
@@ -667,9 +728,7 @@ function buildSwordScene(
     particles.visible = !compact
     pillarSprite.visible = !compact
     flareSprite.visible = !compact
-    foreground.forEach((sword) => {
-      sword.visible = !compact && options.tier === 'full'
-    })
+    foreground.visible = !compact && options.tier === 'full'
     guardians.forEach((sword) => {
       sword.visible = !compact && options.tier === 'full'
     })
@@ -753,6 +812,8 @@ function buildSwordScene(
     target.tiltDegrees = Math.acos(clampValue(tiltDirection.y, -1, 1)) * (180 / Math.PI)
     target.visible =
       orbitEnabled() &&
+      sheathTravel === 0 &&
+      !options.sheathed &&
       lastIntroTime >= INTRO_SECONDS &&
       tipScreen.z > -1 &&
       tipScreen.z < 1 &&
@@ -769,7 +830,7 @@ function buildSwordScene(
   }
 
   function beginSwordTilt(x: number, y: number): boolean {
-    if (!orbitEnabled() || lastIntroTime < INTRO_SECONDS) return false
+    if (!orbitEnabled() || lastIntroTime < INTRO_SECONDS || sheathTravel > 0 || options.sheathed) return false
     // Pick in CSS pixels so the narrow blade stays easy to grab at every zoom/DPR.
     mainSword.group.updateWorldMatrix(true, false)
     tiltTip.set(0, MAIN_SWORD_TIP_Y, 0).applyMatrix4(mainSword.group.matrixWorld)
@@ -839,13 +900,16 @@ function buildSwordScene(
   }
 
   function triggerPulse(): void {
-    if (!disposed) manualPulseProgress = 0.001
+    if (disposed) return
+    manualPulseProgress = 0.001
+    flowTime = 0
   }
 
   function render(timeSeconds: number, introTimeSeconds = INTRO_SECONDS): string {
     if (disposed) return ''
     const time = Number.isFinite(timeSeconds) ? timeSeconds : 0
     const introTime = Number.isFinite(introTimeSeconds) ? Math.max(0, introTimeSeconds) : INTRO_SECONDS
+    const justRevealed = lastIntroTime < INTRO_SECONDS && introTime >= INTRO_SECONDS
     lastIntroTime = introTime
     if (introTime < INTRO_SECONDS) endSwordTilt(true)
     const dt = lastLoopTime > 0 ? Math.min(0.05, Math.max(0.001, Math.abs(time - lastLoopTime))) : 0.016
@@ -858,7 +922,13 @@ function buildSwordScene(
 
     const compact = options.variant === 'compact'
     const isError = options.state === 'error'
+    if (compact || introTime < INTRO_SECONDS) sheathTravel = 0
+    else sheathTravel = clampValue(sheathTravel + ((options.sheathed ? 1 : -1) * dt) / 1.9, 0, 1)
+    if (tiltingSword && sheathTravel > 0) endSwordTilt(true)
     const stage = sampleStageState(time, compact ? Math.max(introTime * 2.6, 0.8) : introTime, compact)
+    if (introTime < INTRO_SECONDS) flowTime = 2
+    else if (justRevealed || stage.formationIndex !== lastFormationIndex) flowTime = 0
+    else flowTime = Math.min(2, flowTime + dt)
     lastFormationIndex = stage.formationIndex
     const { weights } = stage
     const phase = weights.phase
@@ -1046,20 +1116,48 @@ function buildSwordScene(
     glints.visible = trailLines.visible && introTime >= 0.45
 
     const introFactor = stage.introProgress
-    foreground.forEach((sword, index) => {
-      if (!sword.visible) return
+    const transition = formationAt(time)
+    const from = FORMATIONS[transition.from]!
+    const to = FORMATIONS[(transition.from + 1) % FORMATIONS.length]!
+    if (foreground.visible) {
       const surge = 1 + weights.volley * 0.22
-      const angle = cycle + (index / foreground.length) * Math.PI * 2
-      sword.position.set(
-        HEART_X + 0.65 + Math.cos(angle) * (3.15 * surge),
-        0.15 + Math.sin(angle) * 1.48,
-        1.45 + Math.sin(angle) * 0.65 + weights.volley * 0.45
-      )
-      direction.set(-Math.sin(angle) * 3.15, Math.cos(angle) * 1.48, Math.cos(angle) * 0.65).normalize()
-      sword.quaternion.setFromUnitVectors(UP, direction)
-      const fgScale = (0.36 + (index % 3) * 0.04) * Math.min(1, Math.max(0, (introFactor - 0.15) * 1.5))
-      sword.scale.set(fgScale, fgScale * (1 + weights.volley * 0.42), fgScale)
-    })
+      const reveal = THREE.MathUtils.smoothstep(introFactor, 0.15, 0.82)
+      foregroundFlights.forEach((flight, index) => {
+        const angle = cycle * flight.speed + flight.phase
+        const sin = Math.sin(angle)
+        const cos = Math.cos(angle)
+        // Interpolate the two contours, so the lobes stay closed while the formation changes.
+        const offset = angle - cycle
+        const ripple = THREE.MathUtils.lerp(
+          Math.cos(from.lobes * offset),
+          Math.cos(to.lobes * offset),
+          transition.fade
+        )
+        const slope = THREE.MathUtils.lerp(
+          -from.lobes * Math.sin(from.lobes * offset),
+          -to.lobes * Math.sin(to.lobes * offset),
+          transition.fade
+        )
+        const rx = flight.radiusX * surge + ripple * 0.28
+        const ry = flight.radiusY + ripple * 0.23
+        position.set(
+          HEART_X + rx * cos,
+          HEART_Y + ry * sin + flight.tilt * cos,
+          flight.depth + sin * 0.62 + weights.volley * 0.45
+        )
+        direction.set(
+          -rx * sin + 0.28 * slope * cos,
+          ry * cos + 0.23 * slope * sin - flight.tilt * sin,
+          cos * 0.62
+        )
+        direction.multiplyScalar(Math.sign(flight.speed)).normalize()
+        quaternion.setFromUnitVectors(UP, direction)
+        const size = flight.scale * reveal
+        scale.set(size, size * (1 + weights.volley * 0.42), size)
+        foreground.setMatrixAt(index, matrix.compose(position, quaternion, scale))
+      })
+      foreground.instanceMatrix.needsUpdate = true
+    }
 
     guardians.forEach((sword, index) => {
       if (!sword.visible) return
@@ -1090,10 +1188,25 @@ function buildSwordScene(
       0.26 + hoverWave + stage.mainSwordY,
       0
     )
+    const aimReveal = compact ? 0 : THREE.MathUtils.smoothstep(introTime, 3.24, INTRO_SECONDS)
+    const aimBlend = 1 - Math.exp(-7 * dt)
+    bladePitch = THREE.MathUtils.lerp(
+      bladePitch,
+      THREE.MathUtils.lerp(from.bladePitch, to.bladePitch, transition.fade),
+      aimBlend
+    )
+    bladeRollAngle = THREE.MathUtils.lerp(
+      bladeRollAngle,
+      THREE.MathUtils.lerp(from.bladeRoll, to.bladeRoll, transition.fade),
+      aimBlend
+    )
     mainSword.group.rotation.set(
-      stage.mainSwordTiltX + pointer.y * 0.08,
+      THREE.MathUtils.lerp(stage.mainSwordTiltX, bladePitch, aimReveal) + pointer.y * 0.08,
       -0.18 + Math.sin(cycle) * 0.42 + pointer.x * 0.2 + stage.mainSwordSpin,
-      stage.mainSwordTiltZ + stage.mainSwordInvert + Math.sin(cycle * 2) * 0.04 + stage.mainSwordTremble
+      THREE.MathUtils.lerp(stage.mainSwordTiltZ, bladeRollAngle, aimReveal) +
+        stage.mainSwordInvert +
+        Math.sin(cycle * 2) * 0.04 +
+        stage.mainSwordTremble
     )
     swordBaseRotation.copy(mainSword.group.quaternion)
     const invertRatio = stage.mainSwordInvert / Math.PI
@@ -1112,15 +1225,67 @@ function buildSwordScene(
     } else if (!compact) {
       hiltOffset.set(0, MAIN_SWORD_PIVOT_Y * mainScale, 0).applyQuaternion(swordBaseRotation)
       hiltWorld.copy(mainSword.group.position).add(hiltOffset)
+      // Settle the guard at the formation heart; the point sweeps around this socket.
+      hiltWorld.lerp(position.set(HEART_X, HEART_Y - 0.24 + hoverWave, 0.1), aimReveal)
       // Fade manual tilt out during the opening so the impact remains aligned with the ground.
       tiltDelta.identity().slerp(swordTilt, THREE.MathUtils.smoothstep(introTime, 3.24, INTRO_SECONDS))
       mainSword.group.quaternion.premultiply(tiltDelta)
       hiltOffset.set(0, MAIN_SWORD_PIVOT_Y * mainScale, 0).applyQuaternion(mainSword.group.quaternion)
       mainSword.group.position.copy(hiltWorld).sub(hiltOffset)
     }
+    // Separate axially before bringing the mouth across the point. Reversing follows
+    // the exact same path, so neither a quick second click nor a formation change clips the case.
+    const extend = THREE.MathUtils.smoothstep(sheathTravel, 0, 0.34)
+    const align = THREE.MathUtils.smoothstep(sheathTravel, 0.34, 0.5)
+    const insert = THREE.MathUtils.smoothstep(sheathTravel, 0.5, 1)
+    const reach = extend * (1 - insert)
+    if (sheathTravel > 0) {
+      hiltOffset.set(0, MAIN_SWORD_PIVOT_Y * mainScale, 0).applyQuaternion(mainSword.group.quaternion)
+      hiltWorld.copy(mainSword.group.position).add(hiltOffset)
+      hiltWorld.y += extend * 0.95
+      hiltWorld.z += extend * 0.48
+      mainSword.group.quaternion.slerp(restingRotation, extend)
+      mainSword.group.scale.multiplyScalar(1 - reach * 0.21)
+      hiltOffset.set(0, (MAIN_SWORD_PIVOT_Y + 2.32 * reach) * mainSword.group.scale.y, 0)
+      mainSword.group.position.copy(hiltWorld).sub(hiltOffset.applyQuaternion(mainSword.group.quaternion))
+    }
+    const scabbard = mainSword.scabbard
+    scabbard.visible = !compact && introFactor > 0.55
+    if (scabbard.visible) {
+      const reveal = THREE.MathUtils.smoothstep(introFactor, 0.55, 0.98)
+      position.set(-1.34 * (1 - align), MAIN_SWORD_PIVOT_Y + 4.56 * reach, -0.46 * (1 - align))
+      position.multiplyScalar(mainSword.group.scale.y).applyQuaternion(mainSword.group.quaternion)
+      scabbard.position.copy(mainSword.group.position).add(position)
+      scabbard.quaternion.copy(mainSword.group.quaternion)
+      scabbard.rotateZ((0.13 + Math.sin(cycle * 3) * 0.04) * (1 - extend))
+      scabbard.rotateY(0.23 * (1 - extend))
+      scabbard.scale.copy(mainSword.group.scale).multiplyScalar(reveal)
+    }
+    silkDrape.slerp(quaternion.copy(mainSword.group.quaternion).invert(), 1 - Math.exp(-5 * dt))
+    mainSword.tasselGroup.quaternion.slerp(silkDrape, aimReveal * (0.72 + 0.28 * extend))
     mainSword.bladeMaterial.emissiveIntensity = 0.22 + stage.mainSwordGlow * 0.95 + (options.boost ? 0.24 : 0)
     mainSword.glow.material.opacity = 0.2 + stage.mainSwordGlow * 0.48 + (options.boost ? 0.14 : 0)
     mainSword.glow.scale.setScalar(4.8 + gather * 1.6 + pulse * 2.1 + ambientPulse * 0.8)
+    const sealedAura = THREE.MathUtils.smoothstep(insert, 0.66, 1)
+    mainSword.bladeAura.visible = !compact
+    mainSword.bladeAura.scale.set(1 + sealedAura * 0.8, 1 - sealedAura * 0.58, 1 + sealedAura * 0.8)
+    mainSword.bladeAura.position.y = -sealedAura * 1.03
+    tipStar.visible = !compact && insert === 0
+    guardLight.visible = !compact
+    mainSword.glow.visible = insert < 0.01
+    mainSword.bladeFlow.visible = !compact && flowTime < 1.45 && insert === 0
+    mainSword.flowHead.value = (flowTime - 0.12) * 1.32
+    const tipFlash = Math.exp(-(((flowTime - 0.91) / 0.14) ** 2))
+    const guardFlash = Math.exp(-(((flowTime - 0.13) / 0.18) ** 2))
+    mainSword.bladeAura.rotation.y = cycle * 9
+    mainSword.auraMaterial.opacity = (0.32 + combinedEnergy * 0.28 + tipFlash * 0.34) * stage.mainSwordScale
+    mainSword.auraMaterial.opacity *= 1 - THREE.MathUtils.smoothstep(insert, 0, 0.23) + sealedAura * 1.9
+    const shimmer = 0.5 + 0.5 * Math.sin(cycle * 48)
+    mainSword.inlayMaterial.emissiveIntensity = 1.4 + shimmer * 0.6 + pulse * 1.5
+    tipStar.scale.setScalar(0.64 + shimmer * 0.3 + pulse * 0.82 + tipFlash * 1.6)
+    tipStar.material.rotation = 0.28 + 0.17 * Math.sin(cycle * 4)
+    guardLight.scale.setScalar(0.88 + shimmer * 0.22 + pulse * 0.52 + guardFlash * 1.1)
+    guardLight.material.opacity = 0.63 + combinedEnergy * 0.28
 
     if (pillarSprite.visible) {
       pillarMaterial.opacity = Math.min(0.64, stage.pillarIntensity * 0.48 + (options.boost ? 0.12 : 0))
@@ -1316,6 +1481,22 @@ function buildSwordScene(
     particleMaterial.opacity =
       (0.38 + gather * 0.22 + pulse * 0.22 + ambientPulse * 0.08) * stage.particleReveal
 
+    tipHalo.value.z = 0
+    if (!compact && aimReveal > 0) {
+      mainSword.group.updateWorldMatrix(true, false)
+      tipScreen.set(0, MAIN_SWORD_TIP_Y, 0).applyMatrix4(mainSword.group.matrixWorld)
+      tipScreen.applyMatrix4(camera.matrixWorldInverse)
+      if (tipScreen.z < -camera.near) {
+        const height = renderer.domElement.height
+        const radius = (height * camera.projectionMatrix.elements[5] * mainScale * 0.41) / -tipScreen.z
+        tipScreen.applyMatrix4(camera.projectionMatrix)
+        tipHalo.value.set(
+          (tipScreen.x + 1) * 0.5 * renderer.domElement.width,
+          (tipScreen.y + 1) * 0.5 * height,
+          radius * aimReveal
+        )
+      }
+    }
     renderer.render(scene, camera)
     return weights.phaseLabel
   }

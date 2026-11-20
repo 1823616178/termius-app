@@ -62,13 +62,14 @@ describe('Xuanyuan hero sword', () => {
     blade.dispose()
   })
 
-  it('builds a compact ruyi-cloud guard rather than upswept fantasy wings', () => {
+  it('builds a pierced cloud-flame guard sweeping back toward the grip', () => {
     const guard = createXuanyuanGuardGeometry()
     const bounds = boundsOf(guard)
     expect(bounds.max.x).toBeGreaterThan(0.45)
     expect(bounds.max.x).toBeLessThan(0.62)
     expect(bounds.max.y - bounds.min.y).toBeGreaterThan(0.15)
-    expect(bounds.max.y - bounds.min.y).toBeLessThan(0.32)
+    expect(bounds.max.y - bounds.min.y).toBeGreaterThan(0.8)
+    expect(guard.parameters.shapes).toBeInstanceOf(THREE.Shape)
     expect(bounds.max.z - bounds.min.z).toBeGreaterThan(0.08)
     guard.dispose()
   })
@@ -102,7 +103,8 @@ describe('Xuanyuan hero sword', () => {
     expect(model.bladeMaterial.map).toBe(engravingTexture)
     expect(model.bladeMaterial.emissiveMap).toBe(engravingTexture)
     expect(model.bladeMaterial.metalness).toBeGreaterThan(0.8)
-    expect(model.goldMaterial.metalness).toBeGreaterThan(0.85)
+    expect(model.silverMaterial.metalness).toBeGreaterThan(0.85)
+    expect(new THREE.Box3().setFromObject(model.scabbard).max.y).toBeGreaterThan(4.4)
     expect(model.glow.material.map).toBe(glowTexture)
     expect(model.group.getObjectByName('XuanyuanBladeOrnaments')).toBeDefined()
     expect(model.tasselGroup.children.length).toBeGreaterThanOrEqual(5)

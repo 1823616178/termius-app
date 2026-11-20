@@ -31,6 +31,9 @@ export interface FormationMeta {
   subEn: string
   link: 'none' | 'threads' | 'grid' | 'ring'
   linkColor: 0 | 1 | 2
+  bladePitch: number
+  bladeRoll: number
+  lobes: number
 }
 
 export const FORMATIONS: FormationMeta[] = [
@@ -40,7 +43,10 @@ export const FORMATIONS: FormationMeta[] = [
     sub: '四门诛戮陷绝 · 杀意朝心',
     subEn: 'Four Gates of Slaughter · Blades Converged',
     link: 'none',
-    linkColor: 0
+    linkColor: 0,
+    bladePitch: 0.1,
+    bladeRoll: -0.76,
+    lobes: 4
   },
   {
     name: '大庚剑阵',
@@ -48,7 +54,10 @@ export const FORMATIONS: FormationMeta[] = [
     sub: '庚金剑丝 · 隐匿穿空',
     subEn: 'Gilded Wire Threads · Silent Void Pierce',
     link: 'threads',
-    linkColor: 0
+    linkColor: 0,
+    bladePitch: -0.32,
+    bladeRoll: 0.86,
+    lobes: 3
   },
   {
     name: '春黎剑阵',
@@ -56,7 +65,10 @@ export const FORMATIONS: FormationMeta[] = [
     sub: '幻术为基 · 春影重叠',
     subEn: 'Illusion Foundation · Layered Dawn Shadows',
     link: 'none',
-    linkColor: 1
+    linkColor: 1,
+    bladePitch: 0.16,
+    bladeRoll: -0.4,
+    lobes: 5
   },
   {
     name: '青蟠剑阵',
@@ -64,7 +76,10 @@ export const FORMATIONS: FormationMeta[] = [
     sub: '青元高阶 · 蟠龙绕柱',
     subEn: 'Azure Essence · Coiling Dragon Pillars',
     link: 'none',
-    linkColor: 1
+    linkColor: 1,
+    bladePitch: 0.61,
+    bladeRoll: -0.28,
+    lobes: 2
   },
   {
     name: '小千剑阵',
@@ -72,7 +87,10 @@ export const FORMATIONS: FormationMeta[] = [
     sub: '千剑层叠 · 六重呼吸',
     subEn: 'Thousand Layered Blades · Sixfold Breath',
     link: 'none',
-    linkColor: 0
+    linkColor: 0,
+    bladePitch: -0.42,
+    bladeRoll: -0.42,
+    lobes: 6
   },
   {
     name: '大千剑阵',
@@ -80,7 +98,10 @@ export const FORMATIONS: FormationMeta[] = [
     sub: '大千世界 · 三环浑天',
     subEn: 'Grand Cosmos · Tri-Ring Celestial Sphere',
     link: 'none',
-    linkColor: 0
+    linkColor: 0,
+    bladePitch: 0.48,
+    bladeRoll: 0.58,
+    lobes: 3
   },
   {
     name: '恒山剑阵',
@@ -88,7 +109,10 @@ export const FORMATIONS: FormationMeta[] = [
     sub: '七人一队 · 攻守相济',
     subEn: 'Seven-Star Phalanx · Balanced Guard & Strike',
     link: 'none',
-    linkColor: 1
+    linkColor: 1,
+    bladePitch: -0.18,
+    bladeRoll: -0.93,
+    lobes: 7
   },
   {
     name: '六脉神剑阵',
@@ -96,7 +120,10 @@ export const FORMATIONS: FormationMeta[] = [
     sub: '六脉剑气 · 依次奔涌',
     subEn: 'Six Meridian Qi · Cascading Surge',
     link: 'none',
-    linkColor: 0
+    linkColor: 0,
+    bladePitch: 0.28,
+    bladeRoll: 1.02,
+    lobes: 6
   },
   {
     name: '罗汉剑阵',
@@ -104,7 +131,10 @@ export const FORMATIONS: FormationMeta[] = [
     sub: '少林罗汉 · 立剑如僧',
     subEn: 'Shaolin Arhat · Standing Blades in Serenity',
     link: 'none',
-    linkColor: 0
+    linkColor: 0,
+    bladePitch: -0.24,
+    bladeRoll: 0.04,
+    lobes: 2
   },
   {
     name: '九宫八卦剑阵',
@@ -112,7 +142,10 @@ export const FORMATIONS: FormationMeta[] = [
     sub: '九宫方位 · 交织剑网',
     subEn: 'Nine Palaces · Interwoven Trigram Lattice',
     link: 'grid',
-    linkColor: 1
+    linkColor: 1,
+    bladePitch: 0.34,
+    bladeRoll: -0.54,
+    lobes: 8
   },
   {
     name: '五行连环剑阵',
@@ -120,7 +153,10 @@ export const FORMATIONS: FormationMeta[] = [
     sub: '五行相生 · 连环合击',
     subEn: 'Wu Xing Cycle · Linked Orbital Strike',
     link: 'ring',
-    linkColor: 0
+    linkColor: 0,
+    bladePitch: -0.37,
+    bladeRoll: 0.52,
+    lobes: 5
   },
   {
     name: '五九剑阵',
@@ -128,7 +164,10 @@ export const FORMATIONS: FormationMeta[] = [
     sub: '四五长剑 · 旋盘不息',
     subEn: 'Forty-Five Longswords · Perpetual Spiral',
     link: 'none',
-    linkColor: 0
+    linkColor: 0,
+    bladePitch: 0.52,
+    bladeRoll: -0.84,
+    lobes: 4
   }
 ]
 
@@ -712,7 +751,7 @@ function poseDaqian(i: number, n: number, _cyc: number, base: number, out: Sword
 }
 
 function poseHengshan(i: number, n: number, _cyc: number, base: number, out: SwordPose): void {
-  const rosetteSquads = n >= 210 ? 60 : Math.max(1, Math.floor(n / 7))
+  const rosetteSquads = Math.max(1, Math.floor(n / (n >= 210 ? 21 : 7)))
   const rosetteLimit = rosetteSquads * 7
   if (i < rosetteLimit) {
     const squad = Math.floor(i / 7)
@@ -1202,12 +1241,12 @@ export function sampleSwordPose(index: number, total: number, timeSeconds: numbe
 export function formationCount(tier: SwordMotionTier, compact: boolean): number {
   if (tier === 'off') return 0
   if (compact) return tier === 'full' ? 24 : 12
-  return tier === 'full' ? 1260 : 180
+  return tier === 'full' ? 3600 : 180
 }
 
 export function skyFormationCount(tier: SwordMotionTier, compact: boolean): number {
   if (tier === 'off' || compact) return 0
-  return tier === 'full' ? 900 : 120
+  return tier === 'full' ? 5760 : 120
 }
 
 export function gatheringStrength(timeSeconds: number): number {
@@ -1529,9 +1568,10 @@ export function sampleSkySwordPoseInto(
 
   if (index < riverEnd) {
     // Sweeping celestial sword river across the right sky and moon horizon
-    const lane = index % 5
+    const lanes = safeTotal > 900 ? 13 : 5
+    const lane = index % lanes
     const u = fract(index / Math.max(1, riverEnd) + cyc * 2)
-    const bandSpread = (lane - 2) * 0.48 + (seed(index, 31) - 0.5) * 0.62
+    const bandSpread = (lane - (lanes - 1) / 2) * 0.48 + (seed(index, 31) - 0.5) * 0.62
     const xSpan = (u - 0.5) * 11.4
     const curveY = Math.sin((u - 0.5) * Math.PI * 1.1) * 1.75 + (u - 0.5) * 2.2
     const px = HEART_X + 0.6 + xSpan + bandSpread * 0.42
@@ -1570,7 +1610,7 @@ export function sampleSkySwordPoseInto(
     // Giant distant horizon sword wheel circling behind the formation
     const local = index - riverEnd
     const count = Math.max(1, vortexEnd - riverEnd)
-    const tier = local % 3
+    const tier = local % (safeTotal > 900 ? 7 : 3)
     const ang = (local / count) * TAU + base * (tier % 2 ? -2 : 2)
     const r = 4.2 + tier * 1.05 + (seed(index, 34) - 0.5) * 0.48
     const px = HEART_X + 0.35 + Math.cos(ang) * r

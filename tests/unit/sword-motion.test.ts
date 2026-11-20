@@ -40,12 +40,12 @@ function linkCountAt(time: number): number {
 
 describe('twelve named sword formations', () => {
   it('uses bounded full, light, compact and sky sword instance counts', () => {
-    expect(formationCount('full', false)).toBe(1260)
+    expect(formationCount('full', false)).toBe(3600)
     expect(formationCount('light', false)).toBe(180)
     expect(formationCount('full', true)).toBe(24)
     expect(formationCount('light', true)).toBe(12)
     expect(formationCount('off', false)).toBe(0)
-    expect(skyFormationCount('full', false)).toBe(900)
+    expect(skyFormationCount('full', false)).toBe(5760)
     expect(skyFormationCount('light', false)).toBe(120)
     expect(skyFormationCount('full', true)).toBe(0)
     expect(skyFormationCount('off', false)).toBe(0)

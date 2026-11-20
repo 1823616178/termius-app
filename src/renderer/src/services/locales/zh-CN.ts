@@ -185,6 +185,8 @@ export const zhCN = {
   'welcome.viewHint': '拖动剑尖调倾角 · 拖动空白环视 · 滚轮缩放 · 双击复位',
   'welcome.replayTitle': '重新播放开场展开与剑阵演武',
   'welcome.replay': '重展剑境',
+  'welcome.sheatheSword': '归鞘',
+  'welcome.drawSword': '出鞘',
   'welcome.climaxTitle': '立即催动诛仙剑阵四门杀劫',
   'welcome.climax': '即刻归宗',
   'welcome.railAria': '十二剑阵巡览',

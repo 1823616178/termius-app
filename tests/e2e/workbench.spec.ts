@@ -2215,6 +2215,28 @@ test('terminal right-side SFTP drawer browses, uploads, downloads, chmods, renam
   }
 })
 
+test('the hero sword sheathes, draws and reverses during alignment', async ({ orbit }, info) => {
+  const { page } = orbit
+  await page.getByRole('button', { name: '切换至春黎剑阵', exact: true }).click()
+  const sheathe = page.getByRole('button', { name: '归鞘', exact: true })
+  const draw = page.getByRole('button', { name: '出鞘', exact: true })
+  const tip = page.getByRole('button', { name: '调整主剑倾斜度', exact: true })
+  await expect(tip).toBeVisible()
+  await sheathe.click()
+  await expect(tip).toBeHidden()
+  await page.waitForTimeout(400)
+  await draw.click()
+  await expect(tip).toBeVisible()
+  await sheathe.click()
+  await page.waitForTimeout(2350)
+  await expect(tip).toBeHidden()
+  await page.screenshot({ path: info.outputPath('silver-sheathed.png') })
+  await page.getByRole('button', { name: '切换至九宫八卦剑阵', exact: true }).click()
+  await draw.click()
+  await expect(tip).toBeVisible()
+  await page.screenshot({ path: info.outputPath('silver-drawn.png') })
+})
+
 test('all twelve sword formations support orbit, zoom and reset', async ({ orbit }, info) => {
   test.setTimeout(120_000)
   const { page } = orbit
@@ -2259,10 +2281,15 @@ test('hero sword tip tilts independently, clamps safely, cancels and resets afte
   await page.reload()
   const stage = page.locator('[data-variant="welcome"]')
   await expect(stage).toHaveAttribute('data-ready', 'true')
-  await page.getByRole('button', { name: '切换至春黎剑阵', exact: true }).click()
+  await page.getByRole('button', { name: '切换至大庚剑阵', exact: true }).click()
   const tip = page.getByRole('button', { name: '调整主剑倾斜度', exact: true })
   await expect(tip).toBeVisible()
   const angle = async () => Number(await tip.getAttribute('data-tilt'))
+  await expect.poll(angle).toBeGreaterThan(45)
+  const leftAim = (await tip.boundingBox())!.x
+  await page.getByRole('button', { name: '切换至春黎剑阵', exact: true }).click()
+  await expect.poll(async () => (await tip.boundingBox())!.x - leftAim).toBeGreaterThan(130)
+  await expect.poll(angle).toBeGreaterThan(18)
   const defaultAngle = await angle()
   expect(await tip.evaluate((el) => getComputedStyle(el).transitionProperty)).not.toContain('transform')
   expect(defaultAngle).toBeGreaterThan(15)
@@ -2283,9 +2310,9 @@ test('hero sword tip tilts independently, clamps safely, cancels and resets afte
   const adjustedAngle = await angle()
   await page.screenshot({ path: info.outputPath('hero-tip-dragged.png') })
 
-  // Formation switches retain the adjustment rather than replacing the main sword.
+  // The next formation steers the blade while retaining the user's adjustment.
   await page.getByRole('button', { name: '切换至九宫八卦剑阵', exact: true }).click()
-  expect(Math.abs((await angle()) - adjustedAngle)).toBeLessThan(8)
+  await expect.poll(angle).toBeGreaterThan(adjustedAngle - 8)
   const next = (await tip.boundingBox())!
   await page.mouse.move(next.x + 18, next.y + 18)
   await page.mouse.down()
@@ -2305,7 +2332,8 @@ test('hero sword tip tilts independently, clamps safely, cancels and resets afte
   await expect.poll(async () => Math.abs((await angle()) - beforeKey)).toBeGreaterThan(1)
   const reset = (await tip.boundingBox())!
   await page.mouse.dblclick(reset.x + 18, reset.y + 18)
-  await expect.poll(angle).toBeLessThan(35)
+  // Reset restores Bagua's oblique stance, including its gentle camera-facing sway.
+  await expect.poll(async () => Math.abs((await angle()) - 37)).toBeLessThan(6)
 
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(1100, 720))
   const bounds = (await stage.boundingBox())!

@@ -15,6 +15,7 @@ const props = withDefaults(
     active?: boolean
     paused?: boolean
     boost?: boolean
+    sheathed?: boolean
     instance?: string
     onFrameRate?: (fps: number) => void
   }>(),
@@ -82,6 +83,7 @@ function sceneOptions(): SwordSceneOptions {
     tier: motionTier.value === 'light' ? 'light' : 'full',
     state: props.state,
     boost: props.boost,
+    sheathed: props.sheathed,
     palette: {
       accentA: cssColor(styles, '--color-accent-primary', '#d4af63'),
       accentB: cssColor(styles, '--color-accent-secondary', '#5ec4a6'),
@@ -511,6 +513,7 @@ function resetView(): void {
 }
 
 defineExpose({
+  fallbackVisible,
   replayIntro,
   jumpToClimax,
   jumpToFormation,
@@ -555,7 +558,7 @@ watch(
 )
 
 watch(
-  () => [props.active, props.paused, props.state, props.boost, props.variant],
+  () => [props.active, props.paused, props.state, props.boost, props.variant, props.sheathed],
   ([nextActive], [prevActive]) => {
     if (nextActive && !prevActive) {
       lastTick = performance.now()

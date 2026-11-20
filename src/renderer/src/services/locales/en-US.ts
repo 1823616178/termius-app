@@ -191,6 +191,8 @@ export const enUS: Record<TranslationKey, string> = {
   'welcome.viewHint': 'Drag blade tip to tilt · Drag space to orbit · Scroll to zoom · Double-click reset',
   'welcome.replayTitle': 'Replay opening sword choreography',
   'welcome.replay': 'Replay Intro',
+  'welcome.sheatheSword': 'Sheathe',
+  'welcome.drawSword': 'Draw Sword',
   'welcome.climaxTitle': 'Trigger Zhu Xian Four-Gate Sword Climax',
   'welcome.climax': 'Sword Climax',
   'welcome.railAria': 'Twelve Sword Formations',
