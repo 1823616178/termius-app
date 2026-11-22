@@ -1788,6 +1788,7 @@ test('background system tray icon appears on minimize and restores window cleanl
     return win ? win.isVisible() : null
   })
   expect(visibleAfterMinimize).toBe(false)
+  await expect(page.locator('html')).toHaveAttribute('data-ui-suspended', 'true')
 
   // Restore window from tray clears tray icon in when-minimized mode
   await page.evaluate(() => window.orbit.window.restoreFromTray())
@@ -1802,6 +1803,7 @@ test('background system tray icon appears on minimize and restores window cleanl
     return win ? win.isVisible() : null
   })
   expect(visibleAfterRestore).toBe(true)
+  await expect(page.locator('html')).toHaveAttribute('data-ui-suspended', 'false')
 
   // Explicit TitleBar "后台托盘" button also minimizes cleanly to system tray
   await page.getByRole('button', { name: '后台托盘', exact: true }).click()

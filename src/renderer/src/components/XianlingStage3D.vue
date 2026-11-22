@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { instanceClass } from '../../../shared/classes'
 import orbitIcon from '../assets/orbit-icon.svg'
-import { isAppForeground, onAppForegroundChange } from '../services/app-foreground'
+import { isAppMotionActive, onAppMotionChange } from '../services/app-foreground'
 import { t, translateMotionReason } from '../services/i18n'
 import { parseMotionTier, REDUCED_MOTION_REASON, type MotionTier } from '../services/motion-performance'
 import type { FrameCallback, XianlingTheatre } from '../services/xianling/theatre'
@@ -48,9 +48,7 @@ let motionGeneration = ''
 let contextLost = false
 let loading = false
 let disposed = false
-let visible = isAppForeground()
-let stopForeground: (() => void) | undefined
-let resumeTimer = 0
+let stopMotionWatch: (() => void) | undefined
 let attrObserver: MutationObserver | null = null
 let resizeObserver: ResizeObserver | null = null
 let lastWidth = 0
@@ -74,7 +72,9 @@ function isReducedMotionActive(): boolean {
 }
 
 function canAnimate(): boolean {
-  return !disposed && !contextLost && !failed.value && !motionDisabled.value && props.active && visible
+  return (
+    !disposed && !contextLost && !failed.value && !motionDisabled.value && props.active && isAppMotionActive()
+  )
 }
 
 function syncReadyState(): void {
@@ -84,7 +84,7 @@ function syncReadyState(): void {
 
 function resizeStage(force = false): void {
   const host = hostRef.value
-  if (!host || !theatre) return
+  if (!host || !theatre || !isAppMotionActive()) return
   const width = host.clientWidth
   const height = host.clientHeight
   if (!width || !height) return
@@ -161,13 +161,9 @@ async function initializeTheatre(): Promise<void> {
     ready.value = true
     syncReadyState()
     await nextTick()
-    if (disposed) {
-      theatre?.dispose(false)
-      theatre = null
-      return
-    }
+    if (theatre !== created) return
     resizeStage(true)
-    theatre.setSuspended(!canAnimate())
+    created.setSuspended(!canAnimate())
   } catch (error) {
     console.warn('Xianling 3D theatre unavailable', error)
     handleFailure()
@@ -228,20 +224,6 @@ function handleMotionChange(): void {
   void nextTick(() => {
     ensureRunning()
   })
-}
-
-function applyForeground(active: boolean, immediate = false): void {
-  visible = active
-  window.clearTimeout(resumeTimer)
-  resumeTimer = 0
-  if (!active || immediate) {
-    ensureRunning()
-    return
-  }
-  resumeTimer = window.setTimeout(() => {
-    resumeTimer = 0
-    if (visible) ensureRunning()
-  }, 500)
 }
 
 function handleContextLost(event: Event): void {
@@ -365,8 +347,7 @@ defineExpose({
 })
 
 onMounted(() => {
-  visible = isAppForeground()
-  stopForeground = onAppForegroundChange((active) => applyForeground(active))
+  stopMotionWatch = onAppMotionChange(ensureRunning)
   readPreferences()
   attrObserver = new MutationObserver(() => {
     handleMotionChange()
@@ -400,8 +381,7 @@ watch(
 
 onBeforeUnmount(() => {
   disposed = true
-  window.clearTimeout(resumeTimer)
-  stopForeground?.()
+  stopMotionWatch?.()
   attrObserver?.disconnect()
   resizeObserver?.disconnect()
   canvasRef.value?.removeEventListener('webglcontextlost', handleContextLost)
