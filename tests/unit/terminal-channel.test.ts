@@ -105,6 +105,7 @@ describe('terminalChannel coalescing, flow control, and rate limits', () => {
   it('coalesces trailing output within 8ms and flushes immediately at 32 KiB or on finish', () => {
     vi.useFakeTimers()
     const h = createHarness()
+    h.emit({ type: 'presentation', visible: true, frameRate: 60 })
 
     h.channel.output('first')
     h.channel.output('hello ')
@@ -135,6 +136,24 @@ describe('terminalChannel coalescing, flow control, and rate limits', () => {
     h.emit({ type: 'ack', sequence: 3 })
     h.emit({ type: 'ack', sequence: 4 })
     expect(h.stats.channelClosed).toBe(1)
+  })
+
+  it('shortens the worker batching window when a live session switches to 150 FPS', () => {
+    vi.useFakeTimers()
+    const h = createHarness()
+    h.emit({ type: 'presentation', visible: true, frameRate: 30 })
+    h.channel.output('a')
+    h.channel.output('b')
+    vi.advanceTimersByTime(10)
+    expect(h.posted).toHaveLength(1)
+    h.emit({ type: 'presentation', visible: true, frameRate: 150 })
+    expect(h.posted).toHaveLength(2)
+    h.channel.output('c')
+    vi.advanceTimersByTime(2)
+    expect(h.posted).toHaveLength(2)
+    vi.advanceTimersByTime(1)
+    expect(h.posted).toHaveLength(3)
+    h.channel.close()
   })
 
   it('resets stall timer on ACK progress while paused and closes on real stall', () => {

@@ -1,6 +1,6 @@
 import type { FontWeight, Terminal } from '@xterm/xterm'
 import { watch } from 'vue'
-import { terminalGpuEnabled } from '../stores/workbench-state'
+import { terminalFrameRate, terminalGpuEnabled } from '../stores/workbench-state'
 import type { SearchAddon } from '@xterm/addon-search'
 import type { OpenSessionInput, SessionInfo, TerminalEvent } from '../../../shared/contracts'
 import {
@@ -13,7 +13,7 @@ import {
 import { locale, t } from './i18n'
 import { createTerminalLinkIntegration } from './terminal-links'
 import { isAppForeground, onAppForegroundChange } from './app-foreground'
-import { createTerminalOutput } from './terminal-present'
+import { createTerminalOutput, TerminalOutputScheduler } from './terminal-present'
 import { attachTerminalWebgl } from './terminal-webgl'
 import { type CursorShape, type TerminalThemeId } from './terminal-themes'
 
@@ -113,6 +113,7 @@ const DEFAULT_APPEARANCE: TerminalAppearanceOptions = {
 }
 
 const registry = new Map<string, RegistryEntry>()
+const outputScheduler = new TerminalOutputScheduler(() => terminalFrameRate.value)
 
 export function getRegisteredTerminalCount(): number {
   return registry.size
@@ -248,10 +249,14 @@ export async function createTerminal(
   let needsFit = true
   const send = (message: unknown) => port?.postMessage(message)
   const canPresent = () => isAppForeground() && presented
+  const sendPresentation = () =>
+    send({ type: 'presentation', visible: canPresent(), frameRate: terminalFrameRate.value })
+  const stopFrameRateWatch = watch(terminalFrameRate, sendPresentation)
   const output = createTerminalOutput(
     (bytes, parsed) => terminal.write(bytes, parsed),
     (sequence) => send({ type: 'ack', sequence }),
-    canPresent()
+    canPresent(),
+    outputScheduler
   )
 
   const emitState = (event: Extract<TerminalEvent, { type: 'state' }>) => {
@@ -425,7 +430,10 @@ export async function createTerminal(
     }
   }
 
-  const input = terminal.onData(enqueueInput)
+  const input = terminal.onData((data) => {
+    output.noteInput()
+    enqueueInput(data)
+  })
 
   const removeFailure = window.orbit.onSessionFailure((event) => {
     if (session?.id !== event.id || disposed) return
@@ -444,8 +452,8 @@ export async function createTerminal(
   }
 
   const syncPresentation = () => {
+    sendPresentation()
     const visible = canPresent()
-    send({ type: 'presentation', visible })
     output.setVisible(visible)
     webglSync?.()
     if (visible && needsFit) scheduleFit()
@@ -471,6 +479,7 @@ export async function createTerminal(
     connected = false
     inputQueue = []
     output.dispose()
+    stopFrameRateWatch()
     stopForegroundWatch()
     observer.disconnect()
     clearTimeout(resizeTimer)
@@ -604,7 +613,7 @@ export async function createTerminal(
                     : '终端后台通道已关闭，请新建会话。'
               })
           })
-          send({ type: 'presentation', visible: canPresent() })
+          sendPresentation()
           port.start()
           // A resize before the port arrived was only applied locally.
           lastSize = ''

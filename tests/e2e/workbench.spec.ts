@@ -793,6 +793,44 @@ test('terminal uses hardware WebGL when available and keeps the session after co
   await expect(page.locator('.xterm-screen > canvas')).toHaveCount(0)
 })
 
+test('terminal output frame rate applies to the open local session and survives a reload', async ({
+  orbit
+}) => {
+  const { page } = orbit
+  await enableTerminalTextForAssertions(page)
+  const sentRates = await page.evaluateHandle(() => {
+    const rates: number[] = []
+    const post = MessagePort.prototype.postMessage
+    MessagePort.prototype.postMessage = function (message, ...args) {
+      if (message?.type === 'presentation') rates.push(message.frameRate)
+      return Reflect.apply(post, this, [message, ...args])
+    }
+    return rates
+  })
+  await page.getByRole('button', { name: '打开本地终端', exact: true }).click()
+  const rows = page.locator('.xterm-accessibility-tree')
+  await expect(rows).toContainText('PS ', { timeout: 15_000 })
+  await expect.poll(() => sentRates.evaluate((rates) => rates.at(-1))).toBe(150)
+  const settings = page.getByRole('button', { name: '设置', exact: true })
+  const sshTab = page.getByTestId('settings-tab-ssh')
+  const limit = page.getByRole('combobox', { name: '终端输出帧率上限' })
+  await settings.click()
+  await sshTab.click()
+  await expect(limit).toContainText('150 FPS')
+  await limit.click()
+  await page.getByRole('option', { name: '60 FPS', exact: true }).click()
+  await expect.poll(() => sentRates.evaluate((rates) => rates.at(-1))).toBe(60)
+  await page.getByRole('button', { name: '工作台', exact: true }).click()
+  await page.locator('.xterm-helper-textarea').focus()
+  await page.keyboard.type('Write-Output ("FRAME_" + "READY")')
+  await page.keyboard.press('Enter')
+  await expect(rows).toContainText('FRAME_READY')
+  await page.reload()
+  await settings.click()
+  await sshTab.click()
+  await expect(limit).toContainText('60 FPS')
+})
+
 test('rapid terminal tab switches retain renderer surfaces and restore the selected split', async ({
   orbit
 }) => {
@@ -1128,23 +1166,58 @@ test('real SSH handshake, trust prompt, encrypted credential and PTY data', asyn
   }
 })
 
-test('a hidden terminal drains high-volume output and remains interactive after the stall timeout', async ({
+test('a tray click restores painting, input and a busy terminal after the stall timeout', async ({
   orbit
 }) => {
-  test.setTimeout(100_000)
+  const hiddenMs = Math.max(42_000, Number(process.env.ORBIT_TEST_TRAY_IDLE_MS) || 0)
+  test.setTimeout(hiddenMs + 60_000)
   const { page, app } = orbit
   await enableTerminalTextForAssertions(page)
   await page.getByRole('button', { name: '打开本地终端', exact: true }).click()
   const rows = page.locator('.xterm-accessibility-tree')
-  await expect(rows).toContainText('PS ', { timeout: 15_000 })
+  await expect(page.getByText('运行中', { exact: true }).first()).toBeVisible()
+  // Capture the native tray owned by this test instance so restore takes the
+  // icon's click path even while the renderer is hidden and throttled.
+  const nativeTray = await app.evaluateHandle(({ Tray }) => {
+    const captured = { icon: null as Electron.Tray | null }
+    const original = Tray.prototype.setToolTip
+    Tray.prototype.setToolTip = function (text) {
+      Tray.prototype.setToolTip = original
+      captured.icon = this
+      original.call(this, text)
+    }
+    return captured
+  })
+  await page.locator('.xterm-helper-textarea').focus()
+  await page.keyboard.type('Write-Output ("BEFORE_"+"TRAY")')
+  await page.keyboard.press('Enter')
+  await expect(rows).toContainText('BEFORE_TRAY', { timeout: 20_000 })
   await page.locator('.xterm-helper-textarea').focus()
   await page.keyboard.type(
-    'Start-Sleep 1; $s="X"*8192; for($i=0;$i -lt 256;$i++){[Console]::WriteLine($s)}; Write-Output ("HIDDEN_"+"TAIL")'
+    'Start-Sleep 3; $s="X"*8192; for($i=0;$i -lt 256;$i++){[Console]::WriteLine($s)}; Write-Output ("HIDDEN_"+"TAIL")'
   )
   await page.keyboard.press('Enter')
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.hide())
-  await new Promise((resolve) => setTimeout(resolve, 42_000))
-  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.show())
+  // Chromium can acknowledge a pointer event that hides its own window only
+  // after restore. Enter the tray via the same bridge without waiting on that ACK.
+  await page.evaluate(() => window.orbit.window.hideToTray())
+  const nativeState = () =>
+    app.evaluate(({ BrowserWindow }) => {
+      const win = BrowserWindow.getAllWindows()[0]!
+      return { visible: win.isVisible(), throttling: win.webContents.getBackgroundThrottling() }
+    })
+  await expect.poll(nativeState).toEqual({ visible: false, throttling: true })
+  await new Promise((resolve) => setTimeout(resolve, hiddenMs))
+  const destroyedDuringClick = await nativeTray.evaluate(({ icon }) => {
+    if (!icon || icon.isDestroyed()) throw new Error('Tray icon unavailable while window is hidden')
+    icon.emit('click')
+    return icon.isDestroyed()
+  })
+  expect(destroyedDuringClick).toBe(false)
+  await nativeTray.dispose()
+  await expect.poll(nativeState).toEqual({ visible: true, throttling: process.platform !== 'win32' })
+  await page.getByRole('button', { name: '设置', exact: true }).click({ timeout: 5000 })
+  await expect(page.getByRole('heading', { name: '后台运行与系统托盘' })).toBeVisible()
+  await page.getByRole('button', { name: '工作台', exact: true }).click()
   await expect(rows).toContainText('HIDDEN_TAIL', { timeout: 25_000 })
   await page.locator('.xterm-helper-textarea').focus()
   await page.keyboard.type('Write-Output ("STILL_"+"ALIVE")')
@@ -1760,6 +1833,24 @@ test('activated tunnels & identities pages, horizontal host actions, sync write 
   }
 })
 
+test('restoring during native minimize cancels the queued hide to tray', async ({ orbit }) => {
+  const state = await orbit.app.evaluate(async ({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows()[0]!
+    const restored = new Promise<void>((resolve) => {
+      win.once('restore', () => setImmediate(resolve))
+    })
+    win.once('minimize', () => win.restore())
+    win.minimize()
+    await restored
+    return { visible: win.isVisible(), minimized: win.isMinimized() }
+  })
+  expect(state).toEqual({ visible: true, minimized: false })
+  expect(await orbit.page.evaluate(() => window.orbit.tray.getState())).toMatchObject({
+    windowHiddenToTray: false,
+    trayCreated: false
+  })
+})
+
 test('background system tray icon appears on minimize and restores window cleanly', async ({
   orbit
 }, info) => {
@@ -1775,23 +1866,36 @@ test('background system tray icon appears on minimize and restores window cleanl
     windowHiddenToTray: false
   })
 
-  // Clicking TitleBar Minimize sends window to background and creates system tray icon
-  await page.getByRole('button', { name: '最小化', exact: true }).click()
-  await expect
-    .poll(async () => page.evaluate(() => window.orbit.tray.getState()))
-    .toMatchObject({
-      trayCreated: true,
-      windowHiddenToTray: true
-    })
-  const visibleAfterMinimize = await app.evaluate(({ BrowserWindow }) => {
-    const win = BrowserWindow.getAllWindows()[0]
-    return win ? win.isVisible() : null
+  const trayButton = page.getByRole('button', { name: '后台托盘', exact: true })
+  const trayPoint = await trayButton.evaluate((button) => {
+    button.addEventListener(
+      'click',
+      () => {
+        button.dataset.suspendedAtClick = document.documentElement.dataset.uiSuspended
+      },
+      { once: true }
+    )
+    const rect = button.getBoundingClientRect()
+    return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 }
   })
-  expect(visibleAfterMinimize).toBe(false)
-  await expect(page.locator('html')).toHaveAttribute('data-ui-suspended', 'true')
 
-  // Restore window from tray clears tray icon in when-minimized mode
-  await page.evaluate(() => window.orbit.window.restoreFromTray())
+  const restoreHiddenTray = async (expected: Partial<typeof initialTray> = {}) => {
+    await expect
+      .poll(() => page.evaluate(() => window.orbit.tray.getState()))
+      .toMatchObject({
+        ...expected,
+        trayCreated: true,
+        windowHiddenToTray: true
+      })
+    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.isVisible())).toBe(
+      false
+    )
+    await expect(page.locator('html')).toHaveAttribute('data-ui-suspended', 'true')
+    await page.evaluate(() => window.orbit.window.restoreFromTray())
+  }
+  // A native restore must be able to run while Chromium is acknowledging the
+  // pointer event which hid the window.
+  await Promise.all([page.getByRole('button', { name: '最小化', exact: true }).click(), restoreHiddenTray()])
   await expect
     .poll(async () => page.evaluate(() => window.orbit.tray.getState()))
     .toMatchObject({
@@ -1803,17 +1907,10 @@ test('background system tray icon appears on minimize and restores window cleanl
     return win ? win.isVisible() : null
   })
   expect(visibleAfterRestore).toBe(true)
-  await expect(page.locator('html')).toHaveAttribute('data-ui-suspended', 'false')
-
-  // Explicit TitleBar "后台托盘" button also minimizes cleanly to system tray
-  await page.getByRole('button', { name: '后台托盘', exact: true }).click()
-  await expect
-    .poll(async () => page.evaluate(() => window.orbit.tray.getState()))
-    .toMatchObject({
-      trayCreated: true,
-      windowHiddenToTray: true
-    })
-  await page.evaluate(() => window.orbit.window.restoreFromTray())
+  // Send real pointer input during the settle window. Chromium can acknowledge
+  // the mouse event after the window that handled it becomes visible again.
+  await Promise.all([page.mouse.click(trayPoint.x, trayPoint.y), restoreHiddenTray()])
+  await expect(trayButton).toHaveAttribute('data-suspended-at-click', 'true')
   await expect
     .poll(async () => page.evaluate(() => window.orbit.tray.getState()))
     .toMatchObject({
@@ -1827,6 +1924,7 @@ test('background system tray icon appears on minimize and restores window cleanl
     .getByRole('button', { name: '设置', exact: true })
     .click()
   await expect(page.getByRole('heading', { name: '后台运行与系统托盘' })).toBeVisible()
+  await expect(page.locator('html')).toHaveAttribute('data-ui-suspended', 'false')
   const trayVisibilityCombo = page.getByRole('combobox', {
     name: '系统托盘图标显示时机',
     exact: true
@@ -1870,16 +1968,8 @@ test('background system tray icon appears on minimize and restores window cleanl
   // 1) Tray mode: clicking TitleBar close (×) hides window to system tray instead of exiting
   await trayRadio.click()
   await expect(trayRadio).toHaveAttribute('aria-checked', 'true')
-  await page.getByRole('button', { name: '关闭窗口', exact: true }).click()
-  await expect
-    .poll(async () => page.evaluate(() => window.orbit.tray.getState()))
-    .toMatchObject({
-      closeAction: 'tray',
-      closeToTray: true,
-      trayCreated: true,
-      windowHiddenToTray: true
-    })
-  await page.evaluate(() => window.orbit.window.restoreFromTray())
+  const closeButton = page.getByRole('button', { name: '关闭窗口', exact: true })
+  await Promise.all([closeButton.click(), restoreHiddenTray({ closeAction: 'tray', closeToTray: true })])
   await expect
     .poll(async () => page.evaluate(() => window.orbit.tray.getState()))
     .toMatchObject({ windowHiddenToTray: false })
@@ -1893,18 +1983,22 @@ test('background system tray icon appears on minimize and restores window cleanl
       closeAction: 'minimize',
       closeToTray: false
     })
-  await page.getByRole('button', { name: '关闭窗口', exact: true }).click()
-  await expect
-    .poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isMinimized() ?? false))
-    .toBe(true)
-  expect(await page.evaluate(() => window.orbit.tray.getState()).then((s) => s.windowHiddenToTray)).toBe(
-    false
-  )
-  await app.evaluate(({ BrowserWindow }) => {
-    const win = BrowserWindow.getAllWindows()[0]
-    win?.restore()
-    win?.focus()
-  })
+  await Promise.all([
+    closeButton.click(),
+    (async () => {
+      await expect
+        .poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.isMinimized()))
+        .toBe(true)
+      expect(await page.evaluate(async () => (await window.orbit.tray.getState()).windowHiddenToTray)).toBe(
+        false
+      )
+      await app.evaluate(({ BrowserWindow }) => {
+        const win = BrowserWindow.getAllWindows()[0]!
+        win.restore()
+        win.focus()
+      })
+    })()
+  ])
   await expect
     .poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isMinimized() ?? true))
     .toBe(false)

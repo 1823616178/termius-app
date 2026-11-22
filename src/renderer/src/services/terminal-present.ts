@@ -1,6 +1,8 @@
-const FRAME_MS = 8
+import { DEFAULT_TERMINAL_FRAME_RATE, type TerminalFrameRate } from '../../../shared/flow-control'
+
+const MAX_PARSE_MS = 8
 const FRAME_BYTES = 64 * 1024
-const MAX_SLICE_BYTES = 8 * 1024
+const MAX_SLICE_BYTES = 32 * 1024
 const MIN_SLICE_BYTES = 512
 const ECHO_BYTES = 1024
 
@@ -15,13 +17,17 @@ export class TerminalOutputScheduler {
   private frame = 0
   private remaining = 0
   private deadline = 0
-  private echoArmed = true
+  private nextFrameAt = -Infinity
+  private frameRate?: TerminalFrameRate
+  private parseBudget = MAX_PARSE_MS
   private sliceBytes = MAX_SLICE_BYTES
+
+  constructor(private readonly getFrameRate: () => TerminalFrameRate = () => DEFAULT_TERMINAL_FRAME_RATE) {}
 
   request(write: WriteSlice, idleEcho = false): void {
     this.ready.add(write)
-    if (!this.active && !this.frame && idleEcho && this.ready.size === 1 && this.echoArmed) {
-      this.beginFrame()
+    if (!this.active && !this.frame && idleEcho && this.ready.size === 1) {
+      this.beginFrame(performance.now())
     } else {
       this.schedule()
     }
@@ -41,19 +47,27 @@ export class TerminalOutputScheduler {
 
   private schedule(): void {
     if (this.active || this.frame || !this.ready.size) return
-    this.frame = requestAnimationFrame(() => {
+    this.frame = requestAnimationFrame((timestamp) => {
       this.frame = 0
-      this.beginFrame()
+      this.beginFrame(timestamp)
     })
   }
 
-  private beginFrame(): void {
-    this.echoArmed = false
-    requestAnimationFrame(() => {
-      this.echoArmed = true
-    })
+  private beginFrame(timestamp: number): void {
+    const rate = this.getFrameRate()
+    const interval = 1000 / rate
+    if (rate !== this.frameRate) this.nextFrameAt = -Infinity
+    this.frameRate = rate
+    if (timestamp + 0.1 < this.nextFrameAt) {
+      this.schedule()
+      return
+    }
+    // Keep fractional intervals when the monitor refresh rate is not a multiple
+    // of the target. Drop missed frames after idle instead of trying to catch up.
+    this.nextFrameAt = (timestamp - this.nextFrameAt >= interval ? timestamp : this.nextFrameAt) + interval
+    this.parseBudget = Math.min(MAX_PARSE_MS, interval / 2)
     this.remaining = FRAME_BYTES
-    this.deadline = performance.now() + FRAME_MS
+    this.deadline = performance.now() + this.parseBudget
     this.runSlice()
   }
 
@@ -69,8 +83,9 @@ export class TerminalOutputScheduler {
       if (this.active !== write) return
       const elapsed = performance.now() - started
       if (bytes === this.sliceBytes) {
-        if (elapsed >= FRAME_MS) this.sliceBytes = Math.max(MIN_SLICE_BYTES, this.sliceBytes / 2)
-        else if (elapsed < FRAME_MS / 2) this.sliceBytes = Math.min(MAX_SLICE_BYTES, this.sliceBytes * 2)
+        if (elapsed >= this.parseBudget) this.sliceBytes = Math.max(MIN_SLICE_BYTES, this.sliceBytes / 2)
+        else if (elapsed < this.parseBudget / 2)
+          this.sliceBytes = Math.min(MAX_SLICE_BYTES, this.sliceBytes * 2)
       }
       this.remaining -= bytes
       this.active = undefined
@@ -83,44 +98,70 @@ export class TerminalOutputScheduler {
   }
 }
 
-const sharedScheduler = new TerminalOutputScheduler()
-
 export function createTerminalOutput(
   write: (bytes: Uint8Array, parsed: () => void) => void,
   acknowledge: (sequence: number) => void,
   visible: boolean,
-  scheduler = sharedScheduler
+  scheduler: TerminalOutputScheduler
 ) {
   let queue: OutputChunk[] = []
   let head = 0
   let offset = 0
   let disposed = false
   let resumeFrame = 0
+  let lastInputAt = -Infinity
   const writeSlice: WriteSlice = (limit, parsed) => {
-    const chunk = queue[head]!
-    const end = Math.min(offset + limit, chunk.data.length)
-    const slice = chunk.data.subarray(offset, end)
-    write(slice, () => {
+    // Give xterm adjacent updates in one write when they fit. The cursor move,
+    // erase and replacement text of a TUI redraw can arrive in separate messages.
+    let nextHead = head
+    let nextOffset = offset
+    let length = 0
+    const parts: Uint8Array[] = []
+    while (nextHead < queue.length && length < limit) {
+      const data = queue[nextHead]!.data
+      const part = data.subarray(nextOffset, nextOffset + limit - length)
+      parts.push(part)
+      length += part.length
+      nextOffset += part.length
+      if (nextOffset === data.length) {
+        nextHead++
+        nextOffset = 0
+      }
+    }
+    let bytes = parts[0]!
+    if (parts.length > 1) {
+      bytes = new Uint8Array(length)
+      let position = 0
+      for (const part of parts) {
+        bytes.set(part, position)
+        position += part.length
+      }
+    }
+    write(bytes, () => {
       if (disposed) return
-      offset = end
-      if (end === chunk.data.length) {
-        head++
-        if (head === queue.length || (head >= 256 && head * 2 >= queue.length)) {
-          queue = queue.slice(head)
-          head = 0
-        }
-        offset = 0
-        acknowledge(chunk.sequence)
+      for (; head < nextHead; head++) acknowledge(queue[head]!.sequence)
+      offset = nextOffset
+      if (head === queue.length || (head >= 256 && head * 2 >= queue.length)) {
+        queue = queue.slice(head)
+        head = 0
       }
       if (visible && !resumeFrame && queue.length) scheduler.request(writeSlice)
       else scheduler.cancel(writeSlice)
-      parsed(slice.length)
+      parsed(length)
     })
   }
 
   return {
+    noteInput() {
+      lastInputAt = performance.now()
+    },
     push(chunk: OutputChunk) {
-      const idleEcho = !queue.length && chunk.data.length <= ECHO_BYTES
+      const idleEcho =
+        !queue.length &&
+        performance.now() - lastInputAt < 100 &&
+        chunk.data.length <= ECHO_BYTES &&
+        !chunk.data.includes(0x1b)
+      lastInputAt = -Infinity
       queue.push(chunk)
       if (visible && !resumeFrame) scheduler.request(writeSlice, idleEcho)
     },

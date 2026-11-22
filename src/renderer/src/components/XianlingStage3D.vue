@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { instanceClass } from '../../../shared/classes'
 import orbitIcon from '../assets/orbit-icon.svg'
-import { isAppMotionActive, onAppMotionChange } from '../services/app-foreground'
+import { registerMotionScene, type MotionSceneHandle } from '../services/app-foreground'
 import { t, translateMotionReason } from '../services/i18n'
 import { parseMotionTier, REDUCED_MOTION_REASON, type MotionTier } from '../services/motion-performance'
 import type { FrameCallback, XianlingTheatre } from '../services/xianling/theatre'
@@ -48,7 +48,7 @@ let motionGeneration = ''
 let contextLost = false
 let loading = false
 let disposed = false
-let stopMotionWatch: (() => void) | undefined
+let sceneMotion: MotionSceneHandle | undefined
 let attrObserver: MutationObserver | null = null
 let resizeObserver: ResizeObserver | null = null
 let lastWidth = 0
@@ -71,9 +71,13 @@ function isReducedMotionActive(): boolean {
   )
 }
 
+function isMotionActive(): boolean {
+  return Boolean(sceneMotion?.active)
+}
+
 function canAnimate(): boolean {
   return (
-    !disposed && !contextLost && !failed.value && !motionDisabled.value && props.active && isAppMotionActive()
+    !disposed && !contextLost && !failed.value && !motionDisabled.value && props.active && isMotionActive()
   )
 }
 
@@ -84,7 +88,7 @@ function syncReadyState(): void {
 
 function resizeStage(force = false): void {
   const host = hostRef.value
-  if (!host || !theatre || !isAppMotionActive()) return
+  if (!host || !theatre || !isMotionActive()) return
   const width = host.clientWidth
   const height = host.clientHeight
   if (!width || !height) return
@@ -347,7 +351,6 @@ defineExpose({
 })
 
 onMounted(() => {
-  stopMotionWatch = onAppMotionChange(ensureRunning)
   readPreferences()
   attrObserver = new MutationObserver(() => {
     handleMotionChange()
@@ -362,6 +365,7 @@ onMounted(() => {
     canvasRef.value.addEventListener('webglcontextlost', handleContextLost)
     canvasRef.value.addEventListener('webglcontextrestored', handleContextRestored)
   }
+  sceneMotion = registerMotionScene(ensureRunning)
   ensureRunning()
 })
 
@@ -381,7 +385,8 @@ watch(
 
 onBeforeUnmount(() => {
   disposed = true
-  stopMotionWatch?.()
+  sceneMotion?.dispose()
+  sceneMotion = undefined
   attrObserver?.disconnect()
   resizeObserver?.disconnect()
   canvasRef.value?.removeEventListener('webglcontextlost', handleContextLost)

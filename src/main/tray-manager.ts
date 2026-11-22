@@ -82,6 +82,7 @@ export class OrbitTrayManager {
   private readonly prefsPath: string
   private readonly callbacks: TrayCallbacks
   private readonly hiddenWindowIds = new Set<number>()
+  private readonly pendingMinimizes = new Map<number, NodeJS.Immediate>()
   private readonly suppressNativeTrayUntil = new Map<number, number>()
   private prefs: TrayPreferences
   private tray: Tray | undefined
@@ -159,18 +160,22 @@ export class OrbitTrayManager {
           ? icon.resize({ width: 22, height: 22 })
           : icon
       const tray = new Tray(finalIcon)
-      tray.on('click', () => {
-        const win = this.callbacks.getMainWindow()
-        if (!win || win.isDestroyed()) return
-        if (this.hiddenWindowIds.has(win.id) || win.isMinimized() || !win.isVisible()) {
-          this.restoreFromTray(win)
-        } else {
-          win.focus()
-        }
-      })
-      tray.on('double-click', () => {
-        this.restoreFromTray()
-      })
+      const activate = () => {
+        // Restoring can destroy this icon in when-minimized mode. Let the
+        // native notification callback return before changing its window/tray.
+        setImmediate(() => {
+          if (tray.isDestroyed()) return
+          const win = this.callbacks.getMainWindow()
+          if (!win || win.isDestroyed()) return
+          if (this.hiddenWindowIds.has(win.id) || win.isMinimized() || !win.isVisible()) {
+            this.restoreFromTray(win)
+          } else {
+            win.focus()
+          }
+        })
+      }
+      tray.on('click', activate)
+      tray.on('double-click', activate)
       this.tray = tray
       this.refresh()
       return tray
@@ -210,6 +215,12 @@ export class OrbitTrayManager {
         : `Graphite Orbit · ${modeLabel}\n活动终端: ${sessionCount} · 活动隧道: ${tunnelCount}`
     )
 
+    const openFromMenu = (action: TrayAction) => {
+      setImmediate(() => {
+        this.restoreFromTray()
+        this.callbacks.onDispatchAction(action)
+      })
+    }
     const template: MenuItemConstructorOptions[] = [
       {
         label: `Graphite Orbit · ${modeLabel}`,
@@ -230,28 +241,19 @@ export class OrbitTrayManager {
           : hidden
             ? '显示 Graphite Orbit 主窗口'
             : '隐藏到后台托盘',
-        click: () => this.toggleMainWindow()
+        click: () => setImmediate(() => this.toggleMainWindow())
       },
       {
         label: en ? 'New Local Terminal' : '新建本地终端',
-        click: () => {
-          this.restoreFromTray()
-          this.callbacks.onDispatchAction('new-local')
-        }
+        click: () => openFromMenu('new-local')
       },
       {
         label: en ? 'Open Hosts' : '打开主机列表',
-        click: () => {
-          this.restoreFromTray()
-          this.callbacks.onDispatchAction('open-hosts')
-        }
+        click: () => openFromMenu('open-hosts')
       },
       {
         label: en ? 'Open Port Forwarding' : '打开端口转发中心',
-        click: () => {
-          this.restoreFromTray()
-          this.callbacks.onDispatchAction('open-tunnels')
-        }
+        click: () => openFromMenu('open-tunnels')
       },
       { type: 'separator' },
       {
@@ -302,7 +304,7 @@ export class OrbitTrayManager {
       { type: 'separator' },
       {
         label: en ? 'Quit Graphite Orbit' : '退出 Graphite Orbit',
-        click: () => this.callbacks.onQuit()
+        click: () => setImmediate(() => this.callbacks.onQuit())
       }
     ]
     this.tray.setContextMenu(Menu.buildFromTemplate(template))
@@ -310,6 +312,7 @@ export class OrbitTrayManager {
 
   minimizeToTray(win: BrowserWindow, options?: { notifyBalloon?: boolean }): void {
     if (win.isDestroyed()) return
+    this.cancelNativeMinimize(win.id)
     this.hiddenWindowIds.add(win.id)
     const tray = this.ensureTray()
     if (!tray && process.platform === 'linux') {
@@ -346,6 +349,7 @@ export class OrbitTrayManager {
   restoreFromTray(target?: BrowserWindow): void {
     const win = target ?? this.callbacks.getMainWindow()
     if (!win || win.isDestroyed()) return
+    this.cancelNativeMinimize(win.id)
     this.hiddenWindowIds.delete(win.id)
     win.setSkipTaskbar(false)
     if (win.isMinimized()) win.restore()
@@ -367,27 +371,39 @@ export class OrbitTrayManager {
 
   minimizeToTaskbar(win: BrowserWindow): void {
     if (win.isDestroyed()) return
+    this.cancelNativeMinimize(win.id)
     this.suppressNativeTrayUntil.set(win.id, Date.now() + 800)
     if (!win.isMinimized()) {
       win.minimize()
     }
   }
 
+  private cancelNativeMinimize(windowId: number): void {
+    const pending = this.pendingMinimizes.get(windowId)
+    if (pending) clearImmediate(pending)
+    this.pendingMinimizes.delete(windowId)
+  }
+
   handleNativeMinimize(win: BrowserWindow): void {
+    this.cancelNativeMinimize(win.id)
     const suppressUntil = this.suppressNativeTrayUntil.get(win.id) ?? 0
     if (Date.now() < suppressUntil) {
       this.suppressNativeTrayUntil.delete(win.id)
       return
     }
     if (!this.prefs.minimizeToTray || this.hiddenWindowIds.has(win.id)) return
-    setImmediate(() => {
-      if (!win.isDestroyed() && this.prefs.minimizeToTray) {
+    const windowId = win.id
+    const pending = setImmediate(() => {
+      this.pendingMinimizes.delete(windowId)
+      if (!win.isDestroyed() && win.isMinimized() && this.prefs.minimizeToTray) {
         this.minimizeToTray(win)
       }
     })
+    this.pendingMinimizes.set(windowId, pending)
   }
 
   handleWindowShown(win: BrowserWindow): void {
+    this.cancelNativeMinimize(win.id)
     this.suppressNativeTrayUntil.delete(win.id)
     if (!this.hiddenWindowIds.has(win.id)) return
     this.hiddenWindowIds.delete(win.id)
@@ -397,6 +413,7 @@ export class OrbitTrayManager {
   }
 
   handleWindowClosed(windowId: number): void {
+    this.cancelNativeMinimize(windowId)
     this.suppressNativeTrayUntil.delete(windowId)
     if (!this.hiddenWindowIds.delete(windowId)) return
     this.reconcileTrayVisibility()

@@ -1,4 +1,5 @@
 import { computed, ref } from 'vue'
+import { DEFAULT_TERMINAL_FRAME_RATE, type TerminalFrameRate } from '../../../shared/flow-control'
 import type {
   Bootstrap,
   Host,
@@ -140,6 +141,7 @@ let promptAttempt = 0
 
 export const fontSize = ref(14)
 export const terminalGpuEnabled = ref(true)
+export const terminalFrameRate = ref<TerminalFrameRate>(DEFAULT_TERMINAL_FRAME_RATE)
 export const terminalTheme = ref<TerminalThemeId>('orbit-vivid')
 export const lineHeight = ref(1.28)
 export const cursorStyle = ref<CursorShape>('block')

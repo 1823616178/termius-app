@@ -948,7 +948,15 @@ function publishWindowPresence(): void {
     if (win.isDestroyed()) continue
     const active = win.isVisible() && !win.isMinimized()
     if (active) anyInteractive = true
-    win.webContents.send(IPC.windowPresence, active)
+    const contents = win.webContents
+    const allowThrottling = !active
+    if (process.platform === 'win32' && contents.getBackgroundThrottling() !== allowThrottling) {
+      // Wake Chromium's frame clock from the main process. The terminal and
+      // motion recovery both wait for rAF and cannot wake a throttled compositor.
+      contents.setBackgroundThrottling(allowThrottling)
+      if (active) contents.invalidate()
+    }
+    contents.send(IPC.windowPresence, active)
   }
   syncService?.setUiBackgrounded(!anyInteractive)
 }
@@ -983,7 +991,10 @@ async function createWindow(): Promise<void> {
   contents.on('will-navigate', (event, url) => {
     if (!trustedUrl(url)) event.preventDefault()
   })
-  contents.on('render-process-gone', () => {
+  contents.on('unresponsive', () => diagnostics?.write('window', `renderer unresponsive, window ${windowId}`))
+  contents.on('responsive', () => diagnostics?.write('window', `renderer responsive, window ${windowId}`))
+  contents.on('render-process-gone', (_event, details) => {
+    diagnostics?.write('window', `renderer gone, window ${windowId}, ${details.reason} (${details.exitCode})`)
     filesService?.closeOwnerSessions(windowId)
     void rdpService?.closeWindowSessions(windowId)
     for (const [id, session] of sessions) {
@@ -992,6 +1003,7 @@ async function createWindow(): Promise<void> {
   })
   const publishPresence = () => publishWindowPresence()
   contents.on('did-finish-load', publishPresence)
+  if (process.platform === 'win32') win.on('focus', publishPresence)
   win.on('maximize', () => contents.send(IPC.windowState, true))
   win.on('unmaximize', () => contents.send(IPC.windowState, false))
   win.on('minimize', () => {

@@ -114,7 +114,6 @@ textarea {
     border-color: var(--color-error);
   }
 }
-input[type='checkbox'],
 input[type='range'] {
   accent-color: var(--color-accent-primary);
 }
@@ -123,18 +122,17 @@ textarea {
 }
 button:focus-visible,
 [tabindex]:focus-visible,
-input[type='checkbox']:focus-visible,
 input[type='range']:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
   outline: 2px solid var(--color-accent-primary);
   outline-offset: -2px;
 }
-:where(input:not([type='checkbox']):not([type='range'])):focus,
-:where(input:not([type='checkbox']):not([type='range'])):focus-visible {
+:where(input:not([type='range'])):focus,
+:where(input:not([type='range'])):focus-visible {
   outline: 0 none;
 }
-:where(input:not([type='checkbox']):not([type='range'])):focus-visible {
+:where(input:not([type='range'])):focus-visible {
   box-shadow: 0 0 0 2px var(--color-accent-primary-ring);
 }
 ::selection {

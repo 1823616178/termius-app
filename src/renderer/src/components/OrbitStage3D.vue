@@ -4,7 +4,7 @@ import { instanceClass } from '../../../shared/classes'
 import orbitIcon from '../assets/orbit-icon.svg'
 import { t, translateMotionReason } from '../services/i18n'
 import { INTRO_SECONDS, MOVEMENT_SECONDS } from '../services/sword-motion'
-import { isAppMotionActive, onAppMotionChange } from '../services/app-foreground'
+import { registerMotionScene, type MotionSceneHandle } from '../services/app-foreground'
 import { parseMotionTier, REDUCED_MOTION_REASON, type MotionTier } from '../services/motion-performance'
 import type { SwordScene, SwordSceneOptions, SwordTipProjection } from '../services/sword-scene'
 
@@ -65,9 +65,13 @@ let lastHeight = 0
 let lastDpr = 0
 let loading = false
 let disposed = false
-let stopMotionWatch: (() => void) | undefined
+let sceneMotion: MotionSceneHandle | undefined
 let attrObserver: MutationObserver | null = null
 let resizeObserver: ResizeObserver | null = null
+
+function isMotionActive(): boolean {
+  return Boolean(sceneMotion?.active)
+}
 
 function cssColor(styles: CSSStyleDeclaration, name: string, fallback: string): string {
   const value = styles.getPropertyValue(name).trim()
@@ -94,7 +98,7 @@ function sceneOptions(): SwordSceneOptions {
 
 function resizeScene(force = false): void {
   const element = canvas.value
-  if (!element || !scene || !isAppMotionActive() || !element.clientWidth || !element.clientHeight) return
+  if (!element || !scene || !isMotionActive() || !element.clientWidth || !element.clientHeight) return
   const width = element.clientWidth
   const height = element.clientHeight
   const dpr = window.devicePixelRatio || 1
@@ -107,7 +111,7 @@ function resizeScene(force = false): void {
 }
 
 function syncSceneOptions(): void {
-  if (isAppMotionActive()) scene?.update(sceneOptions())
+  if (isMotionActive()) scene?.update(sceneOptions())
 }
 
 function canAnimate(): boolean {
@@ -118,7 +122,7 @@ function canAnimate(): boolean {
     !motionDisabled.value &&
     props.active &&
     !props.paused &&
-    isAppMotionActive()
+    isMotionActive()
   )
 }
 
@@ -147,7 +151,7 @@ function reportFormation(index: number): void {
 }
 
 function renderCurrentFrame(): void {
-  if (!scene || disposed || !isAppMotionActive()) return
+  if (!scene || disposed || !isMotionActive()) return
   try {
     const label = scene.render(elapsedSeconds, introSeconds)
     if (swordTipControl.value) {
@@ -258,7 +262,7 @@ async function initializeScene(): Promise<void> {
     scene = created
     ready.value = true
     await nextTick()
-    if (scene !== created || !isAppMotionActive()) return
+    if (scene !== created || !isMotionActive()) return
     if (!canAnimate()) {
       resizeScene(true)
       renderCurrentFrame()
@@ -498,7 +502,6 @@ defineExpose({
 })
 
 onMounted(() => {
-  stopMotionWatch = onAppMotionChange(ensureRunning)
   readPreferences()
   attrObserver = new MutationObserver(() => {
     handleMotionChange()
@@ -520,6 +523,7 @@ onMounted(() => {
     canvas.value.addEventListener('webglcontextlost', handleContextLost)
     canvas.value.addEventListener('webglcontextrestored', handleContextRestored)
   }
+  sceneMotion = registerMotionScene(ensureRunning)
   ensureRunning()
 })
 
@@ -547,7 +551,8 @@ watch(
 onBeforeUnmount(() => {
   cancelDrag()
   disposed = true
-  stopMotionWatch?.()
+  sceneMotion?.dispose()
+  sceneMotion = undefined
   stopLoop()
   attrObserver?.disconnect()
   resizeObserver?.disconnect()

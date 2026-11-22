@@ -17,6 +17,7 @@ import type {
 import { RDP_DEFAULT_PORT } from '../../../shared/rdp'
 import { locale, t } from '../services/i18n'
 import { protocolSettings } from '../stores/workbench'
+import OrbitCheckbox from './OrbitCheckbox.vue'
 import OrbitSelect from './OrbitSelect.vue'
 
 const props = defineProps<{
@@ -536,25 +537,29 @@ function submitSave(connectAfter: boolean): void {
 
         <div class="container_rdp-editor_checks_row_base">
           <label class="container_rdp-editor_check_clip_label">
-            <input
+            <OrbitCheckbox
               v-model="form.enableClipboard"
               class="container_rdp-editor_check_clip_input"
-              type="checkbox"
+              instance="rdp-editor-clip"
               @change="form.clipboardOverridden = true"
             />
             {{ t('rdpEditor.clipboard') }}
           </label>
           <label class="container_rdp-editor_check_audio_label">
-            <input
+            <OrbitCheckbox
               v-model="form.enableAudio"
               class="container_rdp-editor_check_audio_input"
-              type="checkbox"
+              instance="rdp-editor-audio"
               @change="form.audioOverridden = true"
             />
             {{ t('rdpEditor.audio') }}
           </label>
           <label class="container_rdp-editor_check_fav_label">
-            <input v-model="form.favorite" class="container_rdp-editor_check_fav_input" type="checkbox" />
+            <OrbitCheckbox
+              v-model="form.favorite"
+              class="container_rdp-editor_check_fav_input"
+              instance="rdp-editor-fav"
+            />
             <Star :size="13" />
             {{ t('rdpEditor.favorite') }}
           </label>
@@ -562,12 +567,12 @@ function submitSave(connectAfter: boolean): void {
 
         <div class="container_rdp-editor_secret_box_base">
           <label v-if="encryptionAvailable" class="container_rdp-editor_secret_save_label">
-            <input
+            <OrbitCheckbox
               v-model="form.savePassword"
               class="container_rdp-editor_secret_save_input"
               data-testid="rdp-editor-save-secret"
-              type="checkbox"
               :disabled="form.clearPassword"
+              instance="rdp-editor-savepw"
             />
             {{ t('rdpEditor.savePassword', { backend: encryptionBackend }) }}
           </label>
@@ -575,10 +580,10 @@ function submitSave(connectAfter: boolean): void {
             v-if="mode === 'edit' && profile?.hasPassword"
             class="container_rdp-editor_secret_clear_label"
           >
-            <input
+            <OrbitCheckbox
               v-model="form.clearPassword"
               class="container_rdp-editor_secret_clear_input"
-              type="checkbox"
+              instance="rdp-editor-clearpw"
               @change="form.clearPassword && ((form.password = ''), (form.savePassword = false))"
             />
             {{ t('rdpEditor.clearPassword') }}
@@ -727,9 +732,10 @@ function submitSave(connectAfter: boolean): void {
 .container_rdp-editor_secret_clear_label {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   font-size: var(--font-size-ui-sm);
   color: var(--color-text-secondary);
+  cursor: pointer;
 }
 .container_rdp-editor_error_banner_text {
   margin: 0;

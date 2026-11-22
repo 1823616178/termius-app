@@ -23,6 +23,7 @@ import {
   type SyncNamespace,
   type SyncRevisionInfo
 } from '../../../shared/sync'
+import OrbitCheckbox from '../components/OrbitCheckbox.vue'
 import SyncConflictSection from '../components/SyncConflictSection.vue'
 import SyncManageSection from '../components/SyncManageSection.vue'
 import { locale, t } from '../services/i18n'
@@ -665,10 +666,10 @@ async function handleRestoreRevision(revision: string, namespace: SyncNamespace 
                 {{ t('sync.httpWarnDesc') }}
               </p>
               <label class="container_sync_account_body_insecure-label">
-                <input
+                <OrbitCheckbox
                   v-model="allowInsecureHttp"
                   class="container_sync_account_body_insecure-check"
-                  type="checkbox"
+                  instance="sync-insecure-http"
                 />
                 {{ t('sync.allowHttpLabel') }}
               </label>
@@ -705,19 +706,19 @@ async function handleRestoreRevision(revision: string, namespace: SyncNamespace 
               />
             </label>
             <label class="container_sync_account_body_remember-label">
-              <input
+              <OrbitCheckbox
                 v-model="rememberEmail"
                 class="container_sync_account_body_remember-check"
-                type="checkbox"
+                instance="sync-remember-email"
               />
               {{ t('sync.rememberEmail') }}
             </label>
             <label class="container_sync_account_body_keep-label">
-              <input
+              <OrbitCheckbox
                 v-model="keepSignedIn"
                 class="container_sync_account_body_keep-check"
-                type="checkbox"
                 :disabled="!encryptionAvailable"
+                instance="sync-keep-signed-in"
               />
               {{ encryptionAvailable ? t('sync.keepSignedInAvail') : t('sync.keepSignedInUnavail') }}
             </label>
@@ -752,21 +753,21 @@ async function handleRestoreRevision(revision: string, namespace: SyncNamespace 
           </dl>
           <div class="container_sync_account_body_toggles">
             <label class="container_sync_account_body_autosync-label">
-              <input
+              <OrbitCheckbox
                 class="container_sync_account_body_autosync-check"
-                type="checkbox"
-                :checked="syncStatus.autoSync"
+                :model-value="syncStatus.autoSync"
                 :disabled="busy"
+                instance="sync-autosync"
                 @change="handleToggleAutoSync"
               />
               {{ t('sync.autoSyncLabel') }}
             </label>
             <label class="container_sync_account_body_persist-label">
-              <input
+              <OrbitCheckbox
                 class="container_sync_account_body_persist-check"
-                type="checkbox"
-                :checked="syncStatus.keepSignedIn"
+                :model-value="syncStatus.keepSignedIn"
                 :disabled="busy || !encryptionAvailable"
+                instance="sync-persist-session"
                 @change="handleToggleKeepSignedIn"
               />
               {{ encryptionAvailable ? t('sync.keepSignedInLabel') : t('sync.keepSignedInUnavail') }}
@@ -949,41 +950,41 @@ async function handleRestoreRevision(revision: string, namespace: SyncNamespace 
             <dd class="container_sync_vault_body_kv">v{{ syncStatus.keyVersion }}</dd>
           </dl>
           <label class="container_sync_vault_body_pwsync-label">
-            <input
+            <OrbitCheckbox
               class="container_sync_vault_body_pwsync-check"
-              type="checkbox"
-              :checked="syncStatus.syncPasswords && rotateTarget !== 'ssh'"
+              :model-value="syncStatus.syncPasswords && rotateTarget !== 'ssh'"
               :disabled="busy"
+              instance="sync-pwsync"
               @change="handleTogglePasswordSync"
             />
             {{ t('sync.pwSyncLabel') }}
           </label>
           <label class="container_sync_vault_body_filecreds-label">
-            <input
+            <OrbitCheckbox
               class="container_sync_vault_body_filecreds-check"
-              type="checkbox"
-              :checked="syncStatus.syncFileCredentials && rotateTarget !== 'files'"
+              :model-value="syncStatus.syncFileCredentials && rotateTarget !== 'files'"
               :disabled="busy"
+              instance="sync-filecreds"
               @change="handleToggleFileCredsSync"
             />
             {{ t('sync.fileCredsSyncLabel') }}
           </label>
           <label class="container_sync_vault_body_rdpcreds-label">
-            <input
+            <OrbitCheckbox
               class="container_sync_vault_body_rdpcreds-check"
-              type="checkbox"
-              :checked="syncStatus.syncRdpCredentials && rotateTarget !== 'rdp'"
+              :model-value="syncStatus.syncRdpCredentials && rotateTarget !== 'rdp'"
               :disabled="busy"
+              instance="sync-rdpcreds"
               @change="handleToggleRdpCredsSync"
             />
             {{ t('sync.rdpCredsSyncLabel') }}
           </label>
           <label class="container_sync_vault_body_protoset-label">
-            <input
+            <OrbitCheckbox
               class="container_sync_vault_body_protoset-check"
-              type="checkbox"
-              :checked="syncStatus.syncProtocolSettings"
+              :model-value="syncStatus.syncProtocolSettings"
               :disabled="busy || (!supportsSettingsNamespace && !syncStatus.syncProtocolSettings)"
+              instance="sync-protoset"
               @change="handleToggleProtocolSettingsSync"
             />
             {{ t('sync.protoSettingsSyncLabel') }}
@@ -1420,17 +1421,7 @@ async function handleRestoreRevision(revision: string, namespace: SyncNamespace 
   font-size: 13px;
   color: var(--color-text-secondary);
   margin-bottom: 6px;
-}
-.container_sync_account_body_remember-check,
-.container_sync_account_body_keep-check,
-.container_sync_account_body_insecure-check,
-.container_sync_account_body_autosync-check,
-.container_sync_account_body_persist-check,
-.container_sync_vault_body_pwsync-check,
-.container_sync_vault_body_filecreds-check,
-.container_sync_vault_body_rdpcreds-check,
-.container_sync_vault_body_protoset-check {
-  width: auto;
+  cursor: pointer;
 }
 .container_sync_account_body_http-warn,
 .container_sync_account_body_http-active {
@@ -1465,6 +1456,7 @@ async function handleRestoreRevision(revision: string, namespace: SyncNamespace 
   gap: 8px;
   font-size: 12px;
   color: var(--color-text-primary);
+  cursor: pointer;
 }
 .container_sync_account_body_meta,
 .container_sync_vault_body_active-meta {

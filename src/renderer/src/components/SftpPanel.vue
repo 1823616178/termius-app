@@ -25,6 +25,7 @@ import {
   X
 } from '@lucide/vue'
 import { instanceClass } from '../../../shared/classes'
+import OrbitCheckbox from './OrbitCheckbox.vue'
 import {
   formatBytes,
   formatOctalMode,
@@ -1198,10 +1199,11 @@ function revealLocalFile(localPath: string): void {
             :key="bit.shift"
             :class="c('container_workspace_sftp_chmod_cell', String(bit.shift))"
           >
-            <input
+            <OrbitCheckbox
               :class="c('container_workspace_sftp_chmod_check', String(bit.shift))"
-              type="checkbox"
-              :checked="chmodBit(bit.shift)"
+              size="sm"
+              :model-value="chmodBit(bit.shift)"
+              :instance="`sftp-chmod-${bit.shift}`"
               @change="toggleChmodBit(bit.shift)"
             />
             <span :class="c('container_workspace_sftp_chmod_label', String(bit.shift))">{{ bit.label }}</span>
@@ -1282,7 +1284,12 @@ function revealLocalFile(localPath: string): void {
           }}
         </p>
         <label class="container_workspace_sftp_conflict_check">
-          <input v-model="conflictApplyAll" class="container_workspace_sftp_conflict_box" type="checkbox" />
+          <OrbitCheckbox
+            v-model="conflictApplyAll"
+            class="container_workspace_sftp_conflict_box"
+            size="sm"
+            instance="sftp-conflict-all"
+          />
           <span class="container_workspace_sftp_conflict_label">{{ t('sftp.conflictApplyAll') }}</span>
         </label>
         <div class="container_workspace_sftp_conflict_actions">
@@ -1831,9 +1838,10 @@ function revealLocalFile(localPath: string): void {
 [class*='container_workspace_sftp_chmod_cell'] {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   font-size: 11px;
   color: var(--color-text-secondary);
+  cursor: pointer;
 }
 .container_workspace_sftp_delete_list {
   margin: 0;
@@ -1853,6 +1861,7 @@ function revealLocalFile(localPath: string): void {
   gap: 6px;
   font-size: 11px;
   color: var(--color-text-secondary);
+  cursor: pointer;
 }
 .container_workspace_sftp_mkdir_actions,
 .container_workspace_sftp_rename_actions,

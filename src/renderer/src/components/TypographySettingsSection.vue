@@ -42,6 +42,7 @@ import {
   terminalTheme
 } from '../stores/workbench'
 import FontSelector from './FontSelector.vue'
+import OrbitCheckbox from './OrbitCheckbox.vue'
 import OrbitSelect from './OrbitSelect.vue'
 
 withDefaults(
@@ -323,10 +324,10 @@ function resetPanelTextColors(): void {
         <div class="container_settings_typo_pcolor_card">
           <div class="container_settings_typo_pcolor_top">
             <label class="container_settings_typo_pcolor_toggle">
-              <input
+              <OrbitCheckbox
                 v-model="panelCustomColorsEnabled"
                 class="container_settings_typo_pcolor_check"
-                type="checkbox"
+                instance="typo-panel-color"
               />
               <Palette :size="14" />
               <span class="container_settings_typo_pcolor_toggletext">
@@ -430,7 +431,11 @@ function resetPanelTextColors(): void {
         </div>
 
         <label class="container_settings_typo_pcopy_box">
-          <input v-model="panelCopyOnSelect" class="container_settings_typo_pcopy_check" type="checkbox" />
+          <OrbitCheckbox
+            v-model="panelCopyOnSelect"
+            class="container_settings_typo_pcopy_check"
+            instance="typo-panel-copy"
+          />
           <div class="container_settings_typo_pcopy_text">
             <span class="container_settings_typo_pcopy_title">
               <Copy :size="13" />
@@ -599,7 +604,11 @@ function resetPanelTextColors(): void {
         </div>
 
         <label class="container_settings_typo_tlig_box">
-          <input v-model="terminalLigatures" class="container_settings_typo_tlig_check" type="checkbox" />
+          <OrbitCheckbox
+            v-model="terminalLigatures"
+            class="container_settings_typo_tlig_check"
+            instance="typo-term-ligatures"
+          />
           <div class="container_settings_typo_tlig_text">
             <span class="container_settings_typo_tlig_title">
               <Sparkles :size="13" />
@@ -612,10 +621,10 @@ function resetPanelTextColors(): void {
         <div class="container_settings_typo_tcolor_card">
           <div class="container_settings_typo_tcolor_top">
             <label class="container_settings_typo_tcolor_toggle">
-              <input
+              <OrbitCheckbox
                 v-model="terminalCustomColorsEnabled"
                 class="container_settings_typo_tcolor_check"
-                type="checkbox"
+                instance="typo-term-color"
               />
               <Palette :size="14" />
               <span class="container_settings_typo_tcolor_toggletext">
@@ -715,7 +724,11 @@ function resetPanelTextColors(): void {
         </div>
 
         <label class="container_settings_typo_tcopy_box">
-          <input v-model="copyOnSelect" class="container_settings_typo_tcopy_check" type="checkbox" />
+          <OrbitCheckbox
+            v-model="copyOnSelect"
+            class="container_settings_typo_tcopy_check"
+            instance="typo-term-copy"
+          />
           <div class="container_settings_typo_tcopy_text">
             <span class="container_settings_typo_tcopy_title">
               <Copy :size="13" />
@@ -1146,12 +1159,8 @@ function resetPanelTextColors(): void {
 
 .container_settings_typo_tlig_check,
 .container_settings_typo_pcopy_check,
-.container_settings_typo_tcopy_check,
-.container_settings_typo_pcolor_check,
-.container_settings_typo_tcolor_check {
+.container_settings_typo_tcopy_check {
   margin-top: 2px;
-  accent-color: var(--color-accent-primary);
-  cursor: pointer;
 }
 
 .container_settings_typo_tlig_text,

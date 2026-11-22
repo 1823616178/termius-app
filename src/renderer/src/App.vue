@@ -76,6 +76,7 @@ import {
   terminalFontId,
   terminalFontWeight,
   terminalFontWeightBold,
+  terminalFrameRate,
   terminalTheme,
   terminalGpuEnabled,
   terminalLetterSpacing,
@@ -290,6 +291,14 @@ watch(
 watch(panelCopyOnSelect, (value) => {
   try {
     localStorage.setItem('orbit:panel-copy-on-select', String(value))
+  } catch {
+    /* storage unavailable */
+  }
+})
+
+watch(terminalFrameRate, (value) => {
+  try {
+    localStorage.setItem('orbit:terminal-frame-rate', String(value))
   } catch {
     /* storage unavailable */
   }

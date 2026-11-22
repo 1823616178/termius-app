@@ -4,6 +4,7 @@ import { X, ShieldCheck } from '@lucide/vue'
 import { hostInputSchema, type Host, type HostInput } from '../../../shared/contracts'
 import { locale, t } from '../services/i18n'
 import { bootstrap, protocolSettings } from '../stores/workbench'
+import OrbitCheckbox from './OrbitCheckbox.vue'
 import OrbitSelect from './OrbitSelect.vue'
 
 const isLinux = computed(() => bootstrap.value?.platform === 'linux')
@@ -218,11 +219,11 @@ function submit() {
           </span>
         </label>
         <label class="container_hosts_editor_body_save-label">
-          <input
+          <OrbitCheckbox
             v-model="form.savePassword"
             class="container_hosts_editor_body_save-check"
-            type="checkbox"
             :disabled="!encryptionAvailable"
+            instance="host-editor-save"
           />
           {{
             encryptionAvailable
@@ -235,12 +236,12 @@ function submit() {
           }}
         </label>
         <label v-if="host?.hasPassword" class="container_hosts_editor_body_clear-label">
-          <input
+          <OrbitCheckbox
             v-model="form.clearPassword"
             class="container_hosts_editor_body_clear-check"
-            type="checkbox"
             :disabled="Boolean(form.password)"
             :aria-describedby="clearPasswordErrorId"
+            instance="host-editor-clear"
           />
           {{ t('hostEditor.clearPassword') }}
         </label>
@@ -292,7 +293,11 @@ function submit() {
         </span>
       </label>
       <label class="container_hosts_editor_body_favorite-label">
-        <input v-model="form.favorite" class="container_hosts_editor_body_favorite-check" type="checkbox" />
+        <OrbitCheckbox
+          v-model="form.favorite"
+          class="container_hosts_editor_body_favorite-check"
+          instance="host-editor-fav"
+        />
         {{ t('hostEditor.favorite') }}
       </label>
       <p v-if="error || errors._root" class="container_hosts_editor_body_error" role="alert">
@@ -350,9 +355,6 @@ function submit() {
   textarea {
     width: 100%;
   }
-  input[type='checkbox'] {
-    width: auto;
-  }
   span[id] {
     color: var(--color-error);
   }
@@ -384,6 +386,8 @@ function submit() {
 .container_hosts_editor_body_favorite-label {
   flex-direction: row !important;
   align-items: center;
+  gap: 8px;
+  cursor: pointer;
 }
 .container_hosts_editor_body_clear-error {
   color: var(--color-error);

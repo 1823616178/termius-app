@@ -2,6 +2,7 @@
 import { ref, onMounted, onBeforeUnmount, nextTick, useId } from 'vue'
 import { ShieldCheck, TriangleAlert } from '@lucide/vue'
 import { t } from '../services/i18n'
+import OrbitCheckbox from './OrbitCheckbox.vue'
 
 defineProps<{
   kind: 'password' | 'trust' | 'delete'
@@ -66,7 +67,11 @@ onBeforeUnmount(() => {
           />
         </label>
         <label v-if="encryptionAvailable" class="container_shared_action_body_save-label">
-          <input v-model="savePassword" class="container_shared_action_body_save-input" type="checkbox" />
+          <OrbitCheckbox
+            v-model="savePassword"
+            class="container_shared_action_body_save-input"
+            instance="action-dialog-save"
+          />
           {{ hasSavedPassword ? t('actionDialog.updateSavedPassword') : t('actionDialog.savePassword') }}
         </label>
         <p v-else class="container_shared_action_body_nokeyring">
@@ -84,10 +89,10 @@ onBeforeUnmount(() => {
           </span>
           <code class="container_shared_action_body_previous">{{ previous }}</code>
           <label class="container_shared_action_body_acknowledge-label">
-            <input
+            <OrbitCheckbox
               v-model="acknowledge"
               class="container_shared_action_body_acknowledge-input"
-              type="checkbox"
+              instance="action-dialog-ack"
             />
             {{ t('actionDialog.acknowledgeChangedKey') }}
           </label>
@@ -219,8 +224,12 @@ onBeforeUnmount(() => {
   color: var(--color-warning);
 }
 .container_shared_action_body_acknowledge-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   font-size: 12px;
-  line-height: 1.8;
+  line-height: 1.6;
+  cursor: pointer;
 }
 .container_shared_action_footer_base {
   display: flex;

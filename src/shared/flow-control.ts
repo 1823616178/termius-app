@@ -1,3 +1,11 @@
+export const TERMINAL_FRAME_RATES = [30, 60, 90, 120, 144, 150] as const
+export type TerminalFrameRate = (typeof TERMINAL_FRAME_RATES)[number]
+export const DEFAULT_TERMINAL_FRAME_RATE = 150
+
+export function parseTerminalFrameRate(value: string | null): TerminalFrameRate {
+  return TERMINAL_FRAME_RATES.find((rate) => String(rate) === value) ?? DEFAULT_TERMINAL_FRAME_RATE
+}
+
 /** Counts bytes until the terminal parser acknowledges consumption, not IPC delivery. */
 export class OutputWindow {
   private sequence = 0

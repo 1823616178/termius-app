@@ -63,11 +63,15 @@ for (const file of await walk('src')) {
   if (/keepaliveInterval\s*:\s*\d/.test(content)) {
     failures.push(`${rel}: keepaliveInterval must use resolveKeepaliveIntervalMs(...)`)
   }
+
+  if (rel.startsWith('src/renderer/src/') && /type\s*=\s*['"]checkbox['"]/i.test(content)) {
+    failures.push(`${rel}: raw <input type="checkbox"> is forbidden; use OrbitCheckbox`)
+  }
 }
 
 if (failures.length > 0) {
   console.error(failures.join('\n'))
   process.exitCode = 1
 } else {
-  console.log('架构约束检查通过：IPC 鉴权封装 / KDF 线程隔离 / 依赖边界 / keepalive 接线均正常')
+  console.log('架构约束检查通过：IPC 鉴权封装 / KDF 线程隔离 / 依赖边界 / keepalive / 自定义复选框接线均正常')
 }

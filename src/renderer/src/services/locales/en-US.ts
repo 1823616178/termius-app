@@ -978,6 +978,7 @@ export const enUS: Record<TranslationKey, string> = {
   'settings.customUiText': 'Text Color',
   'settings.termVisualTitle': 'Terminal Behavior, Rendering & Motion',
   'settings.termGpuLabel': 'Enable Terminal WebGL GPU Acceleration',
+  'settings.termFrameRate': 'Terminal output frame rate limit',
   'settings.termGpuDesc':
     'Renders local and SSH terminals via WebGL2; falls back automatically when unsupported.',
   'settings.cursorStyle': 'Cursor Shape',

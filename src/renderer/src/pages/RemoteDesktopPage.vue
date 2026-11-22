@@ -27,6 +27,7 @@ import {
   type RdpProfileInput,
   type RdpProfileOptions
 } from '../../../shared/rdp'
+import OrbitCheckbox from '../components/OrbitCheckbox.vue'
 import OrbitSelect from '../components/OrbitSelect.vue'
 import RdpEmbeddedCanvas from '../components/RdpEmbeddedCanvas.vue'
 import RdpProfileEditor from '../components/RdpProfileEditor.vue'
@@ -414,7 +415,12 @@ function statusText(status: RdpClientSession['status']): string {
             :placeholder="t('remotePage.searchPlaceholder')"
           />
           <label class="container_remote_sidebar_fav_label">
-            <input v-model="favoritesOnly" class="container_remote_sidebar_fav_check" type="checkbox" />
+            <OrbitCheckbox
+              v-model="favoritesOnly"
+              class="container_remote_sidebar_fav_check"
+              size="sm"
+              instance="remote-fav-only"
+            />
             {{ t('remotePage.favoritesOnly') }}
           </label>
         </div>
@@ -992,6 +998,7 @@ function statusText(status: RdpClientSession['status']): string {
   gap: 6px;
   font-size: var(--font-size-ui-xs);
   color: var(--color-text-secondary);
+  cursor: pointer;
 }
 .container_remote_sidebar_list_scroll {
   flex: 1;

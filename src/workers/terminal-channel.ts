@@ -1,7 +1,8 @@
-import { OutputWindow } from '../shared/flow-control'
+import { DEFAULT_TERMINAL_FRAME_RATE, OutputWindow } from '../shared/flow-control'
 import { MAX_INPUT_BYTES_PER_SEC, terminalInputSchema, type TerminalEvent } from '../shared/contracts'
 
-const COALESCE_MS = 8
+// Leave at least half of the output interval for IPC, parsing and paint.
+const batchDelayMs = (frameRate: number) => Math.floor(500 / frameRate)
 const CHUNK_BYTES = 32768
 const STALL_TIMEOUT_MS = 30_000
 
@@ -27,7 +28,7 @@ export function terminalChannel(
   onClose: () => void,
   options: { coalesceMs?: number; stallTimeoutMs?: number; watchdogIntervalMs?: number } = {}
 ) {
-  const coalesceMs = options.coalesceMs ?? COALESCE_MS
+  let coalesceMs = options.coalesceMs ?? batchDelayMs(DEFAULT_TERMINAL_FRAME_RATE)
   const stallTimeoutMs = options.stallTimeoutMs ?? STALL_TIMEOUT_MS
   const watchdogIntervalMs = options.watchdogIntervalMs ?? 5000
   const flow = new OutputWindow()
@@ -181,6 +182,13 @@ export function terminalChannel(
       } else if (message.type === 'close') {
         close()
       } else if (message.type === 'presentation') {
+        if (message.frameRate !== undefined) {
+          const delay = options.coalesceMs ?? batchDelayMs(message.frameRate)
+          if (coalesceMs !== delay) {
+            coalesceMs = delay
+            if (flushTimer && visible && message.visible) flush()
+          }
+        }
         if (visible !== message.visible) {
           visible = message.visible
           if (visible && paused) stalledAt = Date.now()

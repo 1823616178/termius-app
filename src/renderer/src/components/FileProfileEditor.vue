@@ -12,6 +12,7 @@ import {
 } from '../../../shared/files'
 import { locale, t } from '../services/i18n'
 import { bootstrap, protocolSettings } from '../stores/workbench'
+import OrbitCheckbox from './OrbitCheckbox.vue'
 import OrbitSelect from './OrbitSelect.vue'
 
 type EditorProtocol = 'sftp' | FileProtocol
@@ -493,10 +494,10 @@ function submitFile(mode: 'save' | 'save-connect' | 'adhoc') {
               </label>
             </div>
             <label class="container_files_editor_check_pathstyle">
-              <input
+              <OrbitCheckbox
                 v-model="s3ForcePathStyle"
                 class="container_files_editor_input_pathstyle"
-                type="checkbox"
+                instance="file-editor-pathstyle"
               />
               {{ t('fileEditor.s3PathStyle') }}
             </label>
@@ -624,23 +625,31 @@ function submitFile(mode: 'save' | 'save-connect' | 'adhoc') {
             v-if="!(protocol === 'sftp' && sshAuth === 'agent')"
             class="container_files_editor_check_savepw"
           >
-            <input
+            <OrbitCheckbox
               v-model="saveSecrets"
               class="container_files_editor_input_savepw"
-              type="checkbox"
               :disabled="!encryptionAvailable"
+              instance="file-editor-savepw"
             />
             <ShieldCheck :size="14" />
             {{ t('fileEditor.saveSecrets', { backend: backendLabel }) }}
           </label>
 
           <label v-if="isEdit && profile?.hasSecrets" class="container_files_editor_check_clearpw">
-            <input v-model="clearSecrets" class="container_files_editor_input_clearpw" type="checkbox" />
+            <OrbitCheckbox
+              v-model="clearSecrets"
+              class="container_files_editor_input_clearpw"
+              instance="file-editor-clearpw"
+            />
             {{ t('fileEditor.clearSecrets') }}
           </label>
 
           <label class="container_files_editor_check_fav">
-            <input v-model="favorite" class="container_files_editor_input_fav" type="checkbox" />
+            <OrbitCheckbox
+              v-model="favorite"
+              class="container_files_editor_input_fav"
+              instance="file-editor-fav"
+            />
             {{ t('fileEditor.favorite') }}
           </label>
         </template>
@@ -814,6 +823,7 @@ function submitFile(mode: 'save' | 'save-connect' | 'adhoc') {
   gap: 8px;
   font-size: var(--font-size-ui-sm);
   color: var(--color-text-secondary);
+  cursor: pointer;
 }
 .container_files_editor_err_protocol,
 .container_files_editor_err_name,

@@ -965,6 +965,7 @@ export const zhCN = {
   'settings.customUiText': '主文字色',
   'settings.termVisualTitle': '终端交互、渲染与动效',
   'settings.termGpuLabel': '启用终端 GPU 加速',
+  'settings.termFrameRate': '终端输出帧率上限',
   'settings.termGpuDesc': '使用显卡绘制本地和 SSH 终端。更改立即生效，显卡不支持 WebGL2 时自动使用兼容模式。',
   'settings.cursorStyle': '光标形态',
   'settings.cursorBlock': '实心方块 (Block)',

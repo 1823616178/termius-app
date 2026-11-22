@@ -50,6 +50,7 @@ import {
   type SftpSortField
 } from '../../../shared/sftp'
 import FileProfileEditor from '../components/FileProfileEditor.vue'
+import OrbitCheckbox from '../components/OrbitCheckbox.vue'
 import { markHostUsed, recentHostIds, sortHostsByRecency } from '../services/host-recency'
 import { t } from '../services/i18n'
 import {
@@ -229,6 +230,7 @@ const allVisibleSelected = computed(
   () =>
     visibleFileEntries.value.length > 0 && selectedEntries.value.length === visibleFileEntries.value.length
 )
+const someVisibleSelected = computed(() => selectedEntries.value.length > 0)
 
 const virtualEnabled = computed(() => visibleFileEntries.value.length > VIRTUAL_THRESHOLD)
 
@@ -501,7 +503,11 @@ function toggleSelectAll() {
 function onTableKeydown(event: KeyboardEvent) {
   if (!activeFileTab.value || activeFileTab.value.state !== 'running') return
   const target = event.target as HTMLElement | null
-  if (target && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
+  if (
+    target &&
+    (['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName) || target.getAttribute('role') === 'checkbox')
+  )
+    return
 
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a') {
     event.preventDefault()
@@ -1133,11 +1139,13 @@ function openExternalSshTrustHint(host: Host) {
             <thead class="container_files_table_head_row">
               <tr class="container_files_table_head_tr">
                 <th class="container_files_table_th_check">
-                  <input
+                  <OrbitCheckbox
                     class="container_files_table_check_all"
-                    type="checkbox"
-                    :checked="allVisibleSelected"
+                    size="sm"
+                    :model-value="allVisibleSelected"
+                    :indeterminate="someVisibleSelected && !allVisibleSelected"
                     :aria-label="t('filesPage.selectAll')"
+                    instance="files-select-all"
                     @change="toggleSelectAll"
                   />
                 </th>
@@ -1201,11 +1209,12 @@ function openExternalSshTrustHint(host: Host) {
                 @contextmenu.prevent.stop="openRowContextMenu(entry, $event)"
               >
                 <td :class="c('container_files_table_entry_check', entry.path)" @click.stop>
-                  <input
+                  <OrbitCheckbox
                     :class="c('container_files_table_row_checkbox', entry.path)"
-                    type="checkbox"
-                    :checked="selectedPaths.has(entry.path)"
+                    size="sm"
+                    :model-value="selectedPaths.has(entry.path)"
                     :aria-label="entry.name"
+                    :instance="`files-row-${entry.path}`"
                     @change="toggleRowCheckbox(entry)"
                   />
                 </td>
@@ -1570,7 +1579,12 @@ function openExternalSshTrustHint(host: Host) {
           }}
         </p>
         <label class="container_files_conflict_check_row">
-          <input v-model="conflictApplyAll" class="container_files_conflict_check_box" type="checkbox" />
+          <OrbitCheckbox
+            v-model="conflictApplyAll"
+            class="container_files_conflict_check_box"
+            size="sm"
+            instance="files-conflict-all"
+          />
           <span class="container_files_conflict_check_label">{{ t('sftp.conflictApplyAll') }}</span>
         </label>
         <div class="container_files_conflict_dialog_actions">
@@ -1649,10 +1663,11 @@ function openExternalSshTrustHint(host: Host) {
               :key="bit.shift"
               :class="c('container_files_modal_chmod_cell', String(bit.shift))"
             >
-              <input
+              <OrbitCheckbox
                 :class="c('container_files_modal_chmod_check', String(bit.shift))"
-                type="checkbox"
-                :checked="chmodBit(bit.shift)"
+                size="sm"
+                :model-value="chmodBit(bit.shift)"
+                :instance="`files-chmod-${bit.shift}`"
                 @change="toggleChmodBit(bit.shift)"
               />
               <span :class="c('container_files_modal_chmod_label', String(bit.shift))">
@@ -2415,6 +2430,7 @@ function openExternalSshTrustHint(host: Host) {
   gap: 6px;
   font-size: var(--font-size-ui-xs);
   color: var(--color-text-secondary);
+  cursor: pointer;
 }
 .container_files_modal_chmod_grid {
   display: grid;
@@ -2424,9 +2440,10 @@ function openExternalSshTrustHint(host: Host) {
 [class*='container_files_modal_chmod_cell'] {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   font-size: var(--font-size-ui-xs);
   color: var(--color-text-secondary);
+  cursor: pointer;
 }
 .container_files_secret_dialog_actions,
 .container_files_conflict_dialog_actions,

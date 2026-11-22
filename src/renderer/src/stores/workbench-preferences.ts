@@ -1,4 +1,5 @@
 import type { TrayPreferencesPatch } from '../../../shared/contracts'
+import { parseTerminalFrameRate } from '../../../shared/flow-control'
 import type { UpdatePreferencesPatch } from '../../../shared/updater'
 import {
   applyPanelTypographyToDocument,
@@ -68,6 +69,7 @@ import {
   terminalFontId,
   terminalFontWeight,
   terminalFontWeightBold,
+  terminalFrameRate,
   terminalGpuEnabled,
   terminalLetterSpacing,
   terminalLigatures,
@@ -293,6 +295,7 @@ export function loadSavedPreferences(): void {
     copyOnSelect.value = localStorage.getItem('orbit:copy-on-select') === 'true'
     panelCopyOnSelect.value = localStorage.getItem('orbit:panel-copy-on-select') === 'true'
     terminalGpuEnabled.value = localStorage.getItem('orbit:terminal-gpu') !== 'false'
+    terminalFrameRate.value = parseTerminalFrameRate(localStorage.getItem('orbit:terminal-frame-rate'))
     const savedShell = localStorage.getItem('orbit:default-shell')
     if (savedShell) selectedShellId.value = savedShell
     motionPreference.value = parseMotionPreference(localStorage.getItem('orbit:motion-tier'))

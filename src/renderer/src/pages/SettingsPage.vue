@@ -11,8 +11,10 @@ import {
   Languages
 } from '@lucide/vue'
 import { instanceClass, safeInstanceToken } from '../../../shared/classes'
+import { parseTerminalFrameRate, TERMINAL_FRAME_RATES } from '../../../shared/flow-control'
 import type { AppLocale, CloseButtonAction, TrayVisibilityMode } from '../../../shared/contracts'
 import orbitIcon from '../assets/orbit-icon.svg'
+import OrbitCheckbox from '../components/OrbitCheckbox.vue'
 import OrbitSelect from '../components/OrbitSelect.vue'
 import TypographySettingsSection from '../components/TypographySettingsSection.vue'
 import { locale, setLocale, t, translateMotionReason } from '../services/i18n'
@@ -47,6 +49,7 @@ import {
   setUiTheme,
   settingsDomain,
   terminalTheme,
+  terminalFrameRate,
   terminalGpuEnabled,
   trayState,
   uiTheme,
@@ -62,6 +65,10 @@ import type { RdpSettings } from '../../../shared/rdp'
 const updateSectionRef = ref<HTMLElement>()
 type SettingsDomain = 'general' | 'ssh' | 'files' | 'rdp'
 const activeDomain = settingsDomain
+const terminalFrameRateOptions = TERMINAL_FRAME_RATES.map((rate) => ({
+  value: String(rate),
+  label: `${rate} FPS`
+}))
 
 const domainTabs = computed<{ id: SettingsDomain; label: string }[]>(() => {
   void locale.value
@@ -464,10 +471,10 @@ function resetCustomUiTheme(): void {
           {{ t('settings.motionRecheck') }}
         </button>
         <label class="container_settings_terminal_body_contrast-label">
-          <input
+          <OrbitCheckbox
             v-model="highContrast"
             class="container_settings_terminal_body_contrast-check"
-            type="checkbox"
+            instance="settings-high-contrast"
           />
           {{ t('settings.highContrast') }}
         </label>
@@ -487,11 +494,11 @@ function resetCustomUiTheme(): void {
           </span>
         </div>
         <label class="container_settings_tray_minimize_label">
-          <input
+          <OrbitCheckbox
             class="container_settings_tray_minimize_check"
-            type="checkbox"
-            :checked="trayState.minimizeToTray"
-            @change="updateTrayPreferences({ minimizeToTray: ($event.target as HTMLInputElement).checked })"
+            :model-value="trayState.minimizeToTray"
+            instance="settings-tray-minimize"
+            @update:model-value="updateTrayPreferences({ minimizeToTray: $event })"
           />
           {{ t('settings.trayMinimizeCheck') }}
         </label>
@@ -741,25 +748,21 @@ function resetCustomUiTheme(): void {
         </div>
 
         <label class="container_settings_update_autocheck_label">
-          <input
+          <OrbitCheckbox
             class="container_settings_update_autocheck_check"
-            type="checkbox"
-            :checked="updateState.preferences.autoCheckOnStartup"
-            @change="
-              updateUpdaterPreferences({ autoCheckOnStartup: ($event.target as HTMLInputElement).checked })
-            "
+            :model-value="updateState.preferences.autoCheckOnStartup"
+            instance="settings-update-autocheck"
+            @update:model-value="updateUpdaterPreferences({ autoCheckOnStartup: $event })"
           />
           {{ t('settings.updateAutoCheck') }}
         </label>
 
         <label class="container_settings_update_prerelease_label">
-          <input
+          <OrbitCheckbox
             class="container_settings_update_prerelease_check"
-            type="checkbox"
-            :checked="updateState.preferences.allowPrerelease"
-            @change="
-              updateUpdaterPreferences({ allowPrerelease: ($event.target as HTMLInputElement).checked })
-            "
+            :model-value="updateState.preferences.allowPrerelease"
+            instance="settings-update-prerelease"
+            @update:model-value="updateUpdaterPreferences({ allowPrerelease: $event })"
           />
           {{ t('settings.updateAllowPre') }}
         </label>
@@ -831,16 +834,27 @@ function resetCustomUiTheme(): void {
       <section class="container_settings_terminal_body_base">
         <h3 class="container_settings_terminal_header_title">{{ t('settings.termVisualTitle') }}</h3>
         <label class="container_settings_terminal_body_gpu-label">
-          <input
+          <OrbitCheckbox
             v-model="terminalGpuEnabled"
             class="container_settings_terminal_body_gpu-check"
-            type="checkbox"
+            instance="settings-term-gpu"
           />
           {{ t('settings.termGpuLabel') }}
         </label>
         <p class="container_settings_terminal_body_gpu-description">
           {{ t('settings.termGpuDesc') }}
         </p>
+        <label class="container_settings_terminal_body_fps-label">
+          {{ t('settings.termFrameRate') }}
+          <OrbitSelect
+            :model-value="String(terminalFrameRate)"
+            :options="terminalFrameRateOptions"
+            :aria-label="t('settings.termFrameRate')"
+            width="190px"
+            instance="settings-terminal-fps"
+            @update:model-value="terminalFrameRate = parseTerminalFrameRate($event)"
+          />
+        </label>
         <label class="container_settings_terminal_body_cursor-label">
           {{ t('settings.cursorStyle') }}
           <OrbitSelect
@@ -853,14 +867,18 @@ function resetCustomUiTheme(): void {
           />
         </label>
         <label class="container_settings_terminal_body_blink-label">
-          <input v-model="cursorBlink" class="container_settings_terminal_body_blink-check" type="checkbox" />
+          <OrbitCheckbox
+            v-model="cursorBlink"
+            class="container_settings_terminal_body_blink-check"
+            instance="settings-cursor-blink"
+          />
           {{ t('settings.cursorBlink') }}
         </label>
         <label class="container_settings_terminal_body_reader-label">
-          <input
+          <OrbitCheckbox
             v-model="screenReaderDefault"
             class="container_settings_terminal_body_reader-check"
-            type="checkbox"
+            instance="settings-screen-reader"
           />
           {{ t('settings.screenReader') }}
         </label>
@@ -1012,29 +1030,29 @@ function resetCustomUiTheme(): void {
         </label>
 
         <label class="container_settings_fileproto_hidden_label">
-          <input
+          <OrbitCheckbox
             class="container_settings_fileproto_hidden_check"
-            type="checkbox"
-            :checked="protocolSettings.files.showHidden"
-            @change="updateFilesSetting({ showHidden: ($event.target as HTMLInputElement).checked })"
+            :model-value="protocolSettings.files.showHidden"
+            instance="settings-files-hidden"
+            @update:model-value="updateFilesSetting({ showHidden: $event })"
           />
           {{ t('settings.filesShowHidden') }}
         </label>
         <label class="container_settings_fileproto_del_label">
-          <input
+          <OrbitCheckbox
             class="container_settings_fileproto_del_check"
-            type="checkbox"
-            :checked="protocolSettings.files.confirmDelete"
-            @change="updateFilesSetting({ confirmDelete: ($event.target as HTMLInputElement).checked })"
+            :model-value="protocolSettings.files.confirmDelete"
+            instance="settings-files-confirm-delete"
+            @update:model-value="updateFilesSetting({ confirmDelete: $event })"
           />
           {{ t('settings.filesConfirmDelete') }}
         </label>
         <label class="container_settings_fileproto_pathstyle_label">
-          <input
+          <OrbitCheckbox
             class="container_settings_fileproto_pathstyle_check"
-            type="checkbox"
-            :checked="protocolSettings.files.s3DefaultPathStyle"
-            @change="updateFilesSetting({ s3DefaultPathStyle: ($event.target as HTMLInputElement).checked })"
+            :model-value="protocolSettings.files.s3DefaultPathStyle"
+            instance="settings-files-pathstyle"
+            @update:model-value="updateFilesSetting({ s3DefaultPathStyle: $event })"
           />
           {{ t('settings.filesS3PathStyle') }}
         </label>
@@ -1082,16 +1100,12 @@ function resetCustomUiTheme(): void {
         </div>
 
         <label class="container_settings_rdpproto_fallback_label">
-          <input
+          <OrbitCheckbox
             class="container_settings_rdpproto_fallback_check"
             data-testid="rdp-auto-fallback-check"
-            type="checkbox"
-            :checked="protocolSettings.rdp.autoFallbackToEmbedded"
-            @change="
-              updateRdpSetting({
-                autoFallbackToEmbedded: ($event.target as HTMLInputElement).checked
-              })
-            "
+            :model-value="protocolSettings.rdp.autoFallbackToEmbedded"
+            instance="settings-rdp-fallback"
+            @update:model-value="updateRdpSetting({ autoFallbackToEmbedded: $event })"
           />
           {{ t('settings.rdpAutoFallback') }}
         </label>
@@ -1362,20 +1376,20 @@ function resetCustomUiTheme(): void {
         </div>
 
         <label class="container_settings_rdpproto_clip_label">
-          <input
+          <OrbitCheckbox
             class="container_settings_rdpproto_clip_check"
-            type="checkbox"
-            :checked="protocolSettings.rdp.enableClipboard"
-            @change="updateRdpSetting({ enableClipboard: ($event.target as HTMLInputElement).checked })"
+            :model-value="protocolSettings.rdp.enableClipboard"
+            instance="settings-rdp-clip"
+            @update:model-value="updateRdpSetting({ enableClipboard: $event })"
           />
           {{ t('settings.rdpEnableClipboard') }}
         </label>
         <label class="container_settings_rdpproto_audio_label">
-          <input
+          <OrbitCheckbox
             class="container_settings_rdpproto_audio_check"
-            type="checkbox"
-            :checked="protocolSettings.rdp.enableAudio"
-            @change="updateRdpSetting({ enableAudio: ($event.target as HTMLInputElement).checked })"
+            :model-value="protocolSettings.rdp.enableAudio"
+            instance="settings-rdp-audio"
+            @update:model-value="updateRdpSetting({ enableAudio: $event })"
           />
           {{ t('settings.rdpEnableAudio') }}
         </label>
@@ -1558,6 +1572,7 @@ function resetCustomUiTheme(): void {
   margin-top: 12px;
   font-size: 13px;
   color: var(--color-text-secondary);
+  cursor: pointer;
 }
 .container_settings_tray_close_group {
   margin-top: 16px;
@@ -1633,6 +1648,7 @@ function resetCustomUiTheme(): void {
   font-size: 12px;
   color: var(--color-text-muted);
 }
+.container_settings_terminal_body_fps-label,
 .container_settings_terminal_body_cursor-label,
 .container_settings_terminal_body_motion-label {
   display: flex;
@@ -1686,6 +1702,7 @@ function resetCustomUiTheme(): void {
   margin-top: 14px;
   font-size: var(--font-size-ui-sm);
   color: var(--color-text-secondary);
+  cursor: pointer;
 }
 .container_settings_theme_body_section {
   margin-top: 24px;
@@ -2104,6 +2121,7 @@ function resetCustomUiTheme(): void {
   margin-top: 10px;
   font-size: 13px;
   color: var(--color-text-secondary);
+  cursor: pointer;
 }
 .container_settings_domains_tab_bar {
   display: flex;
@@ -2201,6 +2219,7 @@ function resetCustomUiTheme(): void {
   margin-top: 12px;
   font-size: var(--font-size-ui-sm);
   color: var(--color-text-secondary);
+  cursor: pointer;
 }
 .container_settings_fileproto_note_text,
 .container_settings_rdpproto_note_text {

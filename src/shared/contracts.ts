@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { TERMINAL_FRAME_RATES } from './flow-control'
 import type { UpdatePreferencesPatch, UpdateStatusSnapshot } from './updater'
 import type {
   SftpConflictDecision,
@@ -269,7 +270,11 @@ export const terminalInputSchema = z.discriminatedUnion('type', [
     rows: z.number().int().min(1).max(300)
   }),
   z.object({ type: z.literal('ack'), sequence: z.number().int().positive() }),
-  z.object({ type: z.literal('presentation'), visible: z.boolean() }),
+  z.object({
+    type: z.literal('presentation'),
+    visible: z.boolean(),
+    frameRate: z.literal(TERMINAL_FRAME_RATES).optional()
+  }),
   z.object({ type: z.literal('close') })
 ])
 export type TerminalEvent =
