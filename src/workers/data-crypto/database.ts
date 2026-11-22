@@ -427,9 +427,10 @@ export class Repository {
 
   list(): Host[] {
     return (
-      this.stmt(
-        'SELECT document, secret IS NOT NULL AS saved FROM hosts ORDER BY name COLLATE NOCASE'
-      ).all() as { document: string; saved: number }[]
+      this.stmt('SELECT document, secret IS NOT NULL AS saved FROM hosts ORDER BY rowid DESC').all() as {
+        document: string
+        saved: number
+      }[]
     ).map((row) => {
       const parsed = JSON.parse(row.document) as Host
       return { ...parsed, keepalive: parsed.keepalive ?? 30, hasPassword: Boolean(row.saved) }
@@ -512,7 +513,7 @@ export class Repository {
   fileProfilesList(): FileProfile[] {
     return (
       this.stmt(
-        'SELECT document, secret IS NOT NULL AS saved FROM file_profiles ORDER BY name COLLATE NOCASE'
+        'SELECT document, secret IS NOT NULL AS saved FROM file_profiles ORDER BY rowid DESC'
       ).all() as { document: string; saved: number }[]
     ).map((row) => ({ ...(JSON.parse(row.document) as FileProfile), hasSecrets: Boolean(row.saved) }))
   }
@@ -598,7 +599,7 @@ export class Repository {
   rdpProfilesList(): RdpProfile[] {
     return (
       this.stmt(
-        'SELECT document, secret IS NOT NULL AS saved FROM rdp_profiles ORDER BY name COLLATE NOCASE'
+        'SELECT document, secret IS NOT NULL AS saved FROM rdp_profiles ORDER BY rowid DESC'
       ).all() as { document: string; saved: number }[]
     ).map((row) => ({ ...(JSON.parse(row.document) as RdpProfile), hasPassword: Boolean(row.saved) }))
   }

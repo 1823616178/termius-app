@@ -5,6 +5,9 @@ import { isSoftwareRenderer, probeMotionGraphics } from './motion-performance'
 
 type WebglConstructor = typeof WebglAddon
 let rendererClass: Promise<WebglConstructor | undefined> | undefined
+// Two four-pane tabs can alternate without recreating their renderers.
+const MAX_RESIDENT_RENDERERS = 8
+const residents = new Map<() => void, () => boolean>()
 
 function loadTerminalWebgl(): Promise<WebglConstructor | undefined> {
   if (!rendererClass) {
@@ -23,7 +26,8 @@ function loadTerminalWebgl(): Promise<WebglConstructor | undefined> {
 export function attachTerminalWebgl(
   terminal: Terminal,
   refresh: () => void,
-  isWanted: () => boolean
+  isPresented: () => boolean,
+  isHeld: () => boolean
 ): { stop: () => void; sync: () => void } {
   let addon: WebglAddon | undefined
   let context: WebGL2RenderingContext | null = null
@@ -32,6 +36,7 @@ export function attachTerminalWebgl(
   let recovering = false
   let intersecting = false
   let enableFrame = 0
+  let enableTimer: ReturnType<typeof setTimeout> | undefined
   let canvas: HTMLCanvasElement | null = null
 
   const hasBox = () => {
@@ -40,7 +45,9 @@ export function attachTerminalWebgl(
   }
 
   const release = () => {
+    residents.delete(release)
     cancelAnimationFrame(enableFrame)
+    clearTimeout(enableTimer)
     enableFrame = 0
     if (!addon && !context) return
     canvas?.removeEventListener('webglcontextlost', onLoss)
@@ -74,7 +81,8 @@ export function attachTerminalWebgl(
     recovering = false
   }
 
-  const canEnable = () => !stopped && !addon && isWanted() && isAppForeground() && intersecting && hasBox()
+  const canEnable = () =>
+    !stopped && !addon && isPresented() && !isHeld() && isAppForeground() && intersecting && hasBox()
   let loading = false
   const enable = async () => {
     if (loading || !canEnable()) return
@@ -86,8 +94,14 @@ export function attachTerminalWebgl(
         stop()
         return
       }
+      if (residents.size >= MAX_RESIDENT_RENDERERS) {
+        const oldestHidden = [...residents].find(([, visible]) => !visible())
+        if (!oldestHidden) return
+        oldestHidden[0]()
+      }
       addon = new Webgl()
       terminal.loadAddon(addon)
+      residents.set(release, isPresented)
       canvas =
         terminal.element?.querySelector<HTMLCanvasElement>('.xterm-screen > canvas:last-of-type') ?? null
       context = canvas?.getContext('webgl2') ?? null
@@ -111,16 +125,20 @@ export function attachTerminalWebgl(
   const sync = () => {
     if (stopped) return
     cancelAnimationFrame(enableFrame)
-    if (!isWanted()) {
+    clearTimeout(enableTimer)
+    if (isHeld() || (!isPresented() && (!intersecting || !isAppForeground()))) {
       release()
       return
     }
+    if (addon && isPresented()) {
+      residents.delete(release)
+      residents.set(release, isPresented)
+    }
     if (!canEnable()) return
     enableFrame = requestAnimationFrame(() => {
-      enableFrame = requestAnimationFrame(() => {
-        enableFrame = 0
-        void enable()
-      })
+      enableFrame = 0
+      // Swap renderers between frames so xterm can draw its new canvas at the next paint.
+      enableTimer = setTimeout(enable, 0)
     })
   }
 

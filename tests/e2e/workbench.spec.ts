@@ -292,32 +292,34 @@ test('connections move to the top on use, respect filters and persist after relo
     for (const name of ['Alpha', 'Bravo', 'Charlie'])
       await createHost(page, name, server.port, server.password)
     const names = page.locator('.container_hosts_list_row_name')
-    await expect(names).toHaveText(['Alpha', 'Bravo', 'Charlie'])
-    await page.getByRole('button', { name: '连接 Charlie', exact: true }).click()
+    await expect(names).toHaveText(['Charlie', 'Bravo', 'Alpha'])
+    await page.getByRole('button', { name: '连接 Alpha', exact: true }).click()
     const trust = page.getByRole('dialog', { name: '确认服务器身份' })
     await expect(trust).toBeVisible()
     await expect(trust.getByRole('button', { name: '信任并继续' })).toBeFocused()
     await page.keyboard.press('Enter')
     await expect(page.getByText('运行中', { exact: true })).toHaveCount(1)
     await page.getByRole('button', { name: '返回首页', exact: true }).click()
-    await expect(names).toHaveText(['Charlie', 'Alpha', 'Bravo'])
+    await expect(names).toHaveText(['Alpha', 'Charlie', 'Bravo'])
     await page.getByRole('button', { name: '连接 Bravo', exact: true }).click()
     await expect(page.getByText('运行中', { exact: true })).toHaveCount(2)
-    await expect(names).toHaveText(['Bravo', 'Charlie', 'Alpha'])
+    await expect(names).toHaveText(['Bravo', 'Alpha', 'Charlie'])
     await page.getByRole('button', { name: '返回首页', exact: true }).click()
-    await page.getByRole('tab', { name: /Charlie/ }).click()
-    await expect(names).toHaveText(['Charlie', 'Bravo', 'Alpha'])
+    await page.getByRole('tab', { name: /Alpha/ }).click()
+    await expect(names).toHaveText(['Alpha', 'Bravo', 'Charlie'])
     await page.getByRole('button', { name: '主机', exact: true }).click()
-    await expect(page.locator('.container_hosts_card_body_name')).toHaveText(['Charlie', 'Bravo', 'Alpha'])
+    await expect(page.locator('.container_hosts_card_body_name')).toHaveText(['Alpha', 'Bravo', 'Charlie'])
     const search = page.getByLabel('搜索主机', { exact: true })
     await search.fill('a')
-    await expect(names).toHaveText(['Charlie', 'Bravo', 'Alpha'])
+    await expect(names).toHaveText(['Alpha', 'Bravo', 'Charlie'])
     await search.fill('Bravo')
     await expect(names).toHaveText(['Bravo'])
     await search.clear()
     await page.reload()
     await expect(page.getByText('让连接，井然有序。')).toBeVisible()
-    await expect(names).toHaveText(['Charlie', 'Bravo', 'Alpha'])
+    await expect(names).toHaveText(['Alpha', 'Bravo', 'Charlie'])
+    await createHost(page, 'Delta', server.port, server.password)
+    await expect(names).toHaveText(['Delta', 'Alpha', 'Bravo', 'Charlie'])
   } finally {
     await server.close()
   }
@@ -336,28 +338,28 @@ test('homepage sword realm, border flight, resize and motion tiers', async ({ or
     .not.toBe(initialDistance)
 
   const sceneState = page.locator('.container_workspace_welcome_body_scene-state')
-  await page.getByRole('button', { name: '即刻归宗', exact: true }).click()
-  await expect(sceneState).toContainText(/诛仙剑阵/)
-  await page.waitForTimeout(1000)
+  await page.locator('.container_workspace_xianling_action_charge').click()
+  await expect(sceneState).toContainText('灵珠共鸣中')
+  await page.waitForTimeout(800)
   await page.screenshot({ path: info.outputPath('sword-climax.png') })
 
-  const rail = page.locator('.container_workspace_welcome_body_formrail')
-  await expect(rail).toBeVisible()
-  await expect(rail.locator('button')).toHaveCount(12)
-  await rail.locator('button').nth(9).click()
-  await expect(sceneState).toContainText('九宫八卦剑阵')
-  await expect(rail.locator('button').nth(9)).toHaveAttribute('data-active', 'true')
+  const cardsGrid = page.locator('.container_workspace_xianling_cards_grid')
+  await expect(cardsGrid).toBeVisible()
+  await expect(cardsGrid.locator('button:visible')).toHaveCount(12)
+  await page.getByRole('button', { name: '下卷 · 凌虚', exact: true }).click()
+  await expect(cardsGrid.locator('button:visible')).toHaveCount(12)
+  await page.getByRole('button', { name: '第22阵，九宫八卦剑阵', exact: true }).click()
+  await expect(page.locator('.container_workspace_xianling_dossier_name')).toHaveText('九宫八卦剑阵')
   await page.waitForTimeout(600)
   await page.screenshot({ path: info.outputPath('sword-jiugong.png') })
-  await rail.locator('button').nth(0).click()
-  await expect(sceneState).toContainText('诛仙剑阵')
+  await page.getByRole('button', { name: '上卷 · 万象', exact: true }).click()
+  await page.getByRole('button', { name: '第1阵，星河九旋', exact: true }).click()
+  await expect(page.locator('.container_workspace_xianling_dossier_name')).toHaveText('星河九旋')
 
-  await page.getByRole('button', { name: '重展剑境', exact: true }).click()
-  await expect(sceneState).toContainText('开阵启封')
-  await page.waitForTimeout(720)
+  await page.locator('.container_workspace_xianling_action_recall').click()
+  await expect(sceneState).toContainText('万剑归宗中')
+  await page.waitForTimeout(700)
   await page.screenshot({ path: info.outputPath('sword-intro.png') })
-  await expect(sceneState).toContainText(/万剑分身|凌虚归阵/)
-  await page.screenshot({ path: info.outputPath('sword-intro-clones.png') })
 
   const initialPath = await flight.getAttribute('style')
   await app.evaluate(({ BrowserWindow }) => {
@@ -390,7 +392,7 @@ test('homepage sword realm, border flight, resize and motion tiers', async ({ or
   await expect(stage.locator('img')).toBeVisible()
   await expect(stage.locator('canvas')).toBeHidden()
   await expect(flight).toBeHidden()
-  await expect(page.getByRole('button', { name: '即刻归宗', exact: true })).toBeHidden()
+  await expect(page.locator('.container_workspace_xianling_action_charge')).toBeHidden()
   await expect
     .poll(() => page.evaluate(() => (window as MotionTestWindow).__motionDeleteCalls))
     .toBeGreaterThan(deletedBeforeOff)
@@ -413,7 +415,7 @@ test('homepage sword realm, border flight, resize and motion tiers', async ({ or
   await page.getByRole('button', { name: '工作台', exact: true }).click()
   await expect(stage).toHaveAttribute('data-ready', 'true')
   await expect(flight).toBeVisible()
-  await expect(page.getByRole('button', { name: '即刻归宗', exact: true })).toBeVisible()
+  await expect(page.locator('.container_workspace_xianling_action_charge')).toBeVisible()
   await expect
     .poll(() => page.evaluate(() => (window as MotionTestWindow).__motionDrawCalls))
     .toBeGreaterThan(stoppedDrawCalls!)
@@ -542,7 +544,7 @@ test('motion performance detects weak graphics and persists force override', asy
   await expect
     .poll(() => forcedFlight.evaluate((element) => getComputedStyle(element).offsetDistance))
     .not.toBe(forcedDistance)
-  await expect(page.getByRole('button', { name: '即刻归宗', exact: true })).toBeVisible()
+  await expect(page.locator('.container_workspace_xianling_action_charge')).toBeVisible()
 
   await page.getByRole('button', { name: '设置', exact: true }).click()
   await page.getByRole('combobox', { name: '动效与性能档' }).click()
@@ -656,8 +658,8 @@ test('sword animation resumes after context loss and motion preference changes',
     .toBe(false)
   const runningFrame = await stage.locator('canvas').screenshot()
   await expect.poll(async () => (await stage.locator('canvas').screenshot()).equals(runningFrame)).toBe(false)
-  await page.getByRole('button', { name: '重展剑境', exact: true }).click()
-  await expect(phase).toContainText('万剑分身')
+  await page.locator('.container_workspace_xianling_action_recall').click()
+  await expect(phase).toContainText('万剑归宗中')
 
   await page.emulateMedia({ reducedMotion: 'reduce' })
   await expect(stage.locator('canvas')).toBeHidden()
@@ -665,8 +667,8 @@ test('sword animation resumes after context loss and motion preference changes',
   await page.emulateMedia({ reducedMotion: 'no-preference' })
   await expect(stage).toHaveAttribute('data-ready', 'true')
   await expect(stage.locator('canvas')).toBeVisible()
-  await page.getByRole('button', { name: '即刻归宗', exact: true }).click()
-  await expect(phase).toContainText('诛仙剑阵')
+  await page.locator('.container_workspace_xianling_action_charge').click()
+  await expect(phase).toContainText('灵珠共鸣中')
 })
 
 test('sword initialization failure can be retried from the homepage', async ({ orbit }) => {
@@ -693,7 +695,7 @@ test('sword initialization failure can be retried from the homepage', async ({ o
   await expect(stage.locator('img')).toBeVisible()
   await page.getByRole('button', { name: '重展剑境', exact: true }).click()
   await expect(stage).toHaveAttribute('data-ready', 'true')
-  await expect(phase).toContainText('万剑分身')
+  await expect(phase).toContainText('阵势运行中')
 })
 
 test('terminal uses hardware WebGL when available and keeps the session after context loss', async ({
@@ -789,6 +791,53 @@ test('terminal uses hardware WebGL when available and keeps the session after co
   await page.getByRole('button', { name: '打开本地终端', exact: true }).click()
   await expect(page.locator('.xterm-rows')).toContainText('PS ', { timeout: 15_000 })
   await expect(page.locator('.xterm-screen > canvas')).toHaveCount(0)
+})
+
+test('rapid terminal tab switches retain renderer surfaces and restore the selected split', async ({
+  orbit
+}) => {
+  const { page } = orbit
+  await enableTerminalTextForAssertions(page)
+  const addTab = page.getByRole('button', { name: '新建本地会话', exact: true })
+  await addTab.click()
+  await page.getByRole('button', { name: '左右分屏', exact: true }).click()
+  const rows = page.locator('.xterm-accessibility-tree')
+  await expect(rows.nth(1)).toContainText('PS ', { timeout: 15_000 })
+  const firstInput = page.locator('.xterm-helper-textarea').first()
+  await firstInput.focus()
+  await addTab.click()
+  await expect(rows.nth(2)).toContainText('PS ', { timeout: 15_000 })
+
+  const frames = await page.evaluate(async () => {
+    const tabs = [...document.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
+    const panels = [...document.querySelectorAll<HTMLElement>('.container_workspace_panes_body_base')]
+    const renderers = () => [...document.querySelectorAll('.xterm-screen > canvas, .xterm-rows')]
+    const original = renderers()
+    for (let i = 0; i < 40; i++) {
+      const index = i % 2
+      tabs[index]!.click()
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+      const visible = panels.filter((panel) => getComputedStyle(panel).visibility === 'visible')
+      if (visible.length !== 1 || visible[0] !== panels[index]) return 'wrong visible panel'
+      if (panels.some((panel) => !panel.clientWidth || !panel.clientHeight)) return 'collapsed panel'
+      if (document.activeElement !== visible[0]!.querySelector('.xterm-helper-textarea')) return 'wrong focus'
+      const current = renderers()
+      if (
+        original.length < 3 ||
+        current.length !== original.length ||
+        current.some((el, j) => el !== original[j])
+      ) {
+        return 'renderer replaced'
+      }
+    }
+    return 'ok'
+  })
+  expect(frames).toBe('ok')
+  await page.keyboard.press('Control+Tab')
+  await expect(firstInput).toBeFocused()
+  await page.keyboard.type('Write-Output ("TAB_"+"RESTORED")')
+  await page.keyboard.press('Enter')
+  await expect(rows.first()).toContainText('TAB_RESTORED')
 })
 
 test('real PowerShell and CMD, split resize, terminal input and lifecycle cleanup', async ({
@@ -1398,9 +1447,7 @@ test('drag tab into workspace triggers animated split preview, lossless docking 
     ({ x, y }) => {
       const tabsEls = [...document.querySelectorAll('.container_workspace_tabs_header_item')]
       const sourceEl = tabsEls.find((el) => el.textContent?.includes('命令提示符'))!
-      const paneEl = [...document.querySelectorAll('.container_workspace_panes_body_base')].find(
-        (el) => (el as HTMLElement).offsetParent !== null
-      )!
+      const paneEl = document.querySelector('.container_workspace_panes_body_base:not([inert])')!
       const dataTransfer = new DataTransfer()
       sourceEl.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, dataTransfer }))
       paneEl.dispatchEvent(
@@ -1455,12 +1502,12 @@ test('drag tab into workspace triggers animated split preview, lossless docking 
     ({ x, y }) => {
       const headers = [
         ...document.querySelectorAll(
-          '.container_workspace_panes_body_base:not([style*="display: none"]) .container_workspace_terminal_header_base'
+          '.container_workspace_panes_body_base:not([inert]) .container_workspace_terminal_header_base'
         )
       ]
       const panes = [
         ...document.querySelectorAll(
-          '.container_workspace_panes_body_base:not([style*="display: none"]) .container_workspace_panes_body_pane'
+          '.container_workspace_panes_body_base:not([inert]) .container_workspace_panes_body_pane'
         )
       ]
       const sourceHeader = headers[1]!
@@ -2215,65 +2262,162 @@ test('terminal right-side SFTP drawer browses, uploads, downloads, chmods, renam
   }
 })
 
-test('the hero sword sheathes, draws and reverses during alignment', async ({ orbit }, info) => {
+test('xianling hero sword supports sheathing, dance, chorus, object study and blade/sheath/array exchange', async ({
+  orbit
+}, info) => {
   const { page } = orbit
-  await page.getByRole('button', { name: '切换至春黎剑阵', exact: true }).click()
-  const sheathe = page.getByRole('button', { name: '归鞘', exact: true })
+  await page.evaluate(() => localStorage.setItem('orbit:motion-tier', 'full'))
+  await page.reload()
+  const stage = page.locator('[data-variant="welcome"]')
+  await expect(stage).toHaveAttribute('data-ready', 'true')
+
+  // Sheathing & mid-animation reversal
+  const sheathe = page.getByRole('button', { name: '入鞘', exact: true })
   const draw = page.getByRole('button', { name: '出鞘', exact: true })
-  const tip = page.getByRole('button', { name: '调整主剑倾斜度', exact: true })
-  await expect(tip).toBeVisible()
   await sheathe.click()
-  await expect(tip).toBeHidden()
-  await page.waitForTimeout(400)
+  await expect(draw).toBeVisible()
+  await page.waitForTimeout(500)
   await draw.click()
-  await expect(tip).toBeVisible()
-  await sheathe.click()
-  await page.waitForTimeout(2350)
-  await expect(tip).toBeHidden()
-  await page.screenshot({ path: info.outputPath('silver-sheathed.png') })
-  await page.getByRole('button', { name: '切换至九宫八卦剑阵', exact: true }).click()
-  await draw.click()
-  await expect(tip).toBeVisible()
-  await page.screenshot({ path: info.outputPath('silver-drawn.png') })
+  await expect(sheathe).toBeVisible()
+  await page.waitForTimeout(500)
+
+  // Sword dance & chorus toggles + seven-act bar
+  const ballet = page.getByRole('switch', { name: '剑舞', exact: true })
+  const chorus = page.getByRole('switch', { name: '剑阵合舞', exact: true })
+  await ballet.click()
+  await expect(ballet).toHaveAttribute('aria-checked', 'true')
+  await expect(page.locator('.container_workspace_xianling_music_bar')).toBeVisible()
+  await chorus.click()
+  await expect(chorus).toHaveAttribute('aria-checked', 'true')
+  await expect(page.locator('.container_workspace_welcome_body_scene-state')).toContainText('万剑随舞中')
+  await page.waitForTimeout(700)
+  await page.screenshot({ path: info.outputPath('xianling-dance-chorus.png') })
+  await chorus.click()
+  await ballet.click()
+  await expect(page.locator('.container_workspace_xianling_music_bar')).toBeHidden()
+
+  // Object Study (观剑细节) & all 5 parts
+  await page.getByRole('button', { name: '观剑细节', exact: true }).click()
+  await expect(page.locator('.container_workspace_xianling_exhibit_panel')).toBeVisible()
+  await expect(page.locator('.container_workspace_xianling_exhibit_title')).toHaveText('浅蓝八卦珠')
+  await page.waitForTimeout(350)
+  await page.screenshot({ path: info.outputPath('xianling-inspect-pearl.png') })
+  for (const [tab, expectedTitle] of [
+    ['全剑', '仙灵全貌'],
+    ['剑格', '旋云剑格'],
+    ['剑柄', '白玉剑柄'],
+    ['剑身', '霜钢剑脊']
+  ] as const) {
+    await page.getByRole('button', { name: tab, exact: true }).click()
+    await expect(page.locator('.container_workspace_xianling_exhibit_title')).toHaveText(expectedTitle)
+  }
+  await page.getByRole('button', { name: '← 返回原阵续看', exact: true }).click()
+  await expect(page.locator('.container_workspace_xianling_exhibit_panel')).toBeHidden()
+
+  // Main sword exchange, scabbard exchange, and formation fusion (万剑铸形)
+  const swordEx = page.locator('.container_workspace_xianling_action_sword-ex')
+  await swordEx.click()
+  await expect(swordEx).toContainText('主剑进场')
+  await page.waitForTimeout(600)
+  await swordEx.click()
+  await expect(swordEx).toContainText('主剑退场')
+
+  const sheathEx = page.locator('.container_workspace_xianling_action_sheath-ex')
+  await sheathEx.click()
+  await expect(sheathEx).toContainText('剑鞘进场')
+  await page.waitForTimeout(600)
+  await sheathEx.click()
+  await expect(sheathEx).toContainText('剑鞘退场')
+
+  const fusionBtn = page.locator('.container_workspace_xianling_action_fusion')
+  await fusionBtn.click()
+  await expect(fusionBtn).toContainText('剑阵进场')
+  await expect(swordEx).toBeDisabled()
+  await expect(sheathEx).toBeDisabled()
+  await page.waitForTimeout(900)
+  await page.screenshot({ path: info.outputPath('xianling-fusion.png') })
+  await fusionBtn.click()
+  await expect(fusionBtn).toContainText('剑阵退场')
+  await checkClasses(page)
 })
 
-test('all twelve sword formations support orbit, zoom and reset', async ({ orbit }, info) => {
+test('all twenty-four xianling formations support switching, orbit, zoom, spin speed and reset', async ({
+  orbit
+}, info) => {
   test.setTimeout(120_000)
   const { page } = orbit
   await page.evaluate(() => localStorage.setItem('orbit:motion-tier', 'full'))
   await page.reload()
   const stage = page.locator('[data-variant="welcome"]')
   await expect(stage).toHaveAttribute('data-ready', 'true')
-  const rail = page.locator('.container_workspace_welcome_body_formrail button')
-  await expect(rail).toHaveCount(12)
-  const box = await stage.boundingBox()
-  expect(box).not.toBeNull()
-  const x = box!.x + box!.width * 0.76
-  const y = box!.y + box!.height * 0.56
-  for (let i = 0; i < 12; i++) {
-    await rail.nth(i).click()
-    await expect(rail.nth(i)).toHaveAttribute('data-active', 'true')
-    await page.mouse.dblclick(x, y)
-    await page.waitForTimeout(350)
-    await page.screenshot({ path: info.outputPath(`formation-${i + 1}-front.png`) })
-    await page.mouse.move(x, y)
-    await page.mouse.down()
-    await page.mouse.move(x - 145, y - 28, { steps: 16 })
-    await expect(stage).toHaveAttribute('data-dragging', 'true')
-    await page.mouse.up()
-    await expect(stage).toHaveAttribute('data-dragging', 'false')
-    await page.waitForTimeout(350)
-    await expect(stage).toHaveAttribute('data-ready', 'true')
-    await page.screenshot({ path: info.outputPath(`formation-${i + 1}-orbit.png`) })
-  }
-  await page.mouse.wheel(0, -240)
-  await page.waitForTimeout(300)
-  await page.screenshot({ path: info.outputPath('formation-zoom.png') })
-  await page.mouse.dblclick(x, y)
-  await expect(stage).toHaveAttribute('data-ready', 'true')
+
+  const cards = page.locator('.container_workspace_xianling_cards_grid button')
+  await expect(cards).toHaveCount(24)
+
+  // Step through Volume 1 and Volume 2
+  const indexLabel = page.locator('.container_workspace_xianling_library_index')
+  await expect(indexLabel).toHaveText('01 / 24')
+  await page.getByRole('button', { name: '下一阵', exact: true }).click()
+  await expect(indexLabel).toHaveText('02 / 24')
+  await page.getByRole('button', { name: '下卷 · 凌虚', exact: true }).click()
+  await expect(indexLabel).toHaveText('13 / 24')
+  await expect(page.locator('.container_workspace_xianling_dossier_name')).toHaveText('诛仙剑阵')
+  await page.waitForTimeout(450)
+  await page.screenshot({ path: info.outputPath('xianling-vol2-zhuxian.png') })
+
+  await page.getByRole('button', { name: '第24阵，五九剑阵', exact: true }).click()
+  await expect(indexLabel).toHaveText('24 / 24')
+  await page.getByRole('button', { name: '上卷 · 万象', exact: true }).click()
+  await page.getByRole('button', { name: '第5阵，琉璃莲台', exact: true }).click()
+  await expect(page.locator('.container_workspace_xianling_dossier_name')).toHaveText('琉璃莲台')
+  await page.waitForTimeout(450)
+  await page.screenshot({ path: info.outputPath('xianling-vol1-lotus.png') })
+
+  // Spin speed slider, auto-orbit, pause, zoom, orbit drag and reset
+  const slider = page.getByRole('slider', { name: '剑阵旋转速度', exact: true })
+  await slider.fill('2.4')
+  await slider.dispatchEvent('input')
+  await expect(page.locator('.container_workspace_xianling_tools_rot-value')).toHaveText('2.4×')
+
+  await page.getByRole('button', { name: '自动运镜', exact: true }).click()
+  await expect(page.getByRole('button', { name: '自动运镜', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true'
+  )
+  await page.getByRole('button', { name: '暂停阵势', exact: true }).click()
+  await expect(page.locator('.container_workspace_welcome_body_scene-state')).toContainText('阵势已暂停')
+  await page.getByRole('button', { name: '继续阵势', exact: true }).click()
+
+  const box = (await stage.boundingBox())!
+  const x = box.x + box.width * 0.56
+  const y = box.y + box.height * 0.48
+  await page.mouse.move(x, y)
+  await page.mouse.down()
+  await page.mouse.move(x - 130, y - 35, { steps: 12 })
+  await expect(stage).toHaveAttribute('data-dragging', 'true')
+  await page.mouse.up()
+  await expect(stage).toHaveAttribute('data-dragging', 'false')
+
+  await page.getByRole('button', { name: '放大', exact: true }).click()
+  await expect
+    .poll(async () =>
+      Number(
+        (await page.locator('.container_workspace_xianling_tools_zoom-val').textContent())?.replace('×', '')
+      )
+    )
+    .toBeGreaterThan(1.1)
+  await page.getByRole('button', { name: '视角复位', exact: true }).click()
+  await expect
+    .poll(async () =>
+      Number(
+        (await page.locator('.container_workspace_xianling_tools_zoom-val').textContent())?.replace('×', '')
+      )
+    )
+    .toBeCloseTo(1.0, 1)
+  await checkClasses(page)
 })
 
-test('hero sword tip tilts independently, clamps safely, cancels and resets after orbit and resize', async ({
+test('xianling tip aiming handle and sword/sheath direct dragging work across resize', async ({
   orbit
 }, info) => {
   const { page, app } = orbit
@@ -2281,81 +2425,41 @@ test('hero sword tip tilts independently, clamps safely, cancels and resets afte
   await page.reload()
   const stage = page.locator('[data-variant="welcome"]')
   await expect(stage).toHaveAttribute('data-ready', 'true')
-  await page.getByRole('button', { name: '切换至大庚剑阵', exact: true }).click()
-  const tip = page.getByRole('button', { name: '调整主剑倾斜度', exact: true })
+
+  const tip = page.locator('.container_workspace_xianling_stage_tip-handle')
+  const swordHandle = page.locator('.container_workspace_xianling_stage_sword-handle')
+  const sheathHandle = page.locator('.container_workspace_xianling_stage_sheath-handle')
   await expect(tip).toBeVisible()
-  const angle = async () => Number(await tip.getAttribute('data-tilt'))
-  await expect.poll(angle).toBeGreaterThan(45)
-  const leftAim = (await tip.boundingBox())!.x
-  await page.getByRole('button', { name: '切换至春黎剑阵', exact: true }).click()
-  await expect.poll(async () => (await tip.boundingBox())!.x - leftAim).toBeGreaterThan(130)
-  await expect.poll(angle).toBeGreaterThan(18)
-  const defaultAngle = await angle()
-  expect(await tip.evaluate((el) => getComputedStyle(el).transitionProperty)).not.toContain('transform')
-  expect(defaultAngle).toBeGreaterThan(15)
-  expect(defaultAngle).toBeLessThan(35)
-  await checkClasses(page)
-  await page.screenshot({ path: info.outputPath('hero-default-tilt.png') })
+  await expect(swordHandle).toBeVisible()
+  await expect(sheathHandle).toBeVisible()
 
-  const start = (await tip.boundingBox())!
-  const startX = start.x + start.width / 2
-  const startY = start.y + start.height / 2
-  await page.mouse.move(startX, startY)
+  const beforeTilt = Number(await tip.getAttribute('data-tilt'))
+  const tipBox = (await tip.boundingBox())!
+  await page.mouse.move(tipBox.x + tipBox.width / 2, tipBox.y + tipBox.height / 2)
   await page.mouse.down()
   await expect(stage).toHaveAttribute('data-adjusting-sword', 'true')
-  await page.mouse.move(startX + 110, startY + 25, { steps: 14 })
-  await expect.poll(angle).toBeGreaterThan(defaultAngle + 8)
+  await page.mouse.move(tipBox.x + 120, tipBox.y - 30, { steps: 12 })
+  await expect
+    .poll(async () => Math.abs(Number(await tip.getAttribute('data-tilt')) - beforeTilt))
+    .toBeGreaterThan(6)
   await page.mouse.up()
   await expect(stage).toHaveAttribute('data-adjusting-sword', 'false')
-  const adjustedAngle = await angle()
-  await page.screenshot({ path: info.outputPath('hero-tip-dragged.png') })
 
-  // The next formation steers the blade while retaining the user's adjustment.
-  await page.getByRole('button', { name: '切换至九宫八卦剑阵', exact: true }).click()
-  await expect.poll(angle).toBeGreaterThan(adjustedAngle - 8)
-  const next = (await tip.boundingBox())!
-  await page.mouse.move(next.x + 18, next.y + 18)
+  // Drag main sword (sheath follows synchronously)
+  const swBox = (await swordHandle.boundingBox())!
+  const shBefore = (await sheathHandle.boundingBox())!
+  await page.mouse.move(swBox.x + swBox.width / 2, swBox.y + swBox.height / 2)
   await page.mouse.down()
-  await expect(stage).toHaveAttribute('data-adjusting-sword', 'true')
-  await page.mouse.move(next.x + 280, next.y + 460, { steps: 12 })
-  await expect.poll(angle).toBeGreaterThanOrEqual(64.5)
-  expect(await angle()).toBeLessThanOrEqual(65.1)
-  await page.keyboard.press('Escape')
+  await expect(stage).toHaveAttribute('data-moving-object', 'true')
+  await page.mouse.move(swBox.x + 70, swBox.y - 25, { steps: 10 })
   await page.mouse.up()
-  await expect(stage).toHaveAttribute('data-adjusting-sword', 'false')
-  await expect.poll(angle).toBeLessThan(60)
-
-  // Keyboard adjustment and double-click restore work on the tip itself.
-  await tip.focus()
-  const beforeKey = await angle()
-  await tip.press('Shift+ArrowRight')
-  await expect.poll(async () => Math.abs((await angle()) - beforeKey)).toBeGreaterThan(1)
-  const reset = (await tip.boundingBox())!
-  await page.mouse.dblclick(reset.x + 18, reset.y + 18)
-  // Reset restores Bagua's oblique stance, including its gentle camera-facing sway.
-  await expect.poll(async () => Math.abs((await angle()) - 37)).toBeLessThan(6)
+  await expect.poll(async () => (await sheathHandle.boundingBox())!.x - shBefore.x).toBeGreaterThan(30)
 
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.setSize(1100, 720))
-  const bounds = (await stage.boundingBox())!
-  const x = bounds.x + bounds.width * 0.8
-  const y = bounds.y + bounds.height * 0.65
-  await page.mouse.move(x, y)
-  await page.mouse.down()
-  await page.mouse.move(x - 65, y - 20, { steps: 12 })
-  await expect(stage).toHaveAttribute('data-adjusting-sword', 'false')
-  await page.mouse.up()
-  await page.mouse.wheel(0, -120)
-  // Let the resize, orbit inertia and zoom settle before picking the moving tip.
-  await page.waitForTimeout(650)
-  await expect(tip).toBeVisible()
-  const sideTip = (await tip.boundingBox())!
-  await page.mouse.move(sideTip.x + 18, sideTip.y + 18)
-  await page.mouse.down()
-  await expect(stage).toHaveAttribute('data-adjusting-sword', 'true')
-  await page.mouse.move(sideTip.x + 75, sideTip.y + 30, { steps: 10 })
-  await page.mouse.up()
+  await page.waitForTimeout(350)
   await expect(stage).toHaveAttribute('data-ready', 'true')
-  await page.screenshot({ path: info.outputPath('hero-tilt-side-resized.png') })
+  await page.screenshot({ path: info.outputPath('xianling-handles-resized.png') })
+  await checkClasses(page)
 })
 
 test('workspace tab bar scrolls horizontally on overflow without showing a vertical scrollbar', async ({

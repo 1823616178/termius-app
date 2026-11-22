@@ -50,6 +50,7 @@ import {
   type SftpSortField
 } from '../../../shared/sftp'
 import FileProfileEditor from '../components/FileProfileEditor.vue'
+import { markHostUsed, recentHostIds, sortHostsByRecency } from '../services/host-recency'
 import { t } from '../services/i18n'
 import {
   activeFileTab,
@@ -200,15 +201,18 @@ const filteredFileProfiles = computed(() => {
 
 const filteredSshHosts = computed(() => {
   const q = inventoryQuery.value.trim().toLowerCase()
-  return hosts.value.filter((item) => {
-    if (favOnly.value && !item.favorite) return false
-    if (!q) return true
-    return (
-      item.name.toLowerCase().includes(q) ||
-      item.address.toLowerCase().includes(q) ||
-      item.username.toLowerCase().includes(q)
-    )
-  })
+  return sortHostsByRecency(
+    hosts.value.filter((item) => {
+      if (favOnly.value && !item.favorite) return false
+      if (!q) return true
+      return (
+        item.name.toLowerCase().includes(q) ||
+        item.address.toLowerCase().includes(q) ||
+        item.username.toLowerCase().includes(q)
+      )
+    }),
+    recentHostIds.value
+  )
 })
 
 const breadcrumbs = computed(() =>
@@ -375,9 +379,12 @@ async function handleSaveSshAndConnect(input: HostInput) {
   try {
     const savePayload: HostInput = input.savePassword ? input : { ...input, password: '' }
     const savedList = await window.orbit.hosts.save(savePayload)
+    const created = findSavedSshHost(savedList, input.id, input.name)
+    if (created && !input.id) {
+      markHostUsed(created.id)
+    }
     hosts.value = savedList
     editorOpen.value = false
-    const created = findSavedSshHost(savedList, input.id, input.name)
     if (created) {
       await openSftpHostTab(created, input.savePassword ? undefined : input.password)
     }

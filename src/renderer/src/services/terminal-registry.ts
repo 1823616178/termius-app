@@ -245,7 +245,7 @@ export async function createTerminal(
   let presented = presentation.presented !== false
   let gpuHeld = presentation.holdGpu === true
   let webglSync: (() => void) | undefined
-  let resumeToken = 0
+  let needsFit = true
   const send = (message: unknown) => port?.postMessage(message)
   const canPresent = () => isAppForeground() && presented
   const output = createTerminalOutput(
@@ -261,6 +261,7 @@ export async function createTerminal(
 
   const resize = () => {
     if (disposed || !canPresent() || !currentElement.clientWidth || !currentElement.clientHeight) return
+    needsFit = false
     const activeBuffer = terminal.buffer.active
     const wasAtBottom = activeBuffer.viewportY >= activeBuffer.baseY
     fit.fit()
@@ -273,33 +274,29 @@ export async function createTerminal(
   }
 
   const scheduleFit = () => {
-    cancelAnimationFrame(frame)
-    frame = requestAnimationFrame(resize)
-  }
-
-  const refresh = () => {
-    if (disposed || !canPresent() || !currentElement.clientWidth || !currentElement.clientHeight) return
-    scheduleFit()
-    if (terminal.rows > 0) terminal.refresh(0, terminal.rows - 1)
-  }
-
-  const resumeView = () => {
-    const token = ++resumeToken
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        if (token !== resumeToken || disposed || !canPresent()) return
-        scheduleFit()
-      })
+    needsFit = true
+    if (disposed || !canPresent() || frame) return
+    frame = requestAnimationFrame(() => {
+      frame = 0
+      resize()
     })
   }
 
-  const gpuWanted = () => presented && !gpuHeld
+  const refresh = () => {
+    scheduleFit()
+    if (!disposed && canPresent() && terminal.rows > 0) terminal.refresh(0, terminal.rows - 1)
+  }
 
   const stopGpuPreference = watch(
     terminalGpuEnabled,
     (enabled, _, onCleanup) => {
       if (!enabled) return
-      const binding = attachTerminalWebgl(terminal, refresh, gpuWanted)
+      const binding = attachTerminalWebgl(
+        terminal,
+        refresh,
+        () => presented,
+        () => gpuHeld
+      )
       webglSync = binding.sync
       onCleanup(() => {
         webglSync = undefined
@@ -376,10 +373,13 @@ export async function createTerminal(
 
   // Panel transitions generate a size change every frame. Fit once they settle,
   // avoiding repeated PTY resizes and scrollback reflow during the animation.
-  const observer = new ResizeObserver(() => {
-    if (!canPresent() || !currentElement.clientWidth || !currentElement.clientHeight) return
+  const observer = new ResizeObserver(([entry]) => {
+    needsFit = true
     clearTimeout(resizeTimer)
-    resizeTimer = setTimeout(scheduleFit, 80)
+    if (!canPresent() || !entry?.contentRect.width || !entry.contentRect.height) return
+    resizeTimer = setTimeout(() => {
+      if (needsFit) scheduleFit()
+    }, 80)
   })
   observer.observe(element)
 
@@ -440,6 +440,7 @@ export async function createTerminal(
     observer.disconnect()
     clearTimeout(resizeTimer)
     cancelAnimationFrame(frame)
+    frame = 0
   }
 
   const syncPresentation = () => {
@@ -447,7 +448,7 @@ export async function createTerminal(
     send({ type: 'presentation', visible })
     output.setVisible(visible)
     webglSync?.()
-    if (visible) resumeView()
+    if (visible && needsFit) scheduleFit()
   }
 
   const setPresented = (visible: boolean) => {
@@ -470,7 +471,6 @@ export async function createTerminal(
     connected = false
     inputQueue = []
     output.dispose()
-    resumeToken += 1
     stopForegroundWatch()
     observer.disconnect()
     clearTimeout(resizeTimer)

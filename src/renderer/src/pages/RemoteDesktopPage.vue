@@ -30,6 +30,7 @@ import {
 import OrbitSelect from '../components/OrbitSelect.vue'
 import RdpEmbeddedCanvas from '../components/RdpEmbeddedCanvas.vue'
 import RdpProfileEditor from '../components/RdpProfileEditor.vue'
+import { recentHostIds, sortHostsByRecency } from '../services/host-recency'
 import { locale, t } from '../services/i18n'
 import {
   activeRdpCertPrompt,
@@ -134,15 +135,18 @@ const filteredProfiles = computed(() => {
 
 const filteredSshHosts = computed(() => {
   const q = search.value.trim().toLowerCase()
-  return hosts.value.filter((item) => {
-    if (favoritesOnly.value && !item.favorite) return false
-    if (!q) return true
-    return (
-      item.name.toLowerCase().includes(q) ||
-      item.address.toLowerCase().includes(q) ||
-      item.username.toLowerCase().includes(q)
-    )
-  })
+  return sortHostsByRecency(
+    hosts.value.filter((item) => {
+      if (favoritesOnly.value && !item.favorite) return false
+      if (!q) return true
+      return (
+        item.name.toLowerCase().includes(q) ||
+        item.address.toLowerCase().includes(q) ||
+        item.username.toLowerCase().includes(q)
+      )
+    }),
+    recentHostIds.value
+  )
 })
 
 const globalPreferredLabel = computed(() =>

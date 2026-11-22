@@ -75,6 +75,40 @@ describe('Repository persistence and migrations', () => {
     }
   })
 
+  it('places newly added hosts, file profiles, and RDP profiles at the top and preserves order on update', () => {
+    const repo = new Repository(':memory:')
+    try {
+      repo.save({ name: 'Alpha', address: '10.0.0.1', port: 22, username: 'root' })
+      const afterBravo = repo.save({ name: 'Bravo', address: '10.0.0.2', port: 22, username: 'root' })
+      const bravoId = afterBravo[0]!.id
+      repo.save({ name: 'Charlie', address: '10.0.0.3', port: 22, username: 'root' })
+      expect(repo.list().map((h) => h.name)).toEqual(['Charlie', 'Bravo', 'Alpha'])
+
+      repo.save({ id: bravoId, name: 'Bravo-Edited', address: '10.0.0.2', port: 2222, username: 'root' })
+      expect(repo.list().map((h) => h.name)).toEqual(['Charlie', 'Bravo-Edited', 'Alpha'])
+
+      repo.fileProfileSave({ name: 'File-A', protocol: 'ftp', host: '10.0.1.1' })
+      const afterFileB = repo.fileProfileSave({ name: 'File-B', protocol: 'ftp', host: '10.0.1.2' })
+      const fileBId = afterFileB[0]!.id
+      repo.fileProfileSave({ name: 'File-C', protocol: 'ftp', host: '10.0.1.3' })
+      expect(repo.fileProfilesList().map((p) => p.name)).toEqual(['File-C', 'File-B', 'File-A'])
+
+      repo.fileProfileSave({ id: fileBId, name: 'File-B-Edited', protocol: 'ftp', host: '10.0.1.2' })
+      expect(repo.fileProfilesList().map((p) => p.name)).toEqual(['File-C', 'File-B-Edited', 'File-A'])
+
+      repo.rdpProfileSave({ name: 'Rdp-A', host: '10.0.2.1' })
+      const afterRdpB = repo.rdpProfileSave({ name: 'Rdp-B', host: '10.0.2.2' })
+      const rdpBId = afterRdpB[0]!.id
+      repo.rdpProfileSave({ name: 'Rdp-C', host: '10.0.2.3' })
+      expect(repo.rdpProfilesList().map((p) => p.name)).toEqual(['Rdp-C', 'Rdp-B', 'Rdp-A'])
+
+      repo.rdpProfileSave({ id: rdpBId, name: 'Rdp-B-Edited', host: '10.0.2.2' })
+      expect(repo.rdpProfilesList().map((p) => p.name)).toEqual(['Rdp-C', 'Rdp-B-Edited', 'Rdp-A'])
+    } finally {
+      repo.close()
+    }
+  })
+
   it('stores and updates known host trust metadata', () => {
     const repo = new Repository(':memory:')
     try {

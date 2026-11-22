@@ -4,6 +4,7 @@ import { Network, Play, Square, Activity, ShieldCheck, Plus, Trash2, Pencil, Ser
 import { instanceClass } from '../../../shared/classes'
 import type { SyncTunnel } from '../../../shared/sync'
 import OrbitSelect from '../components/OrbitSelect.vue'
+import { recentHostIds, sortHostsByRecency } from '../services/host-recency'
 import { locale, t } from '../services/i18n'
 import {
   checkPortOccupancy,
@@ -51,9 +52,10 @@ const activeCount = computed(() => Object.values(tunnelStatuses.value).filter((i
 
 const serverOptions = computed(() => {
   void locale.value
-  return hosts.value.length === 0
+  const ordered = sortHostsByRecency(hosts.value, recentHostIds.value)
+  return ordered.length === 0
     ? [{ value: '', label: t('tunnels.noHostsOption') }]
-    : hosts.value.map((h) => ({
+    : ordered.map((h) => ({
         value: h.id,
         label: `${h.name} (${h.username}@${h.address}:${h.port})`
       }))

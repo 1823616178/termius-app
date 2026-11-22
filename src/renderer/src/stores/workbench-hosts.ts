@@ -8,7 +8,7 @@ import type {
 } from '../../../shared/contracts'
 import type { SyncGroupInput, SyncTunnelInput } from '../../../shared/sync'
 import { locale } from '../services/i18n'
-import { recentHostIds, sortHostsByRecency } from '../services/host-recency'
+import { markHostUsed, recentHostIds, sortHostsByRecency } from '../services/host-recency'
 import {
   bootstrap,
   editing,
@@ -238,8 +238,18 @@ export async function saveHost(input: HostInput): Promise<void> {
   saveBusy.value = true
   saveError.value = ''
   const en = locale.value === 'en-US'
+  const isNew = !input.id
+  const previousIds = new Set(hosts.value.map((host) => host.id))
   try {
-    hosts.value = await window.orbit.hosts.save(input)
+    const nextHosts = await window.orbit.hosts.save(input)
+    if (isNew) {
+      const normalizedName = input.name.trim().toLowerCase()
+      const created =
+        nextHosts.find((host) => !previousIds.has(host.id)) ??
+        nextHosts.find((host) => host.name.toLowerCase() === normalizedName)
+      if (created) markHostUsed(created.id)
+    }
+    hosts.value = nextHosts
     editor.value = false
     notify(en ? 'Host saved locally' : '主机已保存到本机')
   } catch (error) {

@@ -62,6 +62,7 @@ const props = defineProps<{
   retrySeq?: number
   authCancelledSeq?: number
   visible: boolean
+  focused: boolean
   canUnsplit?: boolean
   isDragging?: boolean
   sftpActive?: boolean
@@ -478,11 +479,11 @@ async function mountAndConnect() {
       updateState(handle.getLastState(), true)
     }
     dims.value = handle.getDimensions()
-    if (props.visible) activeTerminalDimensions.value = dims.value
+    if (props.visible && props.focused) activeTerminalDimensions.value = dims.value
 
     resizeSub = handle.terminal.onResize(({ cols, rows }) => {
       dims.value = { cols, rows }
-      if (props.visible) activeTerminalDimensions.value = { cols, rows }
+      if (props.visible && props.focused) activeTerminalDimensions.value = dims.value
     })
     selectionSub = handle.terminal.onSelectionChange(() => {
       hasSelection.value = Boolean(handle?.terminal.hasSelection())
@@ -521,7 +522,7 @@ async function mountAndConnect() {
       emit('session', handle.getSessionId())
       handle.refresh()
       await nextTick()
-      if (props.visible) handle.terminal.focus()
+      if (props.visible && props.focused) handle.terminal.focus()
       return
     }
 
@@ -535,7 +536,7 @@ async function mountAndConnect() {
     }
     if (handle !== connectingHandle) return
     emit('session', handle.getSessionId())
-    if (props.visible) handle.terminal.focus()
+    if (props.visible && props.focused) handle.terminal.focus()
   } catch (error) {
     if (connectingHandle && handle !== connectingHandle) return
     const errorMessage = error instanceof Error ? error.message : t('terminal.connectFailed')
@@ -581,15 +582,21 @@ onMounted(async () => {
 
 watch(
   () => props.visible,
-  async (visible) => {
+  (visible) => {
     handle?.setPresented(visible)
-    if (visible) {
-      await nextTick()
+    if (visible && props.focused) {
       handle?.terminal.focus()
-      if (handle) activeTerminalDimensions.value = handle.getDimensions()
-    } else {
+    } else if (!visible) {
       contextMenu.value = null
     }
+  },
+  { flush: 'post' }
+)
+
+watch(
+  () => props.visible && props.focused,
+  (active) => {
+    if (active) activeTerminalDimensions.value = dims.value
   }
 )
 

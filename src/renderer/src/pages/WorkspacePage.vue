@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   ArrowDown,
   ArrowLeft,
@@ -106,7 +106,9 @@ function updateTabScroll() {
   canScrollTabsRight.value = el.scrollLeft + el.clientWidth < el.scrollWidth - 1
 }
 
-function revealActiveTab() {
+function syncTabStrip() {
+  updateTabScroll()
+  if (!tabOverflow.value || isDraggingAny.value) return
   const el = tabListRef.value
   const selected = el?.querySelector<HTMLElement>('[data-active="true"]')
   if (!el || !selected) return
@@ -114,7 +116,6 @@ function revealActiveTab() {
   const item = selected.getBoundingClientRect()
   if (item.left < bounds.left) el.scrollLeft -= bounds.left - item.left
   else if (item.right > bounds.right) el.scrollLeft += item.right - bounds.right
-  updateTabScroll()
 }
 
 function scrollTabs(direction: -1 | 1) {
@@ -142,10 +143,8 @@ function autoScrollTabs(event: DragEvent) {
   tabScrollFrame = window.requestAnimationFrame(tick)
 }
 
-watch([activeTab, () => tabs.value.map((tab) => tab.token).join(','), page], async () => {
-  await nextTick()
-  if (!isDraggingAny.value) revealActiveTab()
-  updateTabScroll()
+watch([activeTab, () => tabs.value.map((tab) => tab.token).join(','), page, homeVisible], syncTabStrip, {
+  flush: 'post'
 })
 
 const shellOptions = computed(() =>
@@ -253,10 +252,7 @@ function endTabDrag() {
 
 onMounted(() => {
   initSftpBridgeListeners()
-  tabListObserver = new ResizeObserver(() => {
-    updateTabScroll()
-    if (!isDraggingAny.value) revealActiveTab()
-  })
+  tabListObserver = new ResizeObserver(syncTabStrip)
   if (tabListRef.value) tabListObserver.observe(tabListRef.value)
 })
 
@@ -857,8 +853,8 @@ function onTabListWheel(event: WheelEvent) {
       <div class="container_workspace_stage_body_panes">
         <div
           v-for="tab in tabs"
-          v-show="activeTab === tab.token"
           :key="tab.token"
+          :inert="activeTab !== tab.token"
           :ref="(el) => registerPaneContainer(tab.token, el as HTMLElement | null)"
           :class="c('container_workspace_panes_body_base', tab.token)"
           :data-direction="tab.direction"
@@ -894,6 +890,7 @@ function onTabListWheel(event: WheelEvent) {
                 :retry-seq="pane.retrySeq ?? 0"
                 :auth-cancelled-seq="pane.authCancelledSeq ?? 0"
                 :visible="activeTab === tab.token && page === 'workspace' && !homeVisible"
+                :focused="tab.focusedPaneToken === pane.token"
                 :can-unsplit="tab.panes.length > 1"
                 :is-dragging="draggedPane?.paneToken === pane.token"
                 :font-size="fontSize"
@@ -1269,11 +1266,10 @@ function onTabListWheel(event: WheelEvent) {
   overflow: hidden;
 }
 .container_workspace_stage_body_panes {
+  position: relative;
   flex: 1;
   min-width: 0;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
 }
 .container_workspace_stage_body_sftp-resizer {
   width: 5px;
@@ -1309,12 +1305,16 @@ function onTabListWheel(event: WheelEvent) {
   transform: translateX(16px);
 }
 .container_workspace_panes_body_base {
-  position: relative;
+  position: absolute;
+  inset: 0;
   display: flex;
-  flex: 1;
   min-height: 0;
   min-width: 0;
   overflow: hidden;
+  // Keep xterm's canvas and cell geometry intact between tab selections.
+  &[inert] {
+    visibility: hidden;
+  }
   &[data-direction='vertical'] {
     flex-direction: column;
   }
