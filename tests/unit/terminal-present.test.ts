@@ -136,3 +136,91 @@ it('paces continuous output on a fast display and applies a live change from 30 
   output.dispose()
   expect(vi.getTimerCount()).toBe(0)
 })
+
+it('yields a clean paint frame and shrinks slice size after a heavy render stall', () => {
+  vi.useFakeTimers()
+  const frameQueue: FrameRequestCallback[] = []
+  let nextId = 0
+  const handles = new Map<number, FrameRequestCallback>()
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    const id = ++nextId
+    handles.set(id, callback)
+    frameQueue.push(callback)
+    return id
+  })
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+    handles.delete(id)
+  })
+  const runNextFrame = (deltaMs: number) => {
+    vi.advanceTimersByTime(deltaMs)
+    const cb = frameQueue.shift()
+    if (!cb) return
+    for (const [id, fn] of handles) {
+      if (fn === cb) {
+        handles.delete(id)
+        cb(performance.now())
+        return
+      }
+    }
+  }
+
+  const sizes: number[] = []
+  const output = createTerminalOutput(
+    (bytes, done) => {
+      sizes.push(bytes.length)
+      done()
+    },
+    vi.fn(),
+    true,
+    new TerminalOutputScheduler(() => 150)
+  )
+  output.push({ sequence: 1, data: new Uint8Array(128 * 1024) })
+  // First normal frame parses 64 KiB (2 x 32 KiB)
+  runNextFrame(16)
+  expect(sizes).toEqual([32768, 32768])
+
+  // Simulate a 140ms WebGL TextureAtlas render stall before the next rAF fires:
+  // scheduler must halve slice size and yield one clean frame with zero writes.
+  runNextFrame(140)
+  expect(sizes).toEqual([32768, 32768])
+
+  // Next clean frame resumes with the halved 16 KiB slice.
+  runNextFrame(16)
+  expect(sizes[2]).toBe(16384)
+  output.dispose()
+})
+
+it('recovers scheduler state if a terminal write throws synchronously', () => {
+  frameClock()
+  const scheduler = new TerminalOutputScheduler()
+  let shouldThrow = true
+  const healthyWrites: Uint8Array[] = []
+  const broken = createTerminalOutput(
+    (_bytes, done) => {
+      if (shouldThrow) {
+        shouldThrow = false
+        throw new Error('simulated xterm failure')
+      }
+      done()
+    },
+    vi.fn(),
+    true,
+    scheduler
+  )
+  const healthy = createTerminalOutput(
+    (bytes, done) => {
+      healthyWrites.push(bytes)
+      done()
+    },
+    vi.fn(),
+    true,
+    scheduler
+  )
+  broken.push({ sequence: 1, data: Uint8Array.of(65) })
+  healthy.push({ sequence: 1, data: Uint8Array.of(66) })
+  vi.advanceTimersByTime(16)
+  vi.advanceTimersByTime(16)
+  expect(healthyWrites).toEqual([Uint8Array.of(66)])
+  broken.dispose()
+  healthy.dispose()
+})

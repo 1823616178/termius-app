@@ -31,6 +31,7 @@ function createHarness(options?: {
   }
 
   const written: string[] = []
+  const resized: { cols: number; rows: number }[] = []
   let paused = 0
   let resumed = 0
   let adapterClosed = 0
@@ -40,7 +41,9 @@ function createHarness(options?: {
     write(data) {
       written.push(data)
     },
-    resize() {},
+    resize(cols, rows) {
+      resized.push({ cols, rows })
+    },
     pause() {
       paused += 1
     },
@@ -65,6 +68,7 @@ function createHarness(options?: {
     channel,
     posted,
     written,
+    resized,
     emit(data: unknown) {
       for (const fn of listeners.get('message') ?? []) fn({ data })
     },
@@ -244,5 +248,35 @@ describe('terminalChannel coalescing, flow control, and rate limits', () => {
       state: 'error',
       message: '输入超过速率限制，会话已停止。'
     })
+  })
+
+  it('caps in-flight IPC bursts to 64 KiB and defers resizes while paused', () => {
+    vi.useFakeTimers()
+    const h = createHarness({ coalesceMs: 0 })
+
+    // Simulate a 2 MiB synchronous burst (e.g. ssh2/ConPTY resume after tray wake)
+    h.channel.output(Buffer.alloc(2 * 1024 * 1024, 65))
+    expect(h.posted).toHaveLength(2)
+    expect(h.stats.paused).toBe(1)
+
+    // Resizes while the output pipe is paused must wait until resume to avoid ConPTY deadlock.
+    h.emit({ type: 'resize', cols: 100, rows: 30 })
+    h.emit({ type: 'resize', cols: 140, rows: 42 })
+    expect(h.resized).toEqual([])
+
+    // Drain enough ACKs to cross lowWater (256 KiB): 64 chunks total -> 56 ACKs leave 256 KiB
+    for (let seq = 1; seq <= 56; seq += 1) {
+      h.emit({ type: 'ack', sequence: seq })
+    }
+    expect(h.stats.resumed).toBe(1)
+    expect(h.resized).toEqual([{ cols: 140, rows: 42 }])
+
+    // Immediate resize once resumed
+    h.emit({ type: 'resize', cols: 120, rows: 36 })
+    expect(h.resized).toEqual([
+      { cols: 140, rows: 42 },
+      { cols: 120, rows: 36 }
+    ])
+    h.channel.close()
   })
 })

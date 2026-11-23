@@ -5,6 +5,8 @@ const FRAME_BYTES = 64 * 1024
 const MAX_SLICE_BYTES = 32 * 1024
 const MIN_SLICE_BYTES = 512
 const ECHO_BYTES = 1024
+const STALL_FRAME_MS = 48
+const SEVERE_STALL_MS = 90
 
 type OutputChunk = { sequence: number; data: Uint8Array }
 type WriteSlice = (limit: number, parsed: (bytes: number) => void) => void
@@ -18,6 +20,7 @@ export class TerminalOutputScheduler {
   private remaining = 0
   private deadline = 0
   private nextFrameAt = -Infinity
+  private workScheduledAt = -Infinity
   private frameRate?: TerminalFrameRate
   private parseBudget = MAX_PARSE_MS
   private sliceBytes = MAX_SLICE_BYTES
@@ -40,6 +43,7 @@ export class TerminalOutputScheduler {
     if (this.ready.size === 0) {
       cancelAnimationFrame(this.frame)
       this.frame = 0
+      this.workScheduledAt = -Infinity
     } else {
       this.schedule()
     }
@@ -54,6 +58,9 @@ export class TerminalOutputScheduler {
   }
 
   private beginFrame(timestamp: number): void {
+    const now = performance.now()
+    const frameGap = this.workScheduledAt > 0 ? now - this.workScheduledAt : 0
+    this.workScheduledAt = -Infinity
     const rate = this.getFrameRate()
     const interval = 1000 / rate
     if (rate !== this.frameRate) this.nextFrameAt = -Infinity
@@ -65,9 +72,20 @@ export class TerminalOutputScheduler {
     // Keep fractional intervals when the monitor refresh rate is not a multiple
     // of the target. Drop missed frames after idle instead of trying to catch up.
     this.nextFrameAt = (timestamp - this.nextFrameAt >= interval ? timestamp : this.nextFrameAt) + interval
+    const stalled = frameGap >= Math.max(STALL_FRAME_MS, interval * 2.5)
+    if (stalled) {
+      this.sliceBytes = Math.max(MIN_SLICE_BYTES, Math.floor(this.sliceBytes / 2))
+      if (frameGap >= Math.max(SEVERE_STALL_MS, interval * 4)) {
+        // Yield one clean frame for user input and compositor presentation after
+        // a heavy WebGL glyph rasterization / texture atlas stall. Since
+        // workScheduledAt was cleared above, the next frame is guaranteed to run.
+        this.schedule()
+        return
+      }
+    }
     this.parseBudget = Math.min(MAX_PARSE_MS, interval / 2)
-    this.remaining = FRAME_BYTES
-    this.deadline = performance.now() + this.parseBudget
+    this.remaining = stalled ? Math.min(FRAME_BYTES, this.sliceBytes) : FRAME_BYTES
+    this.deadline = now + this.parseBudget
     this.runSlice()
   }
 
@@ -79,22 +97,32 @@ export class TerminalOutputScheduler {
     this.active = write
     const limit = Math.min(this.sliceBytes, this.remaining)
     const started = performance.now()
-    write(limit, (bytes) => {
+    const onParsed = (bytes: number) => {
       if (this.active !== write) return
       const elapsed = performance.now() - started
-      if (bytes === this.sliceBytes) {
-        if (elapsed >= this.parseBudget) this.sliceBytes = Math.max(MIN_SLICE_BYTES, this.sliceBytes / 2)
-        else if (elapsed < this.parseBudget / 2)
-          this.sliceBytes = Math.min(MAX_SLICE_BYTES, this.sliceBytes * 2)
+      if (elapsed >= this.parseBudget && bytes > 0) {
+        const baseline = Math.min(this.sliceBytes, Math.max(MIN_SLICE_BYTES * 2, bytes))
+        this.sliceBytes = Math.max(MIN_SLICE_BYTES, Math.floor(baseline / 2))
+      } else if (bytes === this.sliceBytes && elapsed < this.parseBudget / 2) {
+        this.sliceBytes = Math.min(MAX_SLICE_BYTES, this.sliceBytes * 2)
       }
-      this.remaining -= bytes
+      this.remaining = Math.max(0, this.remaining - bytes)
       this.active = undefined
       if (this.remaining && performance.now() < this.deadline) {
         this.runSlice()
       } else {
+        if (this.ready.size) this.workScheduledAt = performance.now()
         this.schedule()
       }
-    })
+    }
+    try {
+      write(limit, onParsed)
+    } catch {
+      if (this.active === write) {
+        this.active = undefined
+        this.schedule()
+      }
+    }
   }
 }
 
@@ -127,6 +155,10 @@ export function createTerminalOutput(
         nextHead++
         nextOffset = 0
       }
+    }
+    if (!parts.length) {
+      parsed(0)
+      return
     }
     let bytes = parts[0]!
     if (parts.length > 1) {

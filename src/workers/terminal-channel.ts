@@ -4,6 +4,7 @@ import { MAX_INPUT_BYTES_PER_SEC, terminalInputSchema, type TerminalEvent } from
 // Leave at least half of the output interval for IPC, parsing and paint.
 const batchDelayMs = (frameRate: number) => Math.floor(500 / frameRate)
 const CHUNK_BYTES = 32768
+const MAX_INFLIGHT_BYTES = 2 * CHUNK_BYTES
 const STALL_TIMEOUT_MS = 30_000
 
 export interface ChannelPort {
@@ -47,6 +48,7 @@ export function terminalChannel(
   let inputStart = Date.now()
   let stalledAt = 0
   let endingAt = 0
+  let pendingResize: { cols: number; rows: number } | undefined
 
   const send = (event: TerminalEvent) => {
     if (closed) return
@@ -72,6 +74,7 @@ export function terminalChannel(
     clearPending()
     held.length = 0
     heldBytes = 0
+    pendingResize = undefined
     clearInterval(watchdog)
     adapter.close()
     port.close()
@@ -90,6 +93,11 @@ export function terminalChannel(
       paused = false
       stalledAt = 0
       adapter.resume()
+      if (pendingResize) {
+        const nextSize = pendingResize
+        pendingResize = undefined
+        adapter.resize(nextSize.cols, nextSize.rows)
+      }
     }
   }
 
@@ -99,7 +107,7 @@ export function terminalChannel(
   }
 
   const drainHeld = () => {
-    while (visible && held.length && flow.bytes < 2 * CHUNK_BYTES) {
+    while (visible && held.length && flow.bytes < MAX_INFLIGHT_BYTES) {
       const chunk = held.shift()!
       heldBytes -= chunk.length
       postChunk(chunk)
@@ -133,7 +141,7 @@ export function terminalChannel(
       pendingBytes = 0
       for (let offset = 0; !closed && offset < bytes.length; offset += CHUNK_BYTES) {
         const chunk = bytes.subarray(offset, offset + CHUNK_BYTES)
-        if (visible && !held.length) postChunk(chunk)
+        if (visible && !held.length && flow.bytes < MAX_INFLIGHT_BYTES) postChunk(chunk)
         else {
           held.push(chunk)
           heldBytes += chunk.length
@@ -178,7 +186,10 @@ export function terminalChannel(
         }
         adapter.write(message.data)
       } else if (message.type === 'resize') {
-        adapter.resize(message.cols, message.rows)
+        // Defer resizes while the output pipe is paused to avoid blocking Windows
+        // ConPTY ResizePseudoConsole when its output pipe is full.
+        if (paused) pendingResize = { cols: message.cols, rows: message.rows }
+        else adapter.resize(message.cols, message.rows)
       } else if (message.type === 'close') {
         close()
       } else if (message.type === 'presentation') {

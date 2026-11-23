@@ -1225,6 +1225,145 @@ test('a tray click restores painting, input and a busy terminal after the stall 
   await expect(rows).toContainText('STILL_ALIVE')
 })
 
+test('tray restore stays responsive while a streaming SSH AI-agent TUI saturates backpressure', async ({
+  orbit
+}) => {
+  test.setTimeout(90_000)
+  const { page, app } = orbit
+  await enableTerminalTextForAssertions(page)
+  const hostKey = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({
+    type: 'pkcs1',
+    format: 'pem'
+  }) as string
+  const password = `ssh-agent-${crypto.randomUUID()}`
+  const connections = new Set<Connection>()
+  let streamTimer: ReturnType<typeof setInterval> | undefined
+  let activeStream:
+    | { write: (data: string) => boolean; once: (ev: string, fn: () => void) => void }
+    | undefined
+  let tick = 0
+  let pausedByServer = false
+  let streaming = true
+
+  const makeAgentFrame = (n: number) => {
+    const parts = ['\x1b[?2026h\x1b[H']
+    for (let row = 0; row < 16; row++) {
+      const r = 60 + ((n * 37 + row * 19) % 180)
+      const g = 110 + ((n * 29 + row * 23) % 130)
+      const b = 140 + ((n * 17 + row * 13) % 100)
+      const cjk = String.fromCharCode(0x4e00 + ((n * 131 + row * 31) % 2400)).repeat(6)
+      parts.push(
+        `\x1b[38;2;${r};${g};${b}m[${String(n).padStart(5, '0')}:${row}] ${cjk} diff_${n}_${row}\x1b[0m\x1b[K\r\n`
+      )
+    }
+    parts.push(`AGENT_TICK_${n}\r\n\x1b[?2026l`)
+    return parts.join('')
+  }
+
+  const server = new Server({ hostKeys: [hostKey] }, (client) => {
+    connections.add(client)
+    client.on('error', () => {})
+    client.on('close', () => connections.delete(client))
+    client.on('authentication', (context) =>
+      context.method === 'password' && context.username === 'orbit-test' && context.password === password
+        ? context.accept()
+        : context.reject()
+    )
+    client.on('ready', () =>
+      client.on('session', (accept) => {
+        const session = accept()
+        session.on('pty', (acceptPty) => acceptPty?.())
+        session.on('window-change', (acceptResize) => acceptResize?.())
+        session.on('shell', (acceptShell) => {
+          const stream = acceptShell()
+          activeStream = stream
+          stream.write('AGENT_SSH_READY\r\n')
+          stream.on('data', (data: Buffer) => stream.write(data))
+          streamTimer = setInterval(() => {
+            if (!streaming || pausedByServer) return
+            for (let burst = 0; burst < 4; burst++) {
+              if (!stream.write(makeAgentFrame(++tick))) {
+                pausedByServer = true
+                stream.once('drain', () => {
+                  pausedByServer = false
+                })
+                break
+              }
+            }
+          }, 20)
+          stream.on('close', () => {
+            if (streamTimer) clearInterval(streamTimer)
+            streamTimer = undefined
+          })
+        })
+      })
+    )
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    await page.evaluate(() =>
+      window.orbit.tray.updatePreferences({
+        minimizeToTray: true,
+        closeAction: 'tray',
+        trayVisibility: 'always'
+      })
+    )
+    const nativeTray = await app.evaluateHandle(({ Tray }) => {
+      const captured = { icon: null as Electron.Tray | null }
+      const original = Tray.prototype.setToolTip
+      Tray.prototype.setToolTip = function (text) {
+        captured.icon = this
+        original.call(this, text)
+      }
+      return captured
+    })
+    await createHost(page, 'AI Agent 服务器', (server.address() as AddressInfo).port, password)
+    await page.getByRole('button', { name: '连接 AI Agent 服务器', exact: true }).click()
+    const trust = page.getByRole('dialog', { name: '确认服务器身份' })
+    await expect(trust).toBeVisible()
+    await trust.getByRole('button', { name: '信任并继续' }).click()
+    const rows = page.locator('.xterm-accessibility-tree')
+    await expect(page.getByText('运行中', { exact: true }).first()).toBeVisible()
+    await expect(rows).toContainText(/AGENT_TICK_\d+/, { timeout: 15_000 })
+
+    // Hide while the AI agent is actively streaming and stay hidden past the 15s WebGL hibernation release.
+    await page.evaluate(() => window.orbit.window.hideToTray())
+    const nativeState = () =>
+      app.evaluate(({ BrowserWindow }) => {
+        const win = BrowserWindow.getAllWindows()[0]!
+        return { visible: win.isVisible(), throttling: win.webContents.getBackgroundThrottling() }
+      })
+    await expect.poll(nativeState).toEqual({ visible: false, throttling: true })
+    await new Promise((resolve) => setTimeout(resolve, 16_000))
+    const tickAtWake = tick
+    await nativeTray.evaluate(({ icon }) => {
+      if (!icon || icon.isDestroyed()) throw new Error('Tray icon unavailable while hidden')
+      icon.emit('click')
+    })
+    await nativeTray.dispose()
+    await expect.poll(nativeState).toEqual({ visible: true, throttling: process.platform !== 'win32' })
+
+    // UI remains clickable immediately while draining the AI-agent backlog.
+    await page.getByRole('button', { name: '设置', exact: true }).click({ timeout: 5000 })
+    await expect(page.getByRole('heading', { name: '后台运行与系统托盘' })).toBeVisible()
+    await page.getByRole('button', { name: '工作台', exact: true }).click({ timeout: 5000 })
+
+    // Stop the flood and confirm the terminal finishes draining and handles fresh keyboard input.
+    streaming = false
+    const finalMarker = `AGENT_WAKE_OK_${tickAtWake}`
+    activeStream?.write(`\r\n${finalMarker}\r\n`)
+    await expect(rows).toContainText(finalMarker, { timeout: 25_000 })
+    await page.locator('.xterm-helper-textarea').focus()
+    await page.keyboard.type('AGENT_INPUT_ALIVE')
+    await expect(rows).toContainText('AGENT_INPUT_ALIVE', { timeout: 10_000 })
+  } finally {
+    streaming = false
+    if (streamTimer) clearInterval(streamTimer)
+    for (const connection of connections) connection.end()
+    if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+})
+
 test('bounded high-volume ConPTY output and local worker failure recovery', async ({ orbit }) => {
   const { page, app } = orbit
   const result = await page.evaluate(async () => {

@@ -7,6 +7,7 @@ type WebglConstructor = typeof WebglAddon
 let rendererClass: Promise<WebglConstructor | undefined> | undefined
 // Two four-pane tabs can alternate without recreating their renderers.
 const MAX_RESIDENT_RENDERERS = 8
+const BACKGROUND_RELEASE_MS = 15_000
 const residents = new Map<() => void, () => boolean>()
 
 function loadTerminalWebgl(): Promise<WebglConstructor | undefined> {
@@ -37,6 +38,7 @@ export function attachTerminalWebgl(
   let intersecting = false
   let enableFrame = 0
   let enableTimer: ReturnType<typeof setTimeout> | undefined
+  let backgroundReleaseTimer: ReturnType<typeof setTimeout> | undefined
   let canvas: HTMLCanvasElement | null = null
 
   const hasBox = () => {
@@ -48,6 +50,8 @@ export function attachTerminalWebgl(
     residents.delete(release)
     cancelAnimationFrame(enableFrame)
     clearTimeout(enableTimer)
+    clearTimeout(backgroundReleaseTimer)
+    backgroundReleaseTimer = undefined
     enableFrame = 0
     if (!addon && !context) return
     canvas?.removeEventListener('webglcontextlost', onLoss)
@@ -126,9 +130,26 @@ export function attachTerminalWebgl(
     if (stopped) return
     cancelAnimationFrame(enableFrame)
     clearTimeout(enableTimer)
+    clearTimeout(backgroundReleaseTimer)
+    backgroundReleaseTimer = undefined
     if (isHeld() || (!isPresented() && (!intersecting || !isAppForeground()))) {
       release()
       return
+    }
+    if (!isAppForeground()) {
+      // Keep the surface warm across brief window switches, but release dormant
+      // WebGL2 contexts and bloated glyph atlases during long tray hibernation.
+      if (addon) {
+        backgroundReleaseTimer = setTimeout(() => {
+          backgroundReleaseTimer = undefined
+          if (!stopped && !isAppForeground()) release()
+        }, BACKGROUND_RELEASE_MS)
+      }
+      return
+    }
+    if (addon && context?.isContextLost()) {
+      release()
+      refresh()
     }
     if (addon && isPresented()) {
       residents.delete(release)

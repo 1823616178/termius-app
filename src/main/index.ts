@@ -5,6 +5,7 @@ import {
   ipcMain,
   dialog,
   MessageChannelMain,
+  powerMonitor,
   safeStorage,
   clipboard,
   shell,
@@ -139,7 +140,19 @@ async function isEncryptionUsable(): Promise<boolean> {
 }
 
 if (process.env.ORBIT_USER_DATA) app.setPath('userData', process.env.ORBIT_USER_DATA)
+if (process.platform === 'win32') {
+  // Chromium's Windows native occlusion tracker can misclassify a frameless
+  // window restored from the system tray (especially with virtual display
+  // drivers) as occluded/hidden and stall compositor frame commits. Window
+  // presence is tracked explicitly via hide/minimize/show/restore events.
+  const existingDisabled = app.commandLine.getSwitchValue('disable-features')
+  const disabledFeatures = new Set(existingDisabled ? existingDisabled.split(',').filter(Boolean) : [])
+  disabledFeatures.add('CalculateNativeWinOcclusion')
+  app.commandLine.appendSwitch('disable-features', [...disabledFeatures].join(','))
+}
 const windows = new Map<number, BrowserWindow>()
+const windowActiveState = new Map<number, boolean>()
+const wakeInvalidationTimers = new Map<number, NodeJS.Timeout>()
 let repository: DataClient
 let filesService: FilesService
 let rdpService: RdpService
@@ -932,29 +945,74 @@ function registerIpc(): void {
     if (!parsed.success) return
     const action = parsed.data
     if (action === 'minimize') {
-      if (trayManager?.getPreferences().minimizeToTray) trayManager.minimizeToTray(owner)
-      else owner.minimize()
+      // Let Chromium finish acknowledging the titlebar pointer click before hiding the HWND.
+      setImmediate(() => {
+        if (owner.isDestroyed()) return
+        if (trayManager?.getPreferences().minimizeToTray) trayManager.minimizeToTray(owner)
+        else owner.minimize()
+      })
     }
     if (action === 'maximize') owner.isMaximized() ? owner.unmaximize() : owner.maximize()
-    if (action === 'close') owner.close()
-    if (action === 'hide-to-tray') trayManager?.minimizeToTray(owner)
+    if (action === 'close') {
+      setImmediate(() => {
+        if (!owner.isDestroyed()) owner.close()
+      })
+    }
+    if (action === 'hide-to-tray') {
+      setImmediate(() => {
+        if (!owner.isDestroyed()) trayManager?.minimizeToTray(owner)
+      })
+    }
     if (action === 'restore-from-tray') trayManager?.restoreFromTray(owner)
   })
 }
 
-function publishWindowPresence(): void {
+function clearWakeInvalidation(windowId: number): void {
+  const timer = wakeInvalidationTimers.get(windowId)
+  if (timer) {
+    clearTimeout(timer)
+    wakeInvalidationTimers.delete(windowId)
+  }
+}
+
+function scheduleWakeInvalidation(win: BrowserWindow): void {
+  const windowId = win.id
+  clearWakeInvalidation(windowId)
+  if (process.platform !== 'win32') return
+  // Nudge DirectComposition again once DWM finishes mapping and focusing the restored HWND.
+  const timer = setTimeout(() => {
+    wakeInvalidationTimers.delete(windowId)
+    if (!win.isDestroyed() && win.isVisible() && !win.isMinimized()) {
+      win.webContents.invalidate()
+    }
+  }, 80)
+  wakeInvalidationTimers.set(windowId, timer)
+}
+
+function publishWindowPresence(forceInvalidate = false): void {
   let anyInteractive = false
   for (const win of windows.values()) {
     if (win.isDestroyed()) continue
     const active = win.isVisible() && !win.isMinimized()
+    const wasActive = windowActiveState.get(win.id)
+    windowActiveState.set(win.id, active)
     if (active) anyInteractive = true
     const contents = win.webContents
     const allowThrottling = !active
-    if (process.platform === 'win32' && contents.getBackgroundThrottling() !== allowThrottling) {
-      // Wake Chromium's frame clock from the main process. The terminal and
-      // motion recovery both wait for rAF and cannot wake a throttled compositor.
-      contents.setBackgroundThrottling(allowThrottling)
-      if (active) contents.invalidate()
+    if (process.platform === 'win32') {
+      if (contents.getBackgroundThrottling() !== allowThrottling) {
+        // Wake Chromium's frame clock from the main process. The terminal and
+        // motion recovery both wait for rAF and cannot wake a throttled compositor.
+        contents.setBackgroundThrottling(allowThrottling)
+      }
+      if (active) {
+        if (forceInvalidate || wasActive === false) {
+          contents.invalidate()
+          scheduleWakeInvalidation(win)
+        }
+      } else {
+        clearWakeInvalidation(win.id)
+      }
     }
     contents.send(IPC.windowPresence, active)
   }
@@ -1013,11 +1071,11 @@ async function createWindow(): Promise<void> {
   win.on('hide', publishPresence)
   win.on('show', () => {
     trayManager?.handleWindowShown(win)
-    publishPresence()
+    publishWindowPresence(true)
   })
   win.on('restore', () => {
     trayManager?.handleWindowShown(win)
-    publishPresence()
+    publishWindowPresence(true)
   })
   win.on('close', (event) => {
     if (quitting) return
@@ -1069,6 +1127,8 @@ async function createWindow(): Promise<void> {
       if (session.owner === windowId) closeSession(id)
     }
     windows.delete(windowId)
+    windowActiveState.delete(windowId)
+    clearWakeInvalidation(windowId)
     publishPresence()
     trayManager?.handleWindowClosed(windowId)
   })
@@ -1097,6 +1157,17 @@ else {
       const userDataDir = app.getPath('userData')
       mkdirSync(userDataDir, { recursive: true })
       diagnostics = new DiagnosticLog(userDataDir)
+      app.on('child-process-gone', (_event, details) => {
+        diagnostics?.write('process', `${details.type} gone: ${details.reason} (${details.exitCode})`)
+      })
+      powerMonitor.on('resume', () => {
+        diagnostics?.write('power', 'system resumed')
+        publishWindowPresence(true)
+      })
+      powerMonitor.on('unlock-screen', () => {
+        diagnostics?.write('power', 'screen unlocked')
+        publishWindowPresence(true)
+      })
       registerSessionSecurity()
       repository = new DataClient(join(userDataDir, 'orbit.sqlite'), (message) =>
         diagnostics.write('data-worker', message)

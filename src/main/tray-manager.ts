@@ -351,9 +351,10 @@ export class OrbitTrayManager {
     if (!win || win.isDestroyed()) return
     this.cancelNativeMinimize(win.id)
     this.hiddenWindowIds.delete(win.id)
-    win.setSkipTaskbar(false)
     if (win.isMinimized()) win.restore()
     if (!win.isVisible()) win.show()
+    win.setSkipTaskbar(false)
+    if (process.platform === 'win32') win.moveTop()
     win.focus()
     this.reconcileTrayVisibility()
     this.emitState()
