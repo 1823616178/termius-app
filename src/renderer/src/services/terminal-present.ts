@@ -7,16 +7,26 @@ const MIN_SLICE_BYTES = 512
 const ECHO_BYTES = 1024
 const STALL_FRAME_MS = 48
 const SEVERE_STALL_MS = 90
+const FRAME_FALLBACK_MS = 250
+const BACKGROUND_INTERVAL_MS = 100
+const BACKGROUND_PARSE_MS = 6
+const BACKGROUND_SLICE_BYTES = 32 * 1024
+const BACKGROUND_BATCH_BYTES = 64 * 1024
 
 type OutputChunk = { sequence: number; data: Uint8Array }
 type WriteSlice = (limit: number, parsed: (bytes: number) => void) => void
 
-// All visible panes share one xterm write in flight. The parser callback may run
-// in a later task, so charge the time through completion against the same frame.
+// All panes share one xterm write in flight so parser callbacks never pile up.
+// Visible panes run on the display frame clock with priority; hidden panes
+// silently digest output on a low-frequency timer with a bounded CPU budget so
+// background tasks never stall on backpressure or flood the screen on wake.
 export class TerminalOutputScheduler {
   private ready = new Set<WriteSlice>()
+  private backgroundReady = new Set<WriteSlice>()
   private active?: WriteSlice
   private frame = 0
+  private fallbackTimer: ReturnType<typeof setTimeout> | undefined
+  private backgroundTimer: ReturnType<typeof setTimeout> | undefined
   private remaining = 0
   private deadline = 0
   private nextFrameAt = -Infinity
@@ -28,6 +38,8 @@ export class TerminalOutputScheduler {
   constructor(private readonly getFrameRate: () => TerminalFrameRate = () => DEFAULT_TERMINAL_FRAME_RATE) {}
 
   request(write: WriteSlice, idleEcho = false): void {
+    this.backgroundReady.delete(write)
+    if (this.backgroundReady.size === 0) this.clearBackgroundTimer()
     this.ready.add(write)
     if (!this.active && !this.frame && idleEcho && this.ready.size === 1) {
       this.beginFrame(performance.now())
@@ -36,16 +48,42 @@ export class TerminalOutputScheduler {
     }
   }
 
+  requestBackground(write: WriteSlice): void {
+    this.ready.delete(write)
+    if (this.ready.size === 0) this.clearForegroundSchedule()
+    this.backgroundReady.add(write)
+    this.scheduleBackground()
+  }
+
   cancel(write: WriteSlice, disposing = false): void {
     this.ready.delete(write)
+    this.backgroundReady.delete(write)
     // xterm discards pending callbacks on dispose.
     if (disposing && this.active === write) this.active = undefined
     if (this.ready.size === 0) {
-      cancelAnimationFrame(this.frame)
-      this.frame = 0
-      this.workScheduledAt = -Infinity
+      this.clearForegroundSchedule()
     } else {
       this.schedule()
+    }
+    if (this.backgroundReady.size === 0) {
+      this.clearBackgroundTimer()
+    } else {
+      this.scheduleBackground()
+    }
+  }
+
+  private clearForegroundSchedule(): void {
+    cancelAnimationFrame(this.frame)
+    this.frame = 0
+    clearTimeout(this.fallbackTimer)
+    this.fallbackTimer = undefined
+    this.workScheduledAt = -Infinity
+  }
+
+  private clearBackgroundTimer(): void {
+    if (this.backgroundTimer !== undefined) {
+      clearTimeout(this.backgroundTimer)
+      this.backgroundTimer = undefined
     }
   }
 
@@ -53,8 +91,33 @@ export class TerminalOutputScheduler {
     if (this.active || this.frame || !this.ready.size) return
     this.frame = requestAnimationFrame((timestamp) => {
       this.frame = 0
+      clearTimeout(this.fallbackTimer)
+      this.fallbackTimer = undefined
       this.beginFrame(timestamp)
     })
+    if (this.fallbackTimer === undefined) {
+      this.fallbackTimer = setTimeout(() => {
+        this.fallbackTimer = undefined
+        if (!this.frame || this.active || !this.ready.size) return
+        cancelAnimationFrame(this.frame)
+        this.frame = 0
+        this.beginFrame(performance.now())
+      }, FRAME_FALLBACK_MS)
+    }
+  }
+
+  private scheduleBackground(): void {
+    if (this.backgroundTimer !== undefined || !this.backgroundReady.size) return
+    this.backgroundTimer = setTimeout(() => {
+      this.backgroundTimer = undefined
+      if (!this.backgroundReady.size) return
+      if (this.active || this.ready.size) {
+        // Never compete with active foreground panes; retry on the next background tick.
+        this.scheduleBackground()
+        return
+      }
+      this.beginBackgroundBatch()
+    }, BACKGROUND_INTERVAL_MS)
   }
 
   private beginFrame(timestamp: number): void {
@@ -89,10 +152,19 @@ export class TerminalOutputScheduler {
     this.runSlice()
   }
 
+  private beginBackgroundBatch(): void {
+    this.remaining = BACKGROUND_BATCH_BYTES
+    this.deadline = performance.now() + BACKGROUND_PARSE_MS
+    this.runBackgroundSlice()
+  }
+
   private runSlice(): void {
     if (this.active) return
     const write = this.ready.values().next().value
-    if (!write) return
+    if (!write) {
+      if (this.backgroundReady.size) this.scheduleBackground()
+      return
+    }
     this.ready.delete(write)
     this.active = write
     const limit = Math.min(this.sliceBytes, this.remaining)
@@ -108,11 +180,15 @@ export class TerminalOutputScheduler {
       }
       this.remaining = Math.max(0, this.remaining - bytes)
       this.active = undefined
-      if (this.remaining && performance.now() < this.deadline) {
+      if (this.remaining && performance.now() < this.deadline && this.ready.size) {
         this.runSlice()
       } else {
-        if (this.ready.size) this.workScheduledAt = performance.now()
-        this.schedule()
+        if (this.ready.size) {
+          this.workScheduledAt = performance.now()
+          this.schedule()
+        } else if (this.backgroundReady.size) {
+          this.scheduleBackground()
+        }
       }
     }
     try {
@@ -120,7 +196,46 @@ export class TerminalOutputScheduler {
     } catch {
       if (this.active === write) {
         this.active = undefined
+        if (this.ready.size) this.schedule()
+        else if (this.backgroundReady.size) this.scheduleBackground()
+      }
+    }
+  }
+
+  private runBackgroundSlice(): void {
+    if (this.active) return
+    if (this.ready.size) {
+      this.schedule()
+      if (this.backgroundReady.size) this.scheduleBackground()
+      return
+    }
+    const write = this.backgroundReady.values().next().value
+    if (!write) return
+    this.backgroundReady.delete(write)
+    this.active = write
+    const limit = Math.min(BACKGROUND_SLICE_BYTES, this.remaining)
+    const onParsed = (bytes: number) => {
+      if (this.active !== write) return
+      this.remaining = Math.max(0, this.remaining - bytes)
+      this.active = undefined
+      if (this.ready.size) {
         this.schedule()
+        if (this.backgroundReady.size) this.scheduleBackground()
+        return
+      }
+      if (this.remaining > 0 && performance.now() < this.deadline && this.backgroundReady.size) {
+        this.runBackgroundSlice()
+      } else if (this.backgroundReady.size) {
+        this.scheduleBackground()
+      }
+    }
+    try {
+      write(limit, onParsed)
+    } catch {
+      if (this.active === write) {
+        this.active = undefined
+        if (this.ready.size) this.schedule()
+        else if (this.backgroundReady.size) this.scheduleBackground()
       }
     }
   }
@@ -137,7 +252,21 @@ export function createTerminalOutput(
   let offset = 0
   let disposed = false
   let resumeFrame = 0
+  let resumeTimer: ReturnType<typeof setTimeout> | undefined
   let lastInputAt = -Infinity
+
+  const requestSlice = (idleEcho = false) => {
+    if (!queue.length) {
+      scheduler.cancel(writeSlice)
+      return
+    }
+    if (visible) {
+      if (!resumeFrame) scheduler.request(writeSlice, idleEcho)
+    } else {
+      scheduler.requestBackground(writeSlice)
+    }
+  }
+
   const writeSlice: WriteSlice = (limit, parsed) => {
     // Give xterm adjacent updates in one write when they fit. The cursor move,
     // erase and replacement text of a TUI redraw can arrive in separate messages.
@@ -177,8 +306,7 @@ export function createTerminalOutput(
         queue = queue.slice(head)
         head = 0
       }
-      if (visible && !resumeFrame && queue.length) scheduler.request(writeSlice)
-      else scheduler.cancel(writeSlice)
+      requestSlice()
       parsed(length)
     })
   }
@@ -189,31 +317,45 @@ export function createTerminalOutput(
     },
     push(chunk: OutputChunk) {
       const idleEcho =
+        visible &&
         !queue.length &&
         performance.now() - lastInputAt < 100 &&
         chunk.data.length <= ECHO_BYTES &&
         !chunk.data.includes(0x1b)
       lastInputAt = -Infinity
       queue.push(chunk)
-      if (visible && !resumeFrame) scheduler.request(writeSlice, idleEcho)
+      requestSlice(idleEcho)
     },
     setVisible(next: boolean) {
       if (visible === next) return
       visible = next
       cancelAnimationFrame(resumeFrame)
       resumeFrame = 0
+      clearTimeout(resumeTimer)
+      resumeTimer = undefined
       scheduler.cancel(writeSlice)
       if (visible) {
-        // Give Chromium a paint opportunity before scheduling the backlog.
-        resumeFrame = requestAnimationFrame(() => {
+        if (!queue.length) return
+        const kick = () => {
+          cancelAnimationFrame(resumeFrame)
           resumeFrame = 0
-          if (queue.length) scheduler.request(writeSlice)
-        })
+          clearTimeout(resumeTimer)
+          resumeTimer = undefined
+          if (visible && queue.length) scheduler.request(writeSlice)
+        }
+        // Give Chromium a paint opportunity before scheduling any remaining backlog,
+        // with a timer fallback if the compositor frame clock is still waking.
+        resumeFrame = requestAnimationFrame(kick)
+        resumeTimer = setTimeout(kick, FRAME_FALLBACK_MS)
+      } else if (queue.length) {
+        scheduler.requestBackground(writeSlice)
       }
     },
     dispose() {
       disposed = true
       cancelAnimationFrame(resumeFrame)
+      clearTimeout(resumeTimer)
+      resumeTimer = undefined
       queue.length = 0
       scheduler.cancel(writeSlice, true)
     }

@@ -39,8 +39,11 @@ const reducedMotion = ref(false)
 const motionTier = ref<MotionTier>('off')
 const ready = ref(false)
 const failed = ref(false)
+const canvasKey = ref(0)
 const motionDisabled = computed(() => reducedMotion.value || motionTier.value === 'off')
 const fallbackVisible = computed(() => !ready.value || failed.value || motionDisabled.value)
+
+const BACKGROUND_RELEASE_MS = 15_000
 
 let theatre: XianlingTheatre | null = null
 let frameHandler: FrameCallback = () => {}
@@ -51,6 +54,8 @@ let disposed = false
 let sceneMotion: MotionSceneHandle | undefined
 let attrObserver: MutationObserver | null = null
 let resizeObserver: ResizeObserver | null = null
+let boundCanvas: HTMLCanvasElement | null = null
+let backgroundReleaseTimer: ReturnType<typeof setTimeout> | undefined
 let lastWidth = 0
 let lastHeight = 0
 let lastDpr = 0
@@ -100,7 +105,43 @@ function resizeStage(force = false): void {
   theatre.resize(width, height, dpr)
 }
 
+function bindCanvasListeners(next: HTMLCanvasElement | null): void {
+  if (boundCanvas === next) return
+  if (boundCanvas) {
+    boundCanvas.removeEventListener('webglcontextlost', handleContextLost)
+    boundCanvas.removeEventListener('webglcontextrestored', handleContextRestored)
+  }
+  boundCanvas = next
+  if (boundCanvas) {
+    boundCanvas.addEventListener('webglcontextlost', handleContextLost)
+    boundCanvas.addEventListener('webglcontextrestored', handleContextRestored)
+  }
+}
+
+function clearBackgroundReleaseTimer(): void {
+  if (backgroundReleaseTimer !== undefined) {
+    clearTimeout(backgroundReleaseTimer)
+    backgroundReleaseTimer = undefined
+  }
+}
+
+function releaseDormantTheatre(): void {
+  clearBackgroundReleaseTimer()
+  const current = theatre
+  theatre = null
+  if (current) {
+    bindCanvasListeners(null)
+    current.dispose(true)
+    canvasKey.value += 1
+  }
+  ready.value = false
+  lastWidth = 0
+  lastHeight = 0
+  syncReadyState()
+}
+
 function handleFailure(): void {
+  clearBackgroundReleaseTimer()
   theatre?.dispose(false)
   theatre = null
   failed.value = true
@@ -112,25 +153,27 @@ function handleFailure(): void {
 }
 
 async function initializeTheatre(): Promise<void> {
-  if (
-    loading ||
-    theatre ||
-    failed.value ||
-    disposed ||
-    !hostRef.value ||
-    !canvasRef.value ||
-    !tipHandleRef.value ||
-    !tipLabelRef.value ||
-    !swordHandleRef.value ||
-    !sheathHandleRef.value
-  ) {
+  if (loading || theatre || failed.value || disposed || !hostRef.value) {
     return
   }
   loading = true
   emit('status', t('stage.loading'))
   try {
+    await nextTick()
     const { createXianlingTheatre } = await import('../services/xianling/theatre')
-    if (disposed || !hostRef.value || !canvasRef.value || !canAnimate()) return
+    if (
+      disposed ||
+      !hostRef.value ||
+      !canvasRef.value ||
+      !tipHandleRef.value ||
+      !tipLabelRef.value ||
+      !swordHandleRef.value ||
+      !sheathHandleRef.value ||
+      !canAnimate()
+    ) {
+      return
+    }
+    bindCanvasListeners(canvasRef.value)
     const created = createXianlingTheatre({
       host: hostRef.value,
       canvas: canvasRef.value,
@@ -149,7 +192,9 @@ async function initializeTheatre(): Promise<void> {
       onFrameRate: props.onFrameRate
     })
     if (disposed || !canAnimate()) {
-      created.dispose(false)
+      bindCanvasListeners(null)
+      created.dispose(true)
+      canvasKey.value += 1
       return
     }
     theatre = created
@@ -187,20 +232,20 @@ function ensureRunning(): void {
           ? translateMotionReason(reason)
           : t('stage.motionOff')
     )
-    if (theatre) {
-      theatre.dispose(false)
-      theatre = null
-    }
-    ready.value = false
-    lastWidth = 0
-    lastHeight = 0
-    syncReadyState()
+    releaseDormantTheatre()
     return
   }
   if (!canAnimate()) {
     theatre?.setSuspended(true)
+    if (theatre && (!props.active || !isMotionActive()) && backgroundReleaseTimer === undefined) {
+      backgroundReleaseTimer = setTimeout(() => {
+        backgroundReleaseTimer = undefined
+        if (!canAnimate()) releaseDormantTheatre()
+      }, BACKGROUND_RELEASE_MS)
+    }
     return
   }
+  clearBackgroundReleaseTimer()
   if (!theatre) {
     void initializeTheatre()
     return
@@ -232,6 +277,7 @@ function handleMotionChange(): void {
 
 function handleContextLost(event: Event): void {
   event.preventDefault()
+  clearBackgroundReleaseTimer()
   contextLost = true
   theatre?.dispose(false)
   theatre = null
@@ -361,12 +407,13 @@ onMounted(() => {
   })
   resizeObserver = new ResizeObserver(() => resizeStage())
   if (hostRef.value) resizeObserver.observe(hostRef.value)
-  if (canvasRef.value) {
-    canvasRef.value.addEventListener('webglcontextlost', handleContextLost)
-    canvasRef.value.addEventListener('webglcontextrestored', handleContextRestored)
-  }
+  bindCanvasListeners(canvasRef.value)
   sceneMotion = registerMotionScene(ensureRunning)
   ensureRunning()
+})
+
+watch(canvasRef, (next) => {
+  if (!disposed) bindCanvasListeners(next)
 })
 
 watch(
@@ -385,13 +432,13 @@ watch(
 
 onBeforeUnmount(() => {
   disposed = true
+  clearBackgroundReleaseTimer()
   sceneMotion?.dispose()
   sceneMotion = undefined
   attrObserver?.disconnect()
   resizeObserver?.disconnect()
-  canvasRef.value?.removeEventListener('webglcontextlost', handleContextLost)
-  canvasRef.value?.removeEventListener('webglcontextrestored', handleContextRestored)
-  theatre?.dispose(false)
+  bindCanvasListeners(null)
+  theatre?.dispose(true)
   theatre = null
 })
 </script>
@@ -409,6 +456,7 @@ onBeforeUnmount(() => {
     @keydown.esc="theatre?.cancelDrag()"
   >
     <canvas
+      :key="canvasKey"
       v-show="!fallbackVisible"
       ref="canvasRef"
       :class="c('container_workspace_xianling_stage_canvas')"

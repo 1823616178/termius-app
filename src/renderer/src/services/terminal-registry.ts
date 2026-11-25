@@ -240,6 +240,7 @@ export async function createTerminal(
   let disposed = false
   let finished = false
   let frame = 0
+  let fitFallbackTimer: ReturnType<typeof setTimeout> | undefined
   let resizeTimer: ReturnType<typeof setTimeout> | undefined
   let lastSize = ''
   let dprMedia: MediaQueryList | undefined
@@ -278,13 +279,22 @@ export async function createTerminal(
     }
   }
 
+  const cancelScheduledFit = () => {
+    cancelAnimationFrame(frame)
+    frame = 0
+    clearTimeout(fitFallbackTimer)
+    fitFallbackTimer = undefined
+  }
+
   const scheduleFit = () => {
     needsFit = true
     if (disposed || !canPresent() || frame) return
-    frame = requestAnimationFrame(() => {
-      frame = 0
+    const runFit = () => {
+      cancelScheduledFit()
       resize()
-    })
+    }
+    frame = requestAnimationFrame(runFit)
+    fitFallbackTimer = setTimeout(runFit, 250)
   }
 
   const refresh = () => {
@@ -447,16 +457,20 @@ export async function createTerminal(
     links.hideHover()
     observer.disconnect()
     clearTimeout(resizeTimer)
-    cancelAnimationFrame(frame)
-    frame = 0
+    cancelScheduledFit()
   }
 
+  let lastPresented = canPresent()
   const syncPresentation = () => {
     sendPresentation()
     const visible = canPresent()
+    const becameVisible = visible && !lastPresented
+    lastPresented = visible
     output.setVisible(visible)
     webglSync?.()
-    if (visible && needsFit) scheduleFit()
+    if (!visible) cancelScheduledFit()
+    else if (needsFit) scheduleFit()
+    else if (becameVisible && terminal.rows > 0) terminal.refresh(0, terminal.rows - 1)
   }
 
   const setPresented = (visible: boolean) => {
@@ -484,7 +498,7 @@ export async function createTerminal(
     observer.disconnect()
     clearTimeout(resizeTimer)
     dprMedia?.removeEventListener('change', onDprChange)
-    cancelAnimationFrame(frame)
+    cancelScheduledFit()
     linkProviderSub.dispose()
     linkScrollSub.dispose()
     links.dispose()

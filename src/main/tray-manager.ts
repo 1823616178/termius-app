@@ -20,6 +20,7 @@ export interface TrayCallbacks {
   getSyncLabel: () => string
   onDispatchAction: (action: TrayAction) => void
   onStateChanged: (state: TrayState) => void
+  onWindowRestored?: (win: BrowserWindow) => void
   onQuit: () => void
 }
 
@@ -358,6 +359,7 @@ export class OrbitTrayManager {
     win.focus()
     this.reconcileTrayVisibility()
     this.emitState()
+    this.callbacks.onWindowRestored?.(win)
   }
 
   toggleMainWindow(): void {

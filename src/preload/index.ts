@@ -206,7 +206,8 @@ const api: Bridge = {
       return () => {
         ipcRenderer.removeListener(IPC.windowPresence, listener)
       }
-    }
+    },
+    ackWake: () => ipcRenderer.send(IPC.windowWakeAck)
   },
   tray: {
     getState: () => ipcRenderer.invoke(IPC.trayState),

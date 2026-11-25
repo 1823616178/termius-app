@@ -145,3 +145,68 @@ it('keeps motion suspended until the restored window has frames and stays in the
   reentrant.dispose()
   mountedWhileHidden.dispose()
 })
+
+it('acknowledges wake paints to main process and clears uiSuspended via fallback if rAF stalls', async () => {
+  vi.resetModules()
+  vi.useFakeTimers()
+  const dataset: DOMStringMap = {}
+  const ackWake = vi.fn()
+  vi.stubGlobal(
+    'document',
+    Object.assign(new EventTarget(), {
+      visibilityState: 'visible',
+      documentElement: { dataset }
+    })
+  )
+  vi.stubGlobal('window', {
+    orbit: {
+      window: {
+        ackWake
+      }
+    }
+  })
+  vi.stubGlobal('navigator', { userAgent: 'Windows NT 10.0' })
+
+  let nextFrameId = 0
+  const frames = new Map<number, () => void>()
+  vi.stubGlobal('requestAnimationFrame', (callback: () => void) => {
+    frames.set(++nextFrameId, callback)
+    return nextFrameId
+  })
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id))
+  const paint = () => {
+    const callbacks = [...frames.values()]
+    frames.clear()
+    for (const callback of callbacks) callback()
+  }
+
+  const foreground = await import('../../src/renderer/src/services/app-foreground')
+  foreground.installAppForeground()
+
+  // Hide then wake, but cancel before rAF paints: no wake ack should fire.
+  foreground.noteWindowPresence(false)
+  expect(dataset.uiSuspended).toBe('true')
+  foreground.noteWindowPresence(true)
+  expect(ackWake).not.toHaveBeenCalled()
+  foreground.noteWindowPresence(false)
+  expect(frames.size).toBe(0)
+  expect(ackWake).not.toHaveBeenCalled()
+
+  // Wake while rAF is completely stalled: fallback timer clears uiSuspended after 1200ms.
+  foreground.noteWindowPresence(true)
+  vi.advanceTimersByTime(1199)
+  expect(dataset.uiSuspended).toBe('true')
+  vi.advanceTimersByTime(1)
+  expect(dataset.uiSuspended).toBe('false')
+  expect(ackWake).not.toHaveBeenCalled()
+
+  // Once compositor paints a frame, wake ack is sent to main process.
+  paint()
+  expect(ackWake).toHaveBeenCalledTimes(1)
+
+  // Re-sending windowPresence(true) while already foreground schedules a fresh wake ack on next rAF.
+  foreground.noteWindowPresence(true)
+  expect(ackWake).toHaveBeenCalledTimes(1)
+  paint()
+  expect(ackWake).toHaveBeenCalledTimes(2)
+})

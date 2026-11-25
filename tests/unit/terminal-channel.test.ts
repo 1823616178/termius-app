@@ -194,29 +194,56 @@ describe('terminalChannel coalescing, flow control, and rate limits', () => {
     expect(h.posted.at(-1)).toMatchObject({ type: 'state', state: 'error' })
   })
 
-  it('preserves paused and ending sessions across long intentional suspensions', () => {
+  it('drains hidden sessions with bounded in-flight IPC while keeping stall watchdog paused', () => {
     vi.useFakeTimers()
     const h = createHarness({ coalesceMs: 0 })
     h.emit({ type: 'presentation', visible: false })
     h.channel.output(Buffer.alloc(1024 * 1024))
+    // Hidden sessions still send up to 64 KiB in-flight so the renderer can silently digest
+    // output without stalling background tasks, while preserving sessions if ACKs pause in sleep.
+    expect(h.posted).toHaveLength(2)
     vi.advanceTimersByTime(90_000)
     expect(h.stats).toMatchObject({ paused: 1, resumed: 0, channelClosed: 0 })
-    expect(h.posted).toHaveLength(0)
-    h.emit({ type: 'presentation', visible: true })
-    expect(h.posted).toHaveLength(2)
-    vi.advanceTimersByTime(5_000)
-    h.emit({ type: 'input', data: 'echo alive' })
-    expect(h.written).toEqual(['echo alive'])
+
+    // ACKs received while still hidden drain the held buffer and resume upstream reads.
     for (let seq = 1; seq <= 24; seq++) h.emit({ type: 'ack', sequence: seq })
     expect(h.stats.resumed).toBe(1)
-    h.emit({ type: 'presentation', visible: false })
+
+    // Ending while hidden waits safely across long suspensions until all chunks are acknowledged.
     h.channel.finish({ type: 'state', state: 'exited' })
     vi.advanceTimersByTime(90_000)
     expect(h.stats.channelClosed).toBe(0)
     h.emit({ type: 'presentation', visible: true })
+    h.emit({ type: 'input', data: 'echo alive' })
+    expect(h.written).toEqual(['echo alive'])
     for (let seq = 25; seq <= 32; seq++) h.emit({ type: 'ack', sequence: seq })
     expect(h.stats.channelClosed).toBe(1)
     expect(h.posted.filter((event) => (event as { type: string }).type === 'data')).toHaveLength(32)
+  })
+
+  it('coalesces small background bursts at low frequency and flushes immediately on restore', () => {
+    vi.useFakeTimers()
+    const h = createHarness()
+    h.emit({ type: 'presentation', visible: false, frameRate: 150 })
+
+    h.channel.output('line1\n')
+    h.channel.output('line2\n')
+    expect(h.posted).toHaveLength(0)
+
+    vi.advanceTimersByTime(99)
+    expect(h.posted).toHaveLength(0)
+    vi.advanceTimersByTime(1)
+    expect(h.posted).toHaveLength(1)
+    expect(Buffer.from((h.posted[0] as { data: Uint8Array }).data).toString()).toBe('line1\nline2\n')
+    h.emit({ type: 'ack', sequence: 1 })
+
+    // Returning to foreground immediately flushes any coalesced tail without waiting 100ms.
+    h.channel.output('tail')
+    expect(h.posted).toHaveLength(1)
+    h.emit({ type: 'presentation', visible: true, frameRate: 150 })
+    expect(h.posted).toHaveLength(2)
+    expect(Buffer.from((h.posted[1] as { data: Uint8Array }).data).toString()).toBe('tail')
+    h.channel.close()
   })
 
   it('closes stalled ending sessions after drain timeout', () => {

@@ -150,8 +150,7 @@ export function createSwordScene(canvas: HTMLCanvasElement, initialOptions: Swor
   const renderer = new THREE.WebGLRenderer({
     canvas,
     alpha: true,
-    antialias: true,
-    powerPreference: 'high-performance'
+    antialias: true
   })
   const scene = new THREE.Scene()
   try {

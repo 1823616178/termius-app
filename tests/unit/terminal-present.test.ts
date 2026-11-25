@@ -17,7 +17,7 @@ function frameClock(interval = 16) {
   vi.stubGlobal('cancelAnimationFrame', clearTimeout)
 }
 
-it('keeps hidden bytes in order and acknowledges only whole parsed messages', () => {
+it('silently digests hidden bytes in order at low frequency and acknowledges only whole parsed messages', () => {
   frameClock()
   const slices: Uint8Array[] = []
   const callbacks: (() => void)[] = []
@@ -33,22 +33,81 @@ it('keeps hidden bytes in order and acknowledges only whole parsed messages', ()
   )
   const bytes = Uint8Array.from({ length: 65536 }, (_, i) => i % 251)
   output.push({ sequence: 1, data: bytes })
-  vi.advanceTimersByTime(60000)
+
+  // Hidden output waits for the 100ms background digest tick rather than spinning rAF.
+  vi.advanceTimersByTime(99)
   expect(slices).toHaveLength(0)
-  output.setVisible(true)
-  vi.advanceTimersByTime(16)
-  expect(slices).toHaveLength(0)
-  vi.advanceTimersByTime(16)
+  vi.advanceTimersByTime(1)
+  expect(slices).toHaveLength(1)
   expect(slices[0]).toHaveLength(32768)
-  output.setVisible(false)
-  callbacks.shift()!()
-  vi.advanceTimersByTime(60000)
   expect(ack).not.toHaveBeenCalled()
-  output.setVisible(true)
-  vi.advanceTimersByTime(32)
-  while (callbacks.length) callbacks.shift()!()
+
+  // Completing the first slice drains the second 32 KiB slice within the same 64 KiB batch.
+  callbacks.shift()!()
+  expect(slices).toHaveLength(2)
+  expect(slices[1]).toHaveLength(32768)
+  expect(ack).not.toHaveBeenCalled()
+  callbacks.shift()!()
   expect(Buffer.concat(slices)).toEqual(Buffer.from(bytes))
   expect(ack.mock.calls).toEqual([[1]])
+
+  // Switching to foreground with an already-drained queue needs no extra backlog wake delay.
+  output.setVisible(true)
+  output.noteInput()
+  output.push({ sequence: 2, data: Uint8Array.of(97) })
+  expect(slices).toHaveLength(3)
+  callbacks.shift()!()
+  expect(ack.mock.calls).toEqual([[1], [2]])
+
+  output.dispose()
+  expect(vi.getTimerCount()).toBe(0)
+})
+
+it('prioritizes foreground panes over background silent digest without starving hidden sessions', () => {
+  frameClock()
+  const scheduler = new TerminalOutputScheduler()
+  const order: string[] = []
+  const fgCompletions: (() => void)[] = []
+  const bgCompletions: (() => void)[] = []
+  const fg = createTerminalOutput(
+    (_bytes, done) => {
+      order.push('fg')
+      fgCompletions.push(done)
+    },
+    vi.fn(),
+    true,
+    scheduler
+  )
+  const bg = createTerminalOutput(
+    (_bytes, done) => {
+      order.push('bg')
+      bgCompletions.push(done)
+    },
+    vi.fn(),
+    false,
+    scheduler
+  )
+
+  bg.push({ sequence: 1, data: Uint8Array.of(66) })
+  fg.push({ sequence: 1, data: Uint8Array.of(65) })
+
+  // Foreground writes on the next display frame while background stays deferred.
+  vi.advanceTimersByTime(16)
+  expect(order).toEqual(['fg'])
+
+  // Even when the 100ms background tick fires while foreground write is in flight, background yields.
+  vi.advanceTimersByTime(84)
+  expect(order).toEqual(['fg'])
+
+  // Once foreground finishes and settles, background silently digests on its next tick.
+  fgCompletions.shift()!()
+  vi.advanceTimersByTime(100)
+  expect(order).toEqual(['fg', 'bg'])
+  bgCompletions.shift()!()
+
+  fg.dispose()
+  bg.dispose()
+  expect(vi.getTimerCount()).toBe(0)
 })
 
 it('shares the parser budget across panes and yields when an asynchronous parse overruns', () => {
@@ -223,4 +282,46 @@ it('recovers scheduler state if a terminal write throws synchronously', () => {
   expect(healthyWrites).toEqual([Uint8Array.of(66)])
   broken.dispose()
   healthy.dispose()
+})
+
+it('drains hidden backlog via timer fallback when requestAnimationFrame stalls after wake', () => {
+  vi.useFakeTimers()
+  let nextFrameId = 0
+  const stalledFrames = new Map<number, FrameRequestCallback>()
+  vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+    stalledFrames.set(++nextFrameId, callback)
+    return nextFrameId
+  })
+  vi.stubGlobal('cancelAnimationFrame', (id: number) => {
+    stalledFrames.delete(id)
+  })
+
+  const writes: Uint8Array[] = []
+  const ack = vi.fn()
+  const output = createTerminalOutput(
+    (bytes, done) => {
+      writes.push(bytes)
+      done()
+    },
+    ack,
+    false,
+    new TerminalOutputScheduler()
+  )
+
+  const payload = new TextEncoder().encode('WAKE_WITHOUT_RAF')
+  output.push({ sequence: 7, data: payload })
+  output.setVisible(true)
+  expect(writes).toHaveLength(0)
+
+  // Even if rAF never fires (e.g. post-standby compositor surface stall), fallback timers
+  // step both the visibility gate (250ms) and scheduler flush (250ms) to drain backpressure.
+  vi.advanceTimersByTime(250)
+  expect(writes).toHaveLength(0)
+  vi.advanceTimersByTime(250)
+  expect(writes).toEqual([payload])
+  expect(ack).toHaveBeenCalledWith(7)
+
+  output.dispose()
+  expect(stalledFrames.size).toBe(0)
+  expect(vi.getTimerCount()).toBe(0)
 })

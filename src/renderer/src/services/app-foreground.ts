@@ -1,4 +1,5 @@
 const RESUME_SETTLE_MS = 500
+const STYLE_FALLBACK_MS = 1200
 
 let windowPresent: boolean | undefined
 let foreground = typeof document === 'undefined' || document.visibilityState !== 'hidden'
@@ -13,7 +14,37 @@ const pendingScenes = new Set<MotionScene>()
 let scenesReady = foreground
 let uiSuspended = !foreground
 let resumeFrame = 0
+let wakeAckFrame = 0
 let settleTimer: ReturnType<typeof setTimeout> | undefined
+let styleFallbackTimer: ReturnType<typeof setTimeout> | undefined
+
+function notifyWakePainted(): void {
+  if (!foreground || typeof window === 'undefined') return
+  window.orbit?.window?.ackWake?.()
+}
+
+function cancelWakeAck(): void {
+  if (wakeAckFrame) {
+    cancelAnimationFrame(wakeAckFrame)
+    wakeAckFrame = 0
+  }
+}
+
+function scheduleWakeAck(): void {
+  cancelWakeAck()
+  if (
+    !foreground ||
+    typeof window === 'undefined' ||
+    typeof window.orbit?.window?.ackWake !== 'function' ||
+    typeof requestAnimationFrame !== 'function'
+  ) {
+    return
+  }
+  wakeAckFrame = requestAnimationFrame(() => {
+    wakeAckFrame = 0
+    notifyWakePainted()
+  })
+}
 
 function setSuspended(suspended: boolean): void {
   uiSuspended = suspended
@@ -37,6 +68,8 @@ function resumeNextScene(): void {
 
 function restoreStyles(): void {
   resumeFrame = 0
+  clearTimeout(styleFallbackTimer)
+  styleFallbackTimer = undefined
   if (!foreground) return
   setSuspended(false)
   // Let Chromium paint the restored CSS layers before starting any WebGL scene.
@@ -49,8 +82,11 @@ function commit(next: boolean): void {
   if (!next) {
     cancelAnimationFrame(resumeFrame)
     resumeFrame = 0
+    cancelWakeAck()
     clearTimeout(settleTimer)
     settleTimer = undefined
+    clearTimeout(styleFallbackTimer)
+    styleFallbackTimer = undefined
     scenesReady = false
     pendingScenes.clear()
     setSuspended(true)
@@ -61,9 +97,16 @@ function commit(next: boolean): void {
     }
   } else {
     for (const scene of scenes) pendingScenes.add(scene)
+    // Ensure CSS animations/filters still unsuspend even if rAF is delayed while waking.
+    clearTimeout(styleFallbackTimer)
+    styleFallbackTimer = setTimeout(() => {
+      styleFallbackTimer = undefined
+      if (foreground && uiSuspended) setSuspended(false)
+    }, STYLE_FALLBACK_MS)
     // A window can report itself visible before Chromium is painting again.
     // Give the foreground UI a frame before starting the motion settle timer.
     resumeFrame = requestAnimationFrame(() => {
+      notifyWakePainted()
       resumeFrame = requestAnimationFrame(() => {
         resumeFrame = 0
         settleTimer = setTimeout(() => {
@@ -104,7 +147,9 @@ export function registerMotionScene(update: () => void): MotionSceneHandle {
 
 export function noteWindowPresence(present: boolean): void {
   windowPresent = present
+  const alreadyForeground = foreground
   commit(present)
+  if (present && alreadyForeground) scheduleWakeAck()
 }
 
 export function installAppForeground(): void {

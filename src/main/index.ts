@@ -140,19 +140,38 @@ async function isEncryptionUsable(): Promise<boolean> {
 }
 
 if (process.env.ORBIT_USER_DATA) app.setPath('userData', process.env.ORBIT_USER_DATA)
+// Orbit explicitly suspends CSS animations, 3D WebGL stages, terminal output
+// scheduling, RDP display streams, and auto-sync via windowPresence. Disabling
+// Chromium's OS-level renderer backgrounding and timer/EcoQoS freezing prevents
+// DelegatedFrameHost frame eviction and compositor deadlocks after long tray idle.
+app.commandLine.appendSwitch('disable-renderer-backgrounding')
+app.commandLine.appendSwitch('disable-background-timer-throttling')
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
 if (process.platform === 'win32') {
-  // Chromium's Windows native occlusion tracker can misclassify a frameless
-  // window restored from the system tray (especially with virtual display
-  // drivers) as occluded/hidden and stall compositor frame commits. Window
-  // presence is tracked explicitly via hide/minimize/show/restore events.
+  // Chromium's Windows native occlusion tracker and EcoQoS background throttling
+  // can misclassify or freeze a frameless window restored after prolonged tray
+  // hibernation / Modern Standby (S0ix) and stall DirectComposition frame commits.
   const existingDisabled = app.commandLine.getSwitchValue('disable-features')
   const disabledFeatures = new Set(existingDisabled ? existingDisabled.split(',').filter(Boolean) : [])
   disabledFeatures.add('CalculateNativeWinOcclusion')
+  disabledFeatures.add('UseEcoQoSForBackgroundProcess')
+  disabledFeatures.add('IntensiveWakeUpThrottling')
   app.commandLine.appendSwitch('disable-features', [...disabledFeatures].join(','))
+}
+interface WindowWakeTracker {
+  seq: number
+  ackedSeq: number
+  hiddenSince: number | null
+  pendingRestoreBounds?: Electron.Rectangle
+  pendingOpacityRestore?: boolean
+  invalidateTimer?: NodeJS.Timeout
+  nudgeTimer?: NodeJS.Timeout
+  restoreTimer?: NodeJS.Timeout
 }
 const windows = new Map<number, BrowserWindow>()
 const windowActiveState = new Map<number, boolean>()
-const wakeInvalidationTimers = new Map<number, NodeJS.Timeout>()
+const wakeTrackers = new Map<number, WindowWakeTracker>()
+const unresponsiveWindows = new Set<number>()
 let repository: DataClient
 let filesService: FilesService
 let rdpService: RdpService
@@ -940,6 +959,9 @@ function registerIpc(): void {
     requireUpdateService().updatePreferences(patch)
   )
   ipc.handle(IPC.windowIsMaximized, (owner) => owner.isMaximized())
+  ipc.on(IPC.windowWakeAck, (_raw, owner) => {
+    acknowledgeWindowWake(owner.id)
+  })
   ipc.on(IPC.window, (rawAction, owner) => {
     const parsed = windowActionSchema.safeParse(rawAction)
     if (!parsed.success) return
@@ -967,26 +989,126 @@ function registerIpc(): void {
   })
 }
 
-function clearWakeInvalidation(windowId: number): void {
-  const timer = wakeInvalidationTimers.get(windowId)
-  if (timer) {
-    clearTimeout(timer)
-    wakeInvalidationTimers.delete(windowId)
+function getWakeTracker(windowId: number): WindowWakeTracker {
+  let tracker = wakeTrackers.get(windowId)
+  if (!tracker) {
+    tracker = { seq: 0, ackedSeq: 0, hiddenSince: null }
+    wakeTrackers.set(windowId, tracker)
+  }
+  return tracker
+}
+
+function clearWakeRecovery(win: BrowserWindow | undefined, windowId: number): void {
+  const tracker = wakeTrackers.get(windowId)
+  if (!tracker) return
+  if (tracker.invalidateTimer) {
+    clearTimeout(tracker.invalidateTimer)
+    tracker.invalidateTimer = undefined
+  }
+  if (tracker.nudgeTimer) {
+    clearTimeout(tracker.nudgeTimer)
+    tracker.nudgeTimer = undefined
+  }
+  if (tracker.restoreTimer) {
+    clearTimeout(tracker.restoreTimer)
+    tracker.restoreTimer = undefined
+  }
+  const restoreBounds = tracker.pendingRestoreBounds
+  tracker.pendingRestoreBounds = undefined
+  if (restoreBounds && win && !win.isDestroyed() && !win.isMaximized() && !win.isFullScreen()) {
+    try {
+      win.setBounds(restoreBounds)
+    } catch {
+      /* Window may be transitioning native states. */
+    }
+  }
+  if (tracker.pendingOpacityRestore) {
+    tracker.pendingOpacityRestore = undefined
+    if (win && !win.isDestroyed()) {
+      try {
+        win.setOpacity(1)
+      } catch {
+        /* Opacity restore is best-effort. */
+      }
+    }
   }
 }
 
-function scheduleWakeInvalidation(win: BrowserWindow): void {
+function acknowledgeWindowWake(windowId: number): void {
+  const tracker = getWakeTracker(windowId)
+  tracker.ackedSeq = tracker.seq
+  clearWakeRecovery(windows.get(windowId), windowId)
+}
+
+function nudgeWindowCompositor(win: BrowserWindow, tracker: WindowWakeTracker): void {
+  if (win.isDestroyed() || !win.isVisible() || win.isMinimized()) return
+  win.webContents.invalidate()
+  try {
+    if (!win.isMaximized() && !win.isFullScreen()) {
+      const bounds = win.getBounds()
+      tracker.pendingRestoreBounds = bounds
+      win.setBounds({ ...bounds, height: bounds.height + 1 })
+      tracker.restoreTimer = setTimeout(() => {
+        tracker.restoreTimer = undefined
+        const restoreBounds = tracker.pendingRestoreBounds
+        tracker.pendingRestoreBounds = undefined
+        if (!win.isDestroyed() && !win.isMaximized() && !win.isFullScreen() && restoreBounds) {
+          try {
+            win.setBounds(restoreBounds)
+            win.webContents.invalidate()
+          } catch {
+            /* Ignore transient native bounds errors. */
+          }
+        }
+      }, 32)
+    } else {
+      tracker.pendingOpacityRestore = true
+      win.setOpacity(0.995)
+      tracker.restoreTimer = setTimeout(() => {
+        tracker.restoreTimer = undefined
+        tracker.pendingOpacityRestore = undefined
+        if (!win.isDestroyed()) {
+          try {
+            win.setOpacity(1)
+            win.webContents.invalidate()
+          } catch {
+            /* Ignore transient opacity errors. */
+          }
+        }
+      }, 32)
+    }
+  } catch {
+    /* Native compositor nudge is best-effort. */
+  }
+}
+
+function scheduleWakeRecovery(win: BrowserWindow): void {
   const windowId = win.id
-  clearWakeInvalidation(windowId)
+  const tracker = getWakeTracker(windowId)
+  clearWakeRecovery(win, windowId)
+  const seq = ++tracker.seq
   if (process.platform !== 'win32') return
-  // Nudge DirectComposition again once DWM finishes mapping and focusing the restored HWND.
-  const timer = setTimeout(() => {
-    wakeInvalidationTimers.delete(windowId)
+  win.webContents.invalidate()
+  // Nudge DirectComposition once DWM finishes mapping and focusing the restored HWND.
+  tracker.invalidateTimer = setTimeout(() => {
+    tracker.invalidateTimer = undefined
     if (!win.isDestroyed() && win.isVisible() && !win.isMinimized()) {
       win.webContents.invalidate()
     }
   }, 80)
-  wakeInvalidationTimers.set(windowId, timer)
+  // If the renderer still has not painted an animation frame after 360ms (e.g. post-eviction
+  // LocalSurfaceId / DWM surface stall after Modern Standby or long tray idle), pulse the
+  // native window surface to force a fresh CompositorFrame and Viz hit-test tree.
+  tracker.nudgeTimer = setTimeout(() => {
+    tracker.nudgeTimer = undefined
+    if (win.isDestroyed() || !win.isVisible() || win.isMinimized()) return
+    if (tracker.ackedSeq >= seq) return
+    diagnostics?.write(
+      'window',
+      `wake frame ack timeout (seq=${seq}), nudging compositor for window ${windowId}`
+    )
+    nudgeWindowCompositor(win, tracker)
+  }, 360)
 }
 
 function publishWindowPresence(forceInvalidate = false): void {
@@ -996,23 +1118,25 @@ function publishWindowPresence(forceInvalidate = false): void {
     const active = win.isVisible() && !win.isMinimized()
     const wasActive = windowActiveState.get(win.id)
     windowActiveState.set(win.id, active)
-    if (active) anyInteractive = true
+    const tracker = getWakeTracker(win.id)
     const contents = win.webContents
-    const allowThrottling = !active
-    if (process.platform === 'win32') {
-      if (contents.getBackgroundThrottling() !== allowThrottling) {
-        // Wake Chromium's frame clock from the main process. The terminal and
-        // motion recovery both wait for rAF and cannot wake a throttled compositor.
-        contents.setBackgroundThrottling(allowThrottling)
+    if (active) {
+      anyInteractive = true
+      const hiddenDurationMs =
+        tracker.hiddenSince === null ? 0 : Math.max(0, Date.now() - tracker.hiddenSince)
+      tracker.hiddenSince = null
+      if (hiddenDurationMs >= 60_000) {
+        diagnostics?.write(
+          'window',
+          `window ${win.id} restored after ${Math.round(hiddenDurationMs / 1000)}s hidden`
+        )
       }
-      if (active) {
-        if (forceInvalidate || wasActive === false) {
-          contents.invalidate()
-          scheduleWakeInvalidation(win)
-        }
-      } else {
-        clearWakeInvalidation(win.id)
+      if (process.platform === 'win32' && (forceInvalidate || wasActive === false)) {
+        scheduleWakeRecovery(win)
       }
+    } else {
+      if (tracker.hiddenSince === null) tracker.hiddenSince = Date.now()
+      clearWakeRecovery(win, win.id)
     }
     contents.send(IPC.windowPresence, active)
   }
@@ -1039,7 +1163,7 @@ async function createWindow(): Promise<void> {
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
-      backgroundThrottling: true
+      backgroundThrottling: false
     }
   })
   const windowId = win.id
@@ -1049,9 +1173,16 @@ async function createWindow(): Promise<void> {
   contents.on('will-navigate', (event, url) => {
     if (!trustedUrl(url)) event.preventDefault()
   })
-  contents.on('unresponsive', () => diagnostics?.write('window', `renderer unresponsive, window ${windowId}`))
-  contents.on('responsive', () => diagnostics?.write('window', `renderer responsive, window ${windowId}`))
+  contents.on('unresponsive', () => {
+    unresponsiveWindows.add(windowId)
+    diagnostics?.write('window', `renderer unresponsive, window ${windowId}`)
+  })
+  contents.on('responsive', () => {
+    unresponsiveWindows.delete(windowId)
+    diagnostics?.write('window', `renderer responsive, window ${windowId}`)
+  })
   contents.on('render-process-gone', (_event, details) => {
+    unresponsiveWindows.delete(windowId)
     diagnostics?.write('window', `renderer gone, window ${windowId}, ${details.reason} (${details.exitCode})`)
     filesService?.closeOwnerSessions(windowId)
     void rdpService?.closeWindowSessions(windowId)
@@ -1079,6 +1210,10 @@ async function createWindow(): Promise<void> {
   })
   win.on('close', (event) => {
     if (quitting) return
+    if (unresponsiveWindows.has(windowId)) {
+      diagnostics?.write('window', `closing unresponsive window ${windowId} instead of hiding to tray`)
+      return
+    }
     const prefs = trayManager?.getPreferences()
     const closeAction = prefs?.closeAction ?? (prefs?.closeToTray ? 'tray' : 'quit')
     if (closeAction === 'tray') {
@@ -1128,7 +1263,9 @@ async function createWindow(): Promise<void> {
     }
     windows.delete(windowId)
     windowActiveState.delete(windowId)
-    clearWakeInvalidation(windowId)
+    clearWakeRecovery(undefined, windowId)
+    wakeTrackers.delete(windowId)
+    unresponsiveWindows.delete(windowId)
     publishPresence()
     trayManager?.handleWindowClosed(windowId)
   })
@@ -1160,9 +1297,15 @@ else {
       app.on('child-process-gone', (_event, details) => {
         diagnostics?.write('process', `${details.type} gone: ${details.reason} (${details.exitCode})`)
       })
+      powerMonitor.on('suspend', () => {
+        diagnostics?.write('power', 'system suspending')
+      })
       powerMonitor.on('resume', () => {
         diagnostics?.write('power', 'system resumed')
         publishWindowPresence(true)
+      })
+      powerMonitor.on('lock-screen', () => {
+        diagnostics?.write('power', 'screen locked')
       })
       powerMonitor.on('unlock-screen', () => {
         diagnostics?.write('power', 'screen unlocked')
@@ -1301,6 +1444,7 @@ else {
         getSessionCount: () => sessions.size,
         getActiveTunnelCount: () => tunnelRuntime?.getActiveCount() ?? 0,
         getSyncLabel: () => syncPhaseLabel,
+        onWindowRestored: () => publishWindowPresence(true),
         onDispatchAction: (action) => {
           const target = [...windows.values()][0]
           if (target && !target.isDestroyed()) target.webContents.send(IPC.trayAction, action)

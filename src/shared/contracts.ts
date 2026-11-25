@@ -470,6 +470,7 @@ export interface Bridge {
     isMaximized(): Promise<boolean>
     onMaximized(callback: (maximized: boolean) => void): () => void
     onPresence(callback: (present: boolean) => void): () => void
+    ackWake?(): void
   }
   tray: {
     getState(): Promise<TrayState>

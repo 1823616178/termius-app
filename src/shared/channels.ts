@@ -44,6 +44,7 @@ export const IPC = {
   windowIsMaximized: 'orbit:window-is-maximized',
   windowState: 'orbit:window-state',
   windowPresence: 'orbit:window-presence',
+  windowWakeAck: 'orbit:window-wake-ack',
   trayState: 'orbit:tray-state',
   trayUpdatePreferences: 'orbit:tray-update-preferences',
   trayStateChanged: 'orbit:tray-state-changed',

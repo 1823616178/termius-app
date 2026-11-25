@@ -1205,7 +1205,8 @@ test('a tray click restores painting, input and a busy terminal after the stall 
       const win = BrowserWindow.getAllWindows()[0]!
       return { visible: win.isVisible(), throttling: win.webContents.getBackgroundThrottling() }
     })
-  await expect.poll(nativeState).toEqual({ visible: false, throttling: true })
+  await expect.poll(nativeState).toEqual({ visible: false, throttling: false })
+  await expect(page.locator('html')).toHaveAttribute('data-ui-suspended', 'true')
   await new Promise((resolve) => setTimeout(resolve, hiddenMs))
   const destroyedDuringClick = await nativeTray.evaluate(({ icon }) => {
     if (!icon || icon.isDestroyed()) throw new Error('Tray icon unavailable while window is hidden')
@@ -1214,7 +1215,7 @@ test('a tray click restores painting, input and a busy terminal after the stall 
   })
   expect(destroyedDuringClick).toBe(false)
   await nativeTray.dispose()
-  await expect.poll(nativeState).toEqual({ visible: true, throttling: process.platform !== 'win32' })
+  await expect.poll(nativeState).toEqual({ visible: true, throttling: false })
   await page.getByRole('button', { name: '设置', exact: true }).click({ timeout: 5000 })
   await expect(page.getByRole('heading', { name: '后台运行与系统托盘' })).toBeVisible()
   await page.getByRole('button', { name: '工作台', exact: true }).click()
@@ -1333,7 +1334,8 @@ test('tray restore stays responsive while a streaming SSH AI-agent TUI saturates
         const win = BrowserWindow.getAllWindows()[0]!
         return { visible: win.isVisible(), throttling: win.webContents.getBackgroundThrottling() }
       })
-    await expect.poll(nativeState).toEqual({ visible: false, throttling: true })
+    await expect.poll(nativeState).toEqual({ visible: false, throttling: false })
+    await expect(page.locator('html')).toHaveAttribute('data-ui-suspended', 'true')
     await new Promise((resolve) => setTimeout(resolve, 16_000))
     const tickAtWake = tick
     await nativeTray.evaluate(({ icon }) => {
@@ -1341,7 +1343,7 @@ test('tray restore stays responsive while a streaming SSH AI-agent TUI saturates
       icon.emit('click')
     })
     await nativeTray.dispose()
-    await expect.poll(nativeState).toEqual({ visible: true, throttling: process.platform !== 'win32' })
+    await expect.poll(nativeState).toEqual({ visible: true, throttling: false })
 
     // UI remains clickable immediately while draining the AI-agent backlog.
     await page.getByRole('button', { name: '设置', exact: true }).click({ timeout: 5000 })

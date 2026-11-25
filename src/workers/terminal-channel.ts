@@ -5,6 +5,7 @@ import { MAX_INPUT_BYTES_PER_SEC, terminalInputSchema, type TerminalEvent } from
 const batchDelayMs = (frameRate: number) => Math.floor(500 / frameRate)
 const CHUNK_BYTES = 32768
 const MAX_INFLIGHT_BYTES = 2 * CHUNK_BYTES
+const BACKGROUND_COALESCE_MS = 100
 const STALL_TIMEOUT_MS = 30_000
 
 export interface ChannelPort {
@@ -27,9 +28,18 @@ export function terminalChannel(
   port: ChannelPort,
   adapter: TerminalAdapter,
   onClose: () => void,
-  options: { coalesceMs?: number; stallTimeoutMs?: number; watchdogIntervalMs?: number } = {}
+  options: {
+    coalesceMs?: number
+    backgroundCoalesceMs?: number
+    stallTimeoutMs?: number
+    watchdogIntervalMs?: number
+  } = {}
 ) {
   let coalesceMs = options.coalesceMs ?? batchDelayMs(DEFAULT_TERMINAL_FRAME_RATE)
+  const activeCoalesceMs = () =>
+    visible
+      ? coalesceMs
+      : (options.backgroundCoalesceMs ?? (coalesceMs <= 0 ? 0 : Math.max(coalesceMs, BACKGROUND_COALESCE_MS)))
   const stallTimeoutMs = options.stallTimeoutMs ?? STALL_TIMEOUT_MS
   const watchdogIntervalMs = options.watchdogIntervalMs ?? 5000
   const flow = new OutputWindow()
@@ -107,7 +117,7 @@ export function terminalChannel(
   }
 
   const drainHeld = () => {
-    while (visible && held.length && flow.bytes < MAX_INFLIGHT_BYTES) {
+    while (held.length && flow.bytes < MAX_INFLIGHT_BYTES) {
       const chunk = held.shift()!
       heldBytes -= chunk.length
       postChunk(chunk)
@@ -141,7 +151,7 @@ export function terminalChannel(
       pendingBytes = 0
       for (let offset = 0; !closed && offset < bytes.length; offset += CHUNK_BYTES) {
         const chunk = bytes.subarray(offset, offset + CHUNK_BYTES)
-        if (visible && !held.length && flow.bytes < MAX_INFLIGHT_BYTES) postChunk(chunk)
+        if (!held.length && flow.bytes < MAX_INFLIGHT_BYTES) postChunk(chunk)
         else {
           held.push(chunk)
           heldBytes += chunk.length
@@ -249,14 +259,15 @@ export function terminalChannel(
       }
       pendingChunks.push(bytes)
       pendingBytes += bytes.length
-      // Show the first output after an idle period immediately. Keep batching
-      // bursts while the renderer is busy or the previous send was recent.
-      const idle = !flushTimer && flow.bytes === 0 && performance.now() - lastFlushAt >= coalesceMs
-      if ((visible && idle) || pendingBytes >= CHUNK_BYTES || coalesceMs <= 0) {
+      // Show the first foreground output after an idle period immediately. While
+      // hidden, coalesce small bursts over BACKGROUND_COALESCE_MS so the renderer
+      // digests the buffer silently without IPC churn or wake-up floods.
+      const delay = activeCoalesceMs()
+      const idle = visible && !flushTimer && flow.bytes === 0 && performance.now() - lastFlushAt >= delay
+      if (idle || pendingBytes >= CHUNK_BYTES || delay <= 0) {
         flush()
-      } else if (visible && !flushTimer) {
-        flushTimer = setTimeout(flush, coalesceMs)
-      } else if (!visible) {
+      } else {
+        if (!flushTimer) flushTimer = setTimeout(flush, delay)
         updateBackpressure()
       }
     }

@@ -210,7 +210,7 @@ export function createXianlingTheatre(options: XianlingTheatreOptions): Xianling
   const { host, canvas, handles, isReducedMotion, onFrameRate } = options
   let currentTier = options.tier
 
-  const r = new T.WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: 'high-performance' })
+  const r = new T.WebGLRenderer({ canvas, antialias: true, alpha: true })
   const maxDprForTier = () => (currentTier === 'light' ? 1.1 : 1.6)
   r.setPixelRatio(Math.min(window.devicePixelRatio || 1, maxDprForTier()))
   r.setClearColor(0, 0)
@@ -1328,10 +1328,6 @@ export function createXianlingTheatre(options: XianlingTheatreOptions): Xianling
   function draw(now: number): void {
     rafId = 0
     if (disposed || suspended) return
-    if (document.hidden) {
-      rafId = requestAnimationFrame(draw)
-      return
-    }
     const interval = currentTier === 'light' ? 1000 / 30 : 0
     if (!lastRender || interval === 0 || now - lastRender >= interval - 0.5) {
       const dt = last ? Math.min(0.1, Math.max(0, (now - last) * 0.001)) : 0

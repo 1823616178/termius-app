@@ -116,7 +116,7 @@ export function probeMotionGraphics(
 ): Pick<MotionEnvironment, 'webgl2Supported' | 'renderer'> {
   let gl: WebGL2RenderingContext | null = null
   try {
-    gl = canvas.getContext('webgl2', { powerPreference: 'high-performance' })
+    gl = canvas.getContext('webgl2')
     if (!gl) return { webgl2Supported: false }
     const debugInfo = gl.getExtension('WEBGL_debug_renderer_info') as {
       UNMASKED_RENDERER_WEBGL: number

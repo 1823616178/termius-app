@@ -44,8 +44,11 @@ const motionTier = ref<MotionTier>('off')
 const ready = ref(false)
 const dragging = ref(false)
 const failed = ref(false)
+const canvasKey = ref(0)
 const motionDisabled = computed(() => reducedMotion.value || motionTier.value === 'off')
 const fallbackVisible = computed(() => !ready.value || failed.value || motionDisabled.value)
+
+const BACKGROUND_RELEASE_MS = 15_000
 
 let scene: SwordScene | null = null
 let rafId = 0
@@ -68,6 +71,8 @@ let disposed = false
 let sceneMotion: MotionSceneHandle | undefined
 let attrObserver: MutationObserver | null = null
 let resizeObserver: ResizeObserver | null = null
+let boundCanvas: HTMLCanvasElement | null = null
+let backgroundReleaseTimer: ReturnType<typeof setTimeout> | undefined
 
 function isMotionActive(): boolean {
   return Boolean(sceneMotion?.active)
@@ -169,7 +174,46 @@ function renderCurrentFrame(): void {
   }
 }
 
+function bindCanvas(next: HTMLCanvasElement | null): void {
+  if (boundCanvas === next) return
+  if (boundCanvas) {
+    resizeObserver?.unobserve(boundCanvas)
+    boundCanvas.removeEventListener('webglcontextlost', handleContextLost)
+    boundCanvas.removeEventListener('webglcontextrestored', handleContextRestored)
+  }
+  boundCanvas = next
+  if (boundCanvas) {
+    resizeObserver?.observe(boundCanvas)
+    boundCanvas.addEventListener('webglcontextlost', handleContextLost)
+    boundCanvas.addEventListener('webglcontextrestored', handleContextRestored)
+  }
+}
+
+function clearBackgroundReleaseTimer(): void {
+  if (backgroundReleaseTimer !== undefined) {
+    clearTimeout(backgroundReleaseTimer)
+    backgroundReleaseTimer = undefined
+  }
+}
+
+function releaseDormantScene(): void {
+  clearBackgroundReleaseTimer()
+  cancelDrag()
+  stopLoop()
+  const current = scene
+  scene = null
+  if (current) {
+    bindCanvas(null)
+    current.dispose(true)
+    canvasKey.value += 1
+  }
+  ready.value = false
+  lastWidth = 0
+  lastHeight = 0
+}
+
 function handleFailure(): void {
+  clearBackgroundReleaseTimer()
   cancelDrag()
   stopLoop()
   scene?.dispose(false)
@@ -222,18 +266,22 @@ function ensureRunning(): void {
           ? translateMotionReason(reason)
           : t('stage.motionOff')
     )
-    stopLoop()
-    if (scene) {
-      scene.dispose(false)
-      scene = null
-    }
-    ready.value = false
+    releaseDormantScene()
     return
   }
   if (!canAnimate()) {
     stopLoop()
+    if (scene && (!props.active || !isMotionActive()) && backgroundReleaseTimer === undefined) {
+      backgroundReleaseTimer = setTimeout(() => {
+        backgroundReleaseTimer = undefined
+        if (!canAnimate() && (!props.active || !isMotionActive())) {
+          releaseDormantScene()
+        }
+      }, BACKGROUND_RELEASE_MS)
+    }
     return
   }
+  clearBackgroundReleaseTimer()
   if (!scene) {
     void initializeScene()
     return
@@ -248,15 +296,19 @@ function ensureRunning(): void {
 }
 
 async function initializeScene(): Promise<void> {
-  if (loading || scene || failed.value || disposed || !canvas.value) return
+  if (loading || scene || failed.value || disposed) return
   loading = true
   reportPhase(t('stage.loading'))
   try {
+    await nextTick()
     const { createSwordScene } = await import('../services/sword-scene')
     if (disposed || !canvas.value || !canAnimate()) return
+    bindCanvas(canvas.value)
     const created = createSwordScene(canvas.value, sceneOptions())
     if (disposed || !canAnimate()) {
-      created.dispose(false)
+      bindCanvas(null)
+      created.dispose(true)
+      canvasKey.value += 1
       return
     }
     scene = created
@@ -305,6 +357,7 @@ function handleMotionChange(): void {
 }
 
 function handleContextLost(event: Event): void {
+  clearBackgroundReleaseTimer()
   cancelDrag()
   event.preventDefault()
   contextLost = true
@@ -518,13 +571,13 @@ onMounted(() => {
     ]
   })
   resizeObserver = new ResizeObserver(() => resizeScene())
-  if (canvas.value) {
-    resizeObserver.observe(canvas.value)
-    canvas.value.addEventListener('webglcontextlost', handleContextLost)
-    canvas.value.addEventListener('webglcontextrestored', handleContextRestored)
-  }
+  bindCanvas(canvas.value)
   sceneMotion = registerMotionScene(ensureRunning)
   ensureRunning()
+})
+
+watch(canvas, (next) => {
+  if (!disposed) bindCanvas(next)
 })
 
 watch(
@@ -549,16 +602,16 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  clearBackgroundReleaseTimer()
   cancelDrag()
   disposed = true
   sceneMotion?.dispose()
   sceneMotion = undefined
   stopLoop()
   attrObserver?.disconnect()
+  bindCanvas(null)
   resizeObserver?.disconnect()
-  canvas.value?.removeEventListener('webglcontextlost', handleContextLost)
-  canvas.value?.removeEventListener('webglcontextrestored', handleContextRestored)
-  scene?.dispose()
+  scene?.dispose(true)
   scene = null
 })
 </script>
@@ -584,6 +637,7 @@ onBeforeUnmount(() => {
     @keydown.esc.prevent="cancelDrag"
   >
     <canvas
+      :key="canvasKey"
       v-show="!fallbackVisible"
       ref="canvas"
       :class="c('container_workspace_orbit_body_canvas')"
