@@ -411,6 +411,13 @@ export interface SyncDataUpdate {
   knownRdpHosts?: KnownRdpHostEntry[]
   protocolSettings?: AllProtocolSettings
 }
+export const windowWakeAckSchema = z.object({
+  sequence: z.number().int().positive(),
+  source: z.enum(['frame', 'pointer'])
+})
+
+export type WindowWakeAck = z.infer<typeof windowWakeAckSchema>
+
 export interface Bridge {
   bootstrap(): Promise<Bootstrap>
   hosts: { save(input: HostInput): Promise<Host[]>; remove(id: string): Promise<Host[]> }
@@ -469,8 +476,8 @@ export interface Bridge {
     restoreFromTray(): void
     isMaximized(): Promise<boolean>
     onMaximized(callback: (maximized: boolean) => void): () => void
-    onPresence(callback: (present: boolean) => void): () => void
-    ackWake?(): void
+    onPresence(callback: (present: boolean, wakeSequence?: number) => void): () => void
+    ackWake?(acknowledgement: WindowWakeAck): void
   }
   tray: {
     getState(): Promise<TrayState>

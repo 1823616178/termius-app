@@ -18,6 +18,7 @@ import {
   recoverVaultWithKey
 } from '../../src/workers/data-crypto/sync-crypto'
 import { normalizeRemoteDocument } from '../../src/workers/data-crypto/sync-merge'
+import { IPC } from '../../src/shared/channels'
 
 type MotionTestWindow = Window & {
   __motionSceneContexts?: number
@@ -1990,6 +1991,110 @@ test('restoring during native minimize cancels the queued hide to tray', async (
     windowHiddenToTray: false,
     trayCreated: false
   })
+})
+
+test('wake recovery waits for pointer input from the active wake sequence', async ({ orbit }) => {
+  test.skip(process.platform !== 'win32', 'Native wake recovery is Windows-specific')
+  const recovery = await orbit.app.evaluate(
+    async ({ BrowserWindow, ipcMain, powerMonitor }, channels) => {
+      const win = BrowserWindow.getAllWindows()[0]!
+      const contents = win.webContents
+      const send = contents.send
+      const invalidate = contents.invalidate
+      let invalidations = 0
+      contents.invalidate = () => {
+        invalidations++
+        invalidate.call(contents)
+      }
+      const wake = async (source: 'frame' | 'pointer', previousSequence?: number) => {
+        invalidations = 0
+        let sequence: number | undefined
+        contents.send = (channel, ...args) => {
+          if (channel === channels.presence && typeof args[1] === 'number') {
+            sequence = args[1]
+            // Deliver the ACK before the timers run. Hold the sequence back from
+            // the renderer to simulate delayed frames on the next wake.
+            ipcMain.emit(
+              channels.ack,
+              { sender: contents, senderFrame: contents.mainFrame },
+              { sequence: previousSequence ?? sequence, source }
+            )
+            send.call(contents, channel, args[0])
+            return
+          }
+          send.call(contents, channel, ...args)
+        }
+        powerMonitor.emit('resume')
+        if (sequence === undefined) throw new Error('Missing wake sequence')
+        await new Promise((resolve) => setTimeout(resolve, 500))
+        return { sequence, invalidations }
+      }
+      try {
+        const originalBounds = win.getBounds()
+        const pointer = await wake('pointer')
+        const frame = await wake('frame')
+        const stale = await wake('pointer', frame.sequence)
+        return { pointer, frame, stale, originalBounds, restoredBounds: win.getBounds() }
+      } finally {
+        contents.send = send
+        contents.invalidate = invalidate
+      }
+    },
+    { presence: IPC.windowPresence, ack: IPC.windowWakeAck }
+  )
+  expect(recovery.pointer.invalidations).toBe(2)
+  expect(recovery.frame.invalidations).toBe(4)
+  expect(recovery.stale.sequence).toBeGreaterThan(recovery.frame.sequence)
+  expect(recovery.stale.invalidations).toBe(4)
+  expect(recovery.restoredBounds).toEqual(recovery.originalBounds)
+})
+
+test('tray navigation dismisses dialogs owned by the hidden page', async ({ orbit }) => {
+  test.skip(process.platform !== 'win32', 'Exercises the Windows tray menu')
+  const { app, page } = orbit
+  const tray = await app.evaluateHandle(({ BrowserWindow, Tray }) => {
+    const win = BrowserWindow.getAllWindows()[0]!
+    const setContextMenu = Tray.prototype.setContextMenu
+    let openHosts: Electron.MenuItem | undefined
+    Tray.prototype.setContextMenu = function (menu) {
+      openHosts = menu?.items.find((item) => item.label === '打开主机列表')
+      setContextMenu.call(this, menu)
+    }
+    return {
+      ready: () => !win.isVisible() && Boolean(openHosts),
+      openHosts: () => openHosts?.click()
+    }
+  })
+
+  const restoreOnHostsPage = async () => {
+    await page.evaluate(() => window.orbit.window.hideToTray())
+    await expect.poll(() => tray.evaluate((menu) => menu.ready())).toBe(true)
+    await tray.evaluate((menu) => menu.openHosts())
+    await expect(page.locator('dialog:modal')).toHaveCount(0)
+    await expect(page.getByRole('button', { name: '新建主机', exact: true }).first()).toBeVisible()
+    await page.getByRole('button', { name: '关闭窗口', exact: true }).click({ trial: true })
+  }
+
+  await page.getByRole('button', { name: '打开本地终端', exact: true }).click()
+  await expect(page.getByText('运行中', { exact: true }).first()).toBeVisible()
+  await page.locator('.xterm-helper-textarea').evaluate((textarea) => {
+    const clipboardData = new DataTransfer()
+    clipboardData.setData('text/plain', 'Write-Output ORBIT_A\nWrite-Output ORBIT_B')
+    textarea.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData }))
+  })
+  await expect(page.getByRole('dialog', { name: '确认多行粘贴' })).toBeVisible()
+  await restoreOnHostsPage()
+
+  for (const { navigation, add, editor } of [
+    { navigation: 'nav-files-btn', add: 'files-add-server-btn', editor: 'file-profile-editor' },
+    { navigation: 'nav-remote-btn', add: 'remote-add-profile-btn', editor: 'rdp-profile-editor' }
+  ]) {
+    await page.getByTestId(navigation).click()
+    await page.getByTestId(add).click()
+    await expect(page.getByTestId(editor)).toBeVisible()
+    await restoreOnHostsPage()
+  }
+  await tray.dispose()
 })
 
 test('background system tray icon appears on minimize and restores window cleanly', async ({

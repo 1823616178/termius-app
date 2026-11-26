@@ -46,6 +46,7 @@ import {
   sftpUploadSchema,
   trayPreferencesPatchSchema,
   tunnelToggleSchema,
+  windowWakeAckSchema,
   type AppLocale,
   type Bootstrap,
   type EncryptionBackend,
@@ -53,7 +54,8 @@ import {
   type HostTrust,
   type KnownHostEntry,
   type ShellProfile,
-  type SyncDataUpdate
+  type SyncDataUpdate,
+  type WindowWakeAck
 } from '../shared/contracts'
 import {
   sanitizeDownloadFilename,
@@ -160,7 +162,7 @@ if (process.platform === 'win32') {
 }
 interface WindowWakeTracker {
   seq: number
-  ackedSeq: number
+  frameAcknowledged: boolean
   hiddenSince: number | null
   pendingRestoreBounds?: Electron.Rectangle
   pendingOpacityRestore?: boolean
@@ -959,8 +961,9 @@ function registerIpc(): void {
     requireUpdateService().updatePreferences(patch)
   )
   ipc.handle(IPC.windowIsMaximized, (owner) => owner.isMaximized())
-  ipc.on(IPC.windowWakeAck, (_raw, owner) => {
-    acknowledgeWindowWake(owner.id)
+  ipc.on(IPC.windowWakeAck, (raw, owner) => {
+    const parsed = windowWakeAckSchema.safeParse(raw)
+    if (parsed.success) acknowledgeWindowWake(owner.id, parsed.data)
   })
   ipc.on(IPC.window, (rawAction, owner) => {
     const parsed = windowActionSchema.safeParse(rawAction)
@@ -992,7 +995,7 @@ function registerIpc(): void {
 function getWakeTracker(windowId: number): WindowWakeTracker {
   let tracker = wakeTrackers.get(windowId)
   if (!tracker) {
-    tracker = { seq: 0, ackedSeq: 0, hiddenSince: null }
+    tracker = { seq: 0, frameAcknowledged: false, hiddenSince: null }
     wakeTrackers.set(windowId, tracker)
   }
   return tracker
@@ -1034,10 +1037,16 @@ function clearWakeRecovery(win: BrowserWindow | undefined, windowId: number): vo
   }
 }
 
-function acknowledgeWindowWake(windowId: number): void {
-  const tracker = getWakeTracker(windowId)
-  tracker.ackedSeq = tracker.seq
-  clearWakeRecovery(windows.get(windowId), windowId)
+function acknowledgeWindowWake(windowId: number, { sequence, source }: WindowWakeAck): void {
+  const tracker = wakeTrackers.get(windowId)
+  if (!tracker?.nudgeTimer || tracker.seq !== sequence) return
+  if (source === 'frame') {
+    tracker.frameAcknowledged = true
+    return
+  }
+  // A pointer event in the page confirms that it can receive mouse input.
+  clearTimeout(tracker.nudgeTimer)
+  tracker.nudgeTimer = undefined
 }
 
 function nudgeWindowCompositor(win: BrowserWindow, tracker: WindowWakeTracker): void {
@@ -1082,33 +1091,33 @@ function nudgeWindowCompositor(win: BrowserWindow, tracker: WindowWakeTracker): 
   }
 }
 
-function scheduleWakeRecovery(win: BrowserWindow): void {
+function scheduleWakeRecovery(win: BrowserWindow): number {
   const windowId = win.id
   const tracker = getWakeTracker(windowId)
   clearWakeRecovery(win, windowId)
   const seq = ++tracker.seq
-  if (process.platform !== 'win32') return
+  tracker.frameAcknowledged = false
   win.webContents.invalidate()
-  // Nudge DirectComposition once DWM finishes mapping and focusing the restored HWND.
+  // Request another repaint after DWM has had time to map the restored window.
   tracker.invalidateTimer = setTimeout(() => {
     tracker.invalidateTimer = undefined
     if (!win.isDestroyed() && win.isVisible() && !win.isMinimized()) {
       win.webContents.invalidate()
     }
   }, 80)
-  // If the renderer still has not painted an animation frame after 360ms (e.g. post-eviction
-  // LocalSurfaceId / DWM surface stall after Modern Standby or long tray idle), pulse the
-  // native window surface to force a fresh CompositorFrame and Viz hit-test tree.
+  // A frame callback can run while the native hit-test surface is still stale.
+  // Give the restored page time to receive pointer input before pulsing the surface.
   tracker.nudgeTimer = setTimeout(() => {
     tracker.nudgeTimer = undefined
     if (win.isDestroyed() || !win.isVisible() || win.isMinimized()) return
-    if (tracker.ackedSeq >= seq) return
+    const enabled = win.isEnabled()
     diagnostics?.write(
       'window',
-      `wake frame ack timeout (seq=${seq}), nudging compositor for window ${windowId}`
+      `wake input unconfirmed (window=${windowId}, seq=${seq}, frame=${tracker.frameAcknowledged}, focused=${win.isFocused()}, enabled=${enabled})`
     )
-    nudgeWindowCompositor(win, tracker)
+    if (enabled) nudgeWindowCompositor(win, tracker)
   }, 360)
+  return seq
 }
 
 function publishWindowPresence(forceInvalidate = false): void {
@@ -1120,6 +1129,7 @@ function publishWindowPresence(forceInvalidate = false): void {
     windowActiveState.set(win.id, active)
     const tracker = getWakeTracker(win.id)
     const contents = win.webContents
+    let wakeSequence: number | undefined
     if (active) {
       anyInteractive = true
       const hiddenDurationMs =
@@ -1132,13 +1142,13 @@ function publishWindowPresence(forceInvalidate = false): void {
         )
       }
       if (process.platform === 'win32' && (forceInvalidate || wasActive === false)) {
-        scheduleWakeRecovery(win)
+        wakeSequence = scheduleWakeRecovery(win)
       }
     } else {
       if (tracker.hiddenSince === null) tracker.hiddenSince = Date.now()
       clearWakeRecovery(win, win.id)
     }
-    contents.send(IPC.windowPresence, active)
+    contents.send(IPC.windowPresence, active, wakeSequence)
   }
   syncService?.setUiBackgrounded(!anyInteractive)
 }

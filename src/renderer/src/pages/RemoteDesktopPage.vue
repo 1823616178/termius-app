@@ -58,6 +58,7 @@ import {
   hosts,
   notify,
   openSettingsDomain,
+  page,
   protocolSettings,
   rdpProbe,
   rdpProfiles,
@@ -119,6 +120,10 @@ watch(rdpPasswordPrompt, async (next) => {
   promptPasswordValue.value = ''
   await nextTick()
   promptPasswordInputRef.value?.focus()
+})
+
+watch(page, (next) => {
+  if (next !== 'remote') editorOpen.value = false
 })
 
 const filteredProfiles = computed(() => {

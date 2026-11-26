@@ -6,7 +6,7 @@ Electron + Vue 3 + TypeScript + SCSS + xterm.js 桌面应用，统一使用 **Ya
 
 ## 开发运行
 
-Windows 11 x64，开发 Node **24.15.0**（版本约束见 `.nvmrc` 和 `package.json`）。Yarn 已随项目固定在 `.yarn/releases/`，本机已有 Yarn 时直接运行；也可通过 Corepack 使用 `corepack yarn`，无需修改全局包管理器版本。
+Windows 11 x64，开发 Node **26.13.1**（版本约束见 `.nvmrc` 和 `package.json`，Node 24 仍受支持）。Yarn 已随项目固定在 `.yarn/releases/`，直接运行 `yarn` 即可自动使用该版本（Node 26 起官方已不再内置 Corepack，无需全局安装 Yarn）。
 
 ```powershell
 yarn install --immutable

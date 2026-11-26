@@ -310,7 +310,7 @@ function confirmPaste() {
 async function pasteClipboard() {
   try {
     const text = await window.orbit.clipboard.readText()
-    if (!text) return
+    if (!text || !props.visible) return
     if (/[\r\n]/.test(text)) paste.value = text
     else handle?.terminal.paste(text)
   } catch (error) {
@@ -396,11 +396,11 @@ const interceptPaste = (event: ClipboardEvent) => {
 watch(paste, async (value) => {
   if (value === undefined) {
     pasteDialog.value?.close()
-    handle?.terminal.focus()
+    if (props.visible && props.focused) handle?.terminal.focus()
     return
   }
   await nextTick()
-  pasteDialog.value?.showModal()
+  if (props.visible && paste.value !== undefined) pasteDialog.value?.showModal()
 })
 
 function detachSubscriptions() {
@@ -588,6 +588,7 @@ watch(
       handle?.terminal.focus()
     } else if (!visible) {
       contextMenu.value = null
+      paste.value = undefined
     }
   },
   { flush: 'post' }

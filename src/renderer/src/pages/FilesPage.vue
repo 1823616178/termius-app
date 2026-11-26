@@ -300,6 +300,10 @@ watch(filesSecretPrompt, async (next) => {
   secretInputEl.value?.focus()
 })
 
+watch(page, (next) => {
+  if (next !== 'files') editorOpen.value = false
+})
+
 function onWindowKeydown(event: KeyboardEvent): void {
   if (page.value !== 'files' || event.key !== 'Escape') return
   if (contextMenu.value) {

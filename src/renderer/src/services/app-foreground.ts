@@ -15,13 +15,9 @@ let scenesReady = foreground
 let uiSuspended = !foreground
 let resumeFrame = 0
 let wakeAckFrame = 0
+let wakePointerSequence: number | undefined
 let settleTimer: ReturnType<typeof setTimeout> | undefined
 let styleFallbackTimer: ReturnType<typeof setTimeout> | undefined
-
-function notifyWakePainted(): void {
-  if (!foreground || typeof window === 'undefined') return
-  window.orbit?.window?.ackWake?.()
-}
 
 function cancelWakeAck(): void {
   if (wakeAckFrame) {
@@ -30,10 +26,9 @@ function cancelWakeAck(): void {
   }
 }
 
-function scheduleWakeAck(): void {
+function scheduleWakeAck(wakeSequence: number): void {
   cancelWakeAck()
   if (
-    !foreground ||
     typeof window === 'undefined' ||
     typeof window.orbit?.window?.ackWake !== 'function' ||
     typeof requestAnimationFrame !== 'function'
@@ -42,8 +37,15 @@ function scheduleWakeAck(): void {
   }
   wakeAckFrame = requestAnimationFrame(() => {
     wakeAckFrame = 0
-    notifyWakePainted()
+    if (foreground) window.orbit.window.ackWake?.({ sequence: wakeSequence, source: 'frame' })
   })
+}
+
+function acknowledgeWakePointer(event: Event): void {
+  if (!foreground || wakePointerSequence === undefined || !event.isTrusted) return
+  const sequence = wakePointerSequence
+  wakePointerSequence = undefined
+  window.orbit?.window?.ackWake?.({ sequence, source: 'pointer' })
 }
 
 function setSuspended(suspended: boolean): void {
@@ -106,7 +108,6 @@ function commit(next: boolean): void {
     // A window can report itself visible before Chromium is painting again.
     // Give the foreground UI a frame before starting the motion settle timer.
     resumeFrame = requestAnimationFrame(() => {
-      notifyWakePainted()
       resumeFrame = requestAnimationFrame(() => {
         resumeFrame = 0
         settleTimer = setTimeout(() => {
@@ -145,16 +146,23 @@ export function registerMotionScene(update: () => void): MotionSceneHandle {
   }
 }
 
-export function noteWindowPresence(present: boolean): void {
+export function noteWindowPresence(present: boolean, wakeSequence?: number): void {
   windowPresent = present
-  const alreadyForeground = foreground
+  if (!present) wakePointerSequence = undefined
+  else if (wakeSequence !== undefined) {
+    wakePointerSequence = wakeSequence
+    scheduleWakeAck(wakeSequence)
+  }
   commit(present)
-  if (present && alreadyForeground) scheduleWakeAck()
 }
 
 export function installAppForeground(): void {
   if (typeof document === 'undefined') return
   const windowsDesktop = /Windows/i.test(navigator.userAgent)
+  if (windowsDesktop) {
+    document.addEventListener('pointermove', acknowledgeWakePointer, { capture: true, passive: true })
+    document.addEventListener('pointerdown', acknowledgeWakePointer, { capture: true, passive: true })
+  }
   document.addEventListener('visibilitychange', () => {
     // Electron can deliver Chromium's hidden event after the native Windows
     // window has reopened. Its next visible event is not guaranteed to follow.
@@ -162,6 +170,6 @@ export function installAppForeground(): void {
     commit(document.visibilityState !== 'hidden')
   })
   const subscribe = window.orbit?.window?.onPresence
-  if (subscribe) subscribe((present) => noteWindowPresence(present))
+  if (subscribe) subscribe(noteWindowPresence)
   setSuspended(uiSuspended)
 }

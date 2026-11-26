@@ -201,13 +201,14 @@ const api: Bridge = {
       }
     },
     onPresence: (callback) => {
-      const listener = (_event: Electron.IpcRendererEvent, present: boolean) => callback(Boolean(present))
+      const listener = (_event: Electron.IpcRendererEvent, present: boolean, wakeSequence?: number) =>
+        callback(Boolean(present), wakeSequence)
       ipcRenderer.on(IPC.windowPresence, listener)
       return () => {
         ipcRenderer.removeListener(IPC.windowPresence, listener)
       }
     },
-    ackWake: () => ipcRenderer.send(IPC.windowWakeAck)
+    ackWake: (acknowledgement) => ipcRenderer.send(IPC.windowWakeAck, acknowledgement)
   },
   tray: {
     getState: () => ipcRenderer.invoke(IPC.trayState),
