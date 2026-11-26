@@ -613,18 +613,6 @@ export const enUS: Record<TranslationKey, string> = {
   'hosts.addTunnel': 'Add Tunnel',
   'hosts.portCheckResult': 'Port Check: {message}',
   'hosts.noResults': 'No hosts match the current filter.',
-  'hosts.detailsLabel': 'Host Details',
-  'hosts.detailsAddress': 'Endpoint',
-  'hosts.detailsUser': 'Username',
-  'hosts.detailsAuth': 'Auth',
-  'hosts.detailsAuthSaved': 'Password · Encrypted by OS',
-  'hosts.detailsAuthPrompt': 'Password · Prompt on Connect',
-  'hosts.detailsNotes': 'Notes',
-  'hosts.detailsNotesEmpty': 'None',
-  'hosts.syncScopeRealtime': 'E2EE live sync active (mutations upload automatically)',
-  'hosts.syncScopeLocal': 'E2EE unlocked · set to local-only mutation mode',
-  'hosts.syncScopeSignedIn': 'Sync signed in (vault locked or pending sync)',
-  'hosts.syncScopeNone': 'Local configuration only (not synced)',
 
   // LocalPage
   'local.eyebrow': 'LOCAL PTY · SHELL DISCOVERY',

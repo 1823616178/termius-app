@@ -24,7 +24,6 @@ import {
   query,
   saveBusy,
   saveError,
-  selected,
   shellsRefreshing,
   syncGroups,
   syncStatus,
@@ -53,8 +52,6 @@ export const filteredHosts = computed(() => {
 export const groups = computed(() =>
   [...new Set(hosts.value.map((host) => host.group).filter(Boolean))].sort()
 )
-
-export const selectedHostDetails = computed(() => hosts.value.find((host) => host.id === selected.value))
 
 export async function saveSyncGroup(input: SyncGroupInput): Promise<void> {
   syncGroups.value = await window.orbit.groups.save(input)

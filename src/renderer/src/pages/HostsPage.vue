@@ -8,7 +8,6 @@ import {
   Folder,
   Pencil,
   Trash2,
-  ShieldCheck,
   Network,
   Activity,
   Columns2,
@@ -41,10 +40,8 @@ import {
   saveSyncGroup,
   saveSyncTunnel,
   selected,
-  selectedHostDetails,
   setSyncWriteMode,
   syncGroups,
-  syncStatus,
   syncTunnels,
   syncWriteMode,
   toggleFavorite,
@@ -591,45 +588,6 @@ async function handleCreateGroup(): Promise<void> {
           {{ t('hosts.noResults') }}
         </p>
       </div>
-
-      <aside v-if="selectedHostDetails" class="container_hosts_detail_body_base">
-        <span class="container_hosts_detail_header_label">{{ t('hosts.detailsLabel') }}</span>
-        <h3 class="container_hosts_detail_header_name">{{ selectedHostDetails.name }}</h3>
-        <dl class="container_hosts_detail_body_fields">
-          <dt class="container_hosts_detail_body_address-label">{{ t('hosts.detailsAddress') }}</dt>
-          <dd class="container_hosts_detail_body_address">
-            {{ selectedHostDetails.address }}:{{ selectedHostDetails.port }}
-          </dd>
-          <dt class="container_hosts_detail_body_user-label">{{ t('hosts.detailsUser') }}</dt>
-          <dd class="container_hosts_detail_body_user">{{ selectedHostDetails.username }}</dd>
-          <dt class="container_hosts_detail_body_auth-label">{{ t('hosts.detailsAuth') }}</dt>
-          <dd class="container_hosts_detail_body_auth">
-            {{
-              selectedHostDetails.auth === 'agent'
-                ? 'OpenSSH Agent'
-                : selectedHostDetails.hasPassword
-                  ? t('hosts.detailsAuthSaved')
-                  : t('hosts.detailsAuthPrompt')
-            }}
-          </dd>
-          <dt class="container_hosts_detail_body_notes-label">{{ t('hosts.detailsNotes') }}</dt>
-          <dd class="container_hosts_detail_body_notes">
-            {{ selectedHostDetails.notes || t('hosts.detailsNotesEmpty') }}
-          </dd>
-        </dl>
-        <p class="container_hosts_detail_footer_scope">
-          <ShieldCheck :size="13" />
-          {{
-            syncStatus?.phase === 'synced'
-              ? syncWriteMode === 'realtime'
-                ? t('hosts.syncScopeRealtime')
-                : t('hosts.syncScopeLocal')
-              : syncStatus?.signedIn
-                ? t('hosts.syncScopeSignedIn')
-                : t('hosts.syncScopeNone')
-          }}
-        </p>
-      </aside>
     </div>
   </section>
 </template>
@@ -1002,46 +960,6 @@ async function handleCreateGroup(): Promise<void> {
 [class*='container_hosts_drawer_input_lport'],
 [class*='container_hosts_drawer_input_dport'] {
   width: 84px;
-}
-.container_hosts_detail_body_base {
-  width: 260px;
-  flex-shrink: 0;
-  border: 1px solid var(--color-border);
-  border-radius: 10px;
-  padding: 16px;
-  background: var(--surface-card-gradient);
-}
-.container_hosts_detail_header_label {
-  font-size: var(--font-size-ui-2xs);
-  color: var(--color-accent-primary);
-}
-.container_hosts_detail_header_name {
-  margin: 6px 0 12px;
-  font-family: var(--font-display);
-  font-size: var(--font-size-ui-xl);
-  color: var(--color-text-heading);
-}
-.container_hosts_detail_body_fields {
-  margin: 0;
-  display: grid;
-  gap: 6px;
-  dt {
-    font-size: var(--font-size-ui-2xs);
-    color: var(--color-text-muted);
-  }
-  dd {
-    margin: 0 0 6px;
-    font-size: var(--font-size-ui-xs);
-    word-break: break-all;
-  }
-}
-.container_hosts_detail_footer_scope {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin: 10px 0 0;
-  font-size: var(--font-size-ui-2xs);
-  color: var(--color-text-muted);
 }
 .container_hosts_library_body_no-results {
   color: var(--color-text-muted);

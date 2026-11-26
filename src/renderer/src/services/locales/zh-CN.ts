@@ -604,18 +604,6 @@ export const zhCN = {
   'hosts.addTunnel': '新增转发',
   'hosts.portCheckResult': '端口检测结果：{message}',
   'hosts.noResults': '没有符合筛选条件的主机。',
-  'hosts.detailsLabel': '主机详情',
-  'hosts.detailsAddress': '地址',
-  'hosts.detailsUser': '用户名',
-  'hosts.detailsAuth': '认证',
-  'hosts.detailsAuthSaved': '密码 · 已系统加密保存',
-  'hosts.detailsAuthPrompt': '密码 · 连接时输入',
-  'hosts.detailsNotes': '备注',
-  'hosts.detailsNotesEmpty': '无',
-  'hosts.syncScopeRealtime': '已启用 E2EE 实时同步（增删改实时上传）',
-  'hosts.syncScopeLocal': 'E2EE 已解锁 · 当前设为仅本地修改模式',
-  'hosts.syncScopeSignedIn': '已配置云同步账号（当前待解锁或待同步）',
-  'hosts.syncScopeNone': '本地配置，尚未云同步',
 
   // LocalPage
   'local.eyebrow': '咫尺丹室 · 内景吐纳',
